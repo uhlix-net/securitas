@@ -1,0 +1,89 @@
+name: release
+# Pushes to main and pull requests: build the image, run the tests inside it (including PDF output), lint the chart.
+# Version tags (v0.1.0): also push docker.io/uhlix/securitas:<version> and :latest (linux/amd64 + linux/arm64),
+# attach the packaged chart to a GitHub release, and add it to the Helm repository index on GitHub Pages.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version
+        id: v
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.0-dev.${GITHUB_SHA::7}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: securitas:test
+          build-args: VERSION=${{ steps.v.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Unit tests (inside the image, including PDF output)
+        run: docker run --rm --read-only --tmpfs /tmp -v "$PWD/tests:/app/tests:ro" --entrypoint python securitas:test -m unittest discover -s /app/tests -v
+      - uses: azure/setup-helm@v4
+      - name: Lint chart
+        run: |
+          helm lint charts/securitas
+          helm template t charts/securitas --set 'config.namespaces={a,b}' --set ingress.enabled=true --set extraPlatforms.configMap=x > /dev/null
+
+      - uses: docker/login-action@v3
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          username: uhlix
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Push image to docker.io/uhlix/securitas
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: VERSION=${{ steps.v.outputs.version }}
+          cache-from: type=gha
+          tags: |
+            docker.io/uhlix/securitas:${{ steps.v.outputs.version }}
+            docker.io/uhlix/securitas:latest
+      - name: Package chart and create the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=${{ steps.v.outputs.version }}
+          sed -i "s/^version:.*/version: $v/; s/^appVersion:.*/appVersion: \"$v\"/" charts/securitas/Chart.yaml
+          helm package charts/securitas -d dist-chart
+          gh release upload "v$v" dist-chart/securitas-$v.tgz --clobber 2>/dev/null \
+            || gh release create "v$v" dist-chart/securitas-$v.tgz --title "Securitas $v" --generate-notes
+      - name: Add the chart to the Helm repository (gh-pages)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          v=${{ steps.v.outputs.version }}
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null; then
+            git fetch origin gh-pages
+            git worktree add pages origin/gh-pages
+            git -C pages checkout -B gh-pages
+          else
+            git worktree add --orphan -b gh-pages pages
+          fi
+          merge=""; [ -f pages/index.yaml ] && merge="--merge pages/index.yaml"
+          helm repo index dist-chart --url "https://github.com/${GITHUB_REPOSITORY}/releases/download/v$v" $merge
+          cp dist-chart/index.yaml pages/index.yaml
+          touch pages/.nojekyll
+          git -C pages add index.yaml .nojekyll
+          git -C pages commit -m "Helm repository: securitas $v"
+          git -C pages push origin gh-pages

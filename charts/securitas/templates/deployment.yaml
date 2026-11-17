@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "securitas.fullname" . }}
+  labels:
+    {{- include "securitas.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "securitas.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "securitas.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "securitas.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: securitas
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - {name: SECURITAS_TITLE, value: {{ .Values.config.title | quote }}}
+            - {name: SECURITAS_CLUSTER_NAME, value: {{ .Values.config.clusterName | quote }}}
+            - {name: SECURITAS_REFRESH_SECONDS, value: {{ .Values.config.refreshSeconds | quote }}}
+            - {name: SECURITAS_EPSS_MIN, value: {{ .Values.config.epssMin | quote }}}
+            - {name: SECURITAS_NAMESPACES, value: {{ join "," .Values.config.namespaces | quote }}}
+            - {name: SECURITAS_PAPER, value: {{ .Values.config.paper | quote }}}
+            - {name: SECURITAS_KEV_URL, value: {{ .Values.config.kevUrl | quote }}}
+            - {name: SECURITAS_EPSS_URL, value: {{ .Values.config.epssUrl | quote }}}
+            {{- if .Values.extraPlatforms.configMap }}
+            - {name: SECURITAS_EXTRA_DIR, value: /extra}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+            {{- if .Values.extraPlatforms.configMap }}
+            - {name: extra, mountPath: /extra, readOnly: true}
+            {{- end }}
+      volumes:
+        # Feed cache only; rebuilt on the next refresh
+        - name: data
+          emptyDir: {sizeLimit: 64Mi}
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+        {{- if .Values.extraPlatforms.configMap }}
+        - name: extra
+          configMap: {name: {{ .Values.extraPlatforms.configMap }}}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

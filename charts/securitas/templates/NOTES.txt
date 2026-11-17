@@ -1,0 +1,14 @@
+Securitas is starting. The first report is built a minute or two after the pod starts.
+
+{{- if .Values.ingress.enabled }}
+Open: {{ range .Values.ingress.hosts }}http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}/ {{ end }}
+{{- else }}
+To view it:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "securitas.fullname" . }} 8080:{{ .Values.service.port }}
+  then open http://127.0.0.1:8080/
+{{- end }}
+
+Securitas needs Trivy Operator (https://aquasecurity.github.io/trivy-operator/) in the cluster.
+
+WARNING: the report lists unpatched software and has no login of its own. Expose it only on a trusted
+network or behind an authenticating proxy.

@@ -1,0 +1,92 @@
+# Securitas reads Trivy Operator VulnerabilityReports. Install Trivy Operator first:
+# https://aquasecurity.github.io/trivy-operator/
+
+image:
+  repository: docker.io/uhlix/securitas
+  # Defaults to the chart's appVersion
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+config:
+  # Shown in the page heading and the PDF
+  title: Securitas
+  clusterName: ""
+  # How often the report is rebuilt (seconds, minimum 60). The KEV catalog is re-downloaded at most hourly.
+  refreshSeconds: 3600
+  # A CVE is a priority when it is in the CISA KEV catalog or its EPSS score is at least this value
+  epssMin: 0.10
+  # Namespaces to report on. Empty = all namespaces (cluster-wide read access to VulnerabilityReports).
+  # When set, the chart grants read access in these namespaces only.
+  namespaces: []
+  # PDF page size: letter or A4
+  paper: letter
+  # Feed URLs. Point these at internal mirrors for air-gapped clusters.
+  kevUrl: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+  epssUrl: https://epss.empiricalsecurity.com/epss_scores-current.csv.gz
+
+# Extra environment variables, e.g. HTTPS_PROXY / NO_PROXY for the feed downloads
+extraEnv: []
+
+# Optional: add more platforms (e.g. hosts scanned elsewhere) from JSON files in a ConfigMap.
+# Each key in the ConfigMap must end in .json. See the README for the file format.
+extraPlatforms:
+  configMap: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+rbac:
+  create: true
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 80
+
+# WARNING: the report lists unpatched software in your cluster and has no login of its own.
+# Expose it only on a trusted network or behind an authenticating proxy.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: securitas.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: securitas-tls
+  #    hosts: [securitas.example.com]
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,0 +1,27 @@
+name: dockerhub-description
+# Sync the Docker Hub overview (docs/dockerhub.md) and short description for docker.io/uhlix/securitas.
+# Skipped until the repository secret DOCKERHUB_TOKEN exists.
+on:
+  push:
+    branches: [main]
+    paths: [docs/dockerhub.md, .github/workflows/dockerhub-description.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      HAS_TOKEN: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: env.HAS_TOKEN == 'true'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: uhlix
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: uhlix/securitas
+          short-description: "CVE report for Kubernetes: Trivy Operator findings ranked by CISA KEV and EPSS, with PDF export"
+          readme-filepath: docs/dockerhub.md

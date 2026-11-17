@@ -1,0 +1,17 @@
+apiVersion: v2
+name: securitas
+description: Read-only CVE report for Kubernetes clusters scanned by Trivy Operator, ranked by CISA KEV and EPSS, with PDF export
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.25.0-0"
+home: https://github.com/uhlix-net/securitas
+icon: https://raw.githubusercontent.com/uhlix-net/securitas/main/docs/icon.svg
+sources:
+  - https://github.com/uhlix-net/securitas
+keywords: [security, cve, vulnerability, trivy, kev, epss, report]
+maintainers:
+  - name: uhlix-net
+    url: https://github.com/uhlix-net
+annotations:
+  artifacthub.io/license: Apache-2.0
