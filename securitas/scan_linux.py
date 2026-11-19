@@ -93,7 +93,21 @@ class HostKeyPolicy:
         return P()
 
 
-def run_host(cfg, target, record_key):
+def load_key(cfg):
+    """The private key: pasted text (Settings > Scan credentials) wins over the mounted key file."""
+    import io
+    import paramiko
+    if cfg.ssh_key:
+        for cls in (paramiko.Ed25519Key, paramiko.ECDSAKey, paramiko.RSAKey):
+            try:
+                return cls.from_private_key(io.StringIO(cfg.ssh_key))
+            except (paramiko.SSHException, ValueError):
+                continue
+        raise RuntimeError("the SSH private key saved in Settings could not be read (unsupported type or passphrase)")
+    return paramiko.PKey.from_path(cfg.ssh_key_file)
+
+
+def connect(cfg, target, record_key):
     import paramiko
     client = paramiko.SSHClient()
     if cfg.ssh_known_hosts:
@@ -101,10 +115,29 @@ def run_host(cfg, target, record_key):
         client.set_missing_host_key_policy(paramiko.RejectPolicy())
     else:
         client.set_missing_host_key_policy(HostKeyPolicy(target["host_key"], lambda k: record_key(target["id"], k))())
-    pkey = paramiko.PKey.from_path(cfg.ssh_key_file)
     try:
-        client.connect(target["host"], port=cfg.ssh_port, username=cfg.ssh_user, pkey=pkey, timeout=15,
+        client.connect(target["host"], port=cfg.ssh_port, username=cfg.ssh_user, pkey=load_key(cfg), timeout=15,
                        banner_timeout=30, auth_timeout=30, allow_agent=False, look_for_keys=False)
+    except Exception:
+        client.close()
+        raise
+    return client
+
+
+def test_host(cfg, target, record_key):
+    """Settings > Scan credentials > Test: sign in and report who we are. Changes nothing."""
+    client = connect(cfg, target, record_key)
+    try:
+        _, out, _ = client.exec_command("id -un; . /etc/os-release 2>/dev/null; echo \"$NAME $VERSION_ID\"", timeout=30)
+        lines = out.read().decode(errors="replace").strip().splitlines()
+        return "signed in as %s on %s" % (lines[0] if lines else "?", lines[1] if len(lines) > 1 else "?")
+    finally:
+        client.close()
+
+
+def run_host(cfg, target, record_key):
+    client = connect(cfg, target, record_key)
+    try:
         cmd = "bash -c %s" % shlex.quote(remote_script(cfg.linux_repos))
         _, out, err = client.exec_command(cmd, timeout=cfg.host_timeout)
         text = out.read().decode(errors="replace")
@@ -115,8 +148,8 @@ def run_host(cfg, target, record_key):
 
 def scan(cfg, targets, log, record_key):
     """targets: [{id, host, label, host_key}]. Returns a raw platform."""
-    if not cfg.ssh_user or not cfg.ssh_key_file:
-        raise RuntimeError("Linux scans need an SSH user and key (SECURITAS_SSH_USER, SECURITAS_SSH_KEY_FILE)")
+    if not cfg.ssh_user or not (cfg.ssh_key or cfg.ssh_key_file):
+        raise RuntimeError("Linux scans need an SSH user and key (Settings > Scan credentials, or the Helm values)")
     results, warnings = {}, []
     with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.host_concurrency) as ex:
         futs = {ex.submit(run_host, cfg, t, record_key): t for t in targets}

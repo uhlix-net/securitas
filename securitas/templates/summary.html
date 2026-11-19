@@ -10,7 +10,7 @@
     {% for r in rows %}
     <tr>
       <td><a href="/report#{{ r.id }}"><strong>{{ r.title }}</strong></a></td>
-      <td>{% if r.status in ("failed", "partial") %}<span class="badge b-{{ r.status }}" title="{{ r.failure }}">{{ "Scan failed" if r.status == "failed" else "Partial scan" }}</span>{% else %}<span class="badge b-done">OK</span>{% endif %}</td>
+      <td>{% if r.status == "off" %}<span class="badge b-off">Turned off</span>{% elif r.status in ("failed", "partial") %}<span class="badge b-{{ r.status }}" title="{{ r.failure }}">{{ "Scan failed" if r.status == "failed" else "Partial scan" }}</span>{% else %}<span class="badge b-done">OK</span>{% endif %}</td>
       <td class="date">{% if r.scanned %}{{ r.scanned }}{% endif %}{% if r.scan_id %} <a class="muted" href="/scans/{{ r.scan_id }}">#{{ r.scan_id }}</a>{% endif %}</td>
       {% if r.no_results %}
       <td class="muted" colspan="5">No results</td>

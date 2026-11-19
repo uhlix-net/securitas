@@ -79,8 +79,7 @@ def _section(p):
         format(v, ",") if isinstance(v, int) else e(v), e(k)) for k, v in p["totals"].items())
     scanned = (' <span class="scanned">Scanned %s</span>' % e(p["scanned"])) if p.get("scanned") else ""
     st = p.get("status", "")
-    badge = (' <span class="badge b-%s">%s</span>' % (st, {"failed": "Scan failed", "partial": "Partial scan"}[st])
-             if st in ("failed", "partial") else "")
+    badge = (' <span class="badge b-%s">%s</span>' % (st, STATUS_BADGE[st]) if st in ("failed", "partial", "off") else "")
     fail = '<div class="fail"><p>%s</p></div>' % e(p["failure"]) if p.get("failure") else ""
     warn = ""
     if p.get("warnings"):
@@ -92,10 +91,43 @@ def _section(p):
         e(p["id"]), e(p["title"]), badge, scanned, e(p["subtitle"]), fail, warn, totals, _systems(p), _cves(p))
 
 
+STATUS_BADGE = {"done": "OK", "failed": "Scan failed", "partial": "Partial scan", "off": "Turned off"}
+
+
 def platform_nav(model):
     return "".join('<a href="#%s">%s <span>%s</span></a>' % (
-        e(p["id"]), e(p["title"]), "failed" if p.get("no_results") else "%d%s" % (len(p["cves"]), " !" if p.get("failure") else ""))
-        for p in model["platforms"])
+        e(p["id"]), e(p["title"]), ("off" if p.get("turned_off") else "failed") if p.get("no_results")
+        else "%d%s" % (len(p["cves"]), " !" if p.get("failure") else "")) for p in model["platforms"])
+
+
+def summary_table(model):
+    """Per-platform status and counts (the Summary page's table), shown first in the report and the PDF."""
+    from .report import summary
+    rows = summary(model)
+    if not rows:
+        return ""
+    n = lambda v: format(v, ",")
+    body = []
+    for r in rows:
+        st = r["status"] if r["status"] in STATUS_BADGE else "done"
+        when = e(r["scanned"]) + ((" (#%d)" % r["scan_id"]) if r.get("scan_id") else "")
+        cells = ('<td class="muted" colspan="5">No results</td>' if r["no_results"] else
+                 '<td class="n">%s</td><td class="n">%s</td><td class="n%s">%s</td><td class="n%s">%s</td><td class="n">%s</td>' % (
+                     n(r["systems"]), n(r["priority"]), " hot" if r["kev"] else "", n(r["kev"]),
+                     " hot" if r["critical"] else "", n(r["critical"]), n(r["high"])))
+        body.append('<tr><td><a href="#%s"><strong>%s</strong></a></td><td><span class="badge b-%s">%s</span></td>'
+                    '<td class="date">%s</td>%s</tr>' % (e(r["id"]), e(r["title"]), st, STATUS_BADGE[st], when, cells))
+        if r["failure"]:
+            body.append('<tr class="failrow"><td colspan="8">%s</td></tr>' % e(r["failure"]))
+    foot = ""
+    if len(rows) > 1:
+        t = lambda k: n(sum(r[k] for r in rows))
+        foot = ('<tfoot><tr><th colspan="3">Total</th><th class="n">%s</th><th class="n">%s</th><th class="n">%s</th>'
+                '<th class="n">%s</th><th class="n">%s</th></tr></tfoot>' % (t("systems"), t("priority"), t("kev"), t("critical"), t("high")))
+    return ('<section class="summary"><h2>Summary</h2><div class="scroll"><table class="summary"><thead><tr><th>Platform</th>'
+            '<th>Status</th><th>Last scanned</th><th class="n">Systems</th><th class="n">Priority CVEs</th>'
+            '<th class="n">Known exploited</th><th class="n">Critical</th><th class="n">High</th></tr></thead><tbody>%s</tbody>%s'
+            '</table></div></section>' % ("\n".join(body), foot))
 
 
 def report_body(model):
@@ -110,19 +142,30 @@ def report_body(model):
         sections = ('<section><h2>No results yet</h2><p class="sub">No scan has finished yet. '
                     'Operators and admins can start one on the Scans page; scheduled scans run on their own.</p></section>')
     else:
-        sections = "\n".join(_section(p) for p in model["platforms"])
+        sections = summary_table(model) + "\n" + "\n".join(_section(p) for p in model["platforms"])
+    kev_on, epss_on = model.get("kev_on", True), model.get("epss_on", True)
+    if kev_on and epss_on:
+        rule = ("A CVE is a priority when it is in the CISA Known Exploited Vulnerabilities (KEV) catalog, or its EPSS score "
+                "(probability of exploitation in the next 30 days) is %.2f or higher. Known-exploited CVEs are listed first." % model["epss_min"])
+    elif kev_on:
+        rule = "A CVE is a priority when it is in the CISA Known Exploited Vulnerabilities (KEV) catalog. EPSS is turned off."
+    elif epss_on:
+        rule = ("A CVE is a priority when its EPSS score (probability of exploitation in the next 30 days) is %.2f or higher. "
+                "The CISA KEV catalog is turned off." % model["epss_min"])
+    else:
+        rule = "CISA KEV and EPSS are both turned off, so every CVE is listed, unranked."
     return """%(warn)s
 <div class="meta"><h1>%(heading)s</h1>
 <p><strong>Generated:</strong> %(generated)s</p>
 <p><strong>Sources:</strong> %(sources)s</p>
-<p><strong>What is listed:</strong> each platform has a table of its systems and a table of priority CVEs. A CVE is a priority when it is in the CISA Known Exploited Vulnerabilities (KEV) catalog, or its EPSS score (probability of exploitation in the next 30 days) is %(min).2f or higher. Known-exploited CVEs are listed first.</p></div>
+<p><strong>What is listed:</strong> each platform has a table of its systems and a table of priority CVEs. %(rule)s</p></div>
 %(sections)s
 <div class="meta"><h1>How to read this report</h1><ul class="notes">
 <li>Counts are what the scanners report for the installed packages. Whether a CVE can actually be exploited on a given system was not analysed.</li>
 <li>KEV marks CVEs that CISA has seen exploited in the wild. EPSS is a probability, not proof: rank by KEV first.</li>
 <li>Generated by Securitas, https://github.com/uhlix-net/securitas</li>
 </ul></div>""" % dict(warn=warn, heading=heading, generated=e(model["generated"]), sources=e(sources) or "none",
-                     min=model["epss_min"], sections=sections)
+                     rule=e(rule), sections=sections)
 
 
 # Colour tokens. Light is the default; dark follows the system setting unless the viewer picked a theme
@@ -148,6 +191,11 @@ main{max-width:1500px;margin:0 auto;padding:20px 16px}
 .fail p{margin:3px 0}
 h2 .badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600;white-space:nowrap;vertical-align:middle}
 h2 .b-failed{color:var(--crit);background:var(--crit-bg)}h2 .b-partial{color:var(--imp);background:var(--imp-bg)}
+h2 .b-off,table.summary .b-off{color:var(--muted);background:var(--head)}
+table.summary .badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600;white-space:nowrap}
+table.summary .b-done{color:var(--ok);background:var(--ok-bg)}table.summary .b-partial{color:var(--imp);background:var(--imp-bg)}
+table.summary .b-failed{color:var(--crit);background:var(--crit-bg)}th.n{text-align:right}
+tr.failrow td{color:var(--crit);background:var(--crit-bg);font-size:12.5px;border-top:0}
 h2{font-size:20px;margin:0}.sub{color:var(--muted);margin:2px 0 14px}
 h2 .scanned{font-size:13px;font-weight:400;color:var(--muted);margin-left:10px}
 h3{font-size:13px;margin:20px 0 8px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
@@ -179,7 +227,7 @@ CSS_PRINT = """
 :root{--bg:#fff;--card:#fff;--ink:#000;--muted:#444;--line:#bbb;--head:#eee;--accent:#000}
 body{font-size:9.5px}.top{border:0;padding:0 0 6px}
 main{padding:0;max-width:none}.meta,section{border:0;padding:0;margin-bottom:14px}
-section{page-break-before:always}.scroll{border:0}table{border:1px solid var(--line)}
+section{page-break-before:always}section.summary{page-break-before:avoid}.scroll{border:0}table{border:1px solid var(--line)}
 th,td{padding:3px 5px}th{font-size:8.5px}.mono,.small{font-size:8.5px}.sev,.kev,.ransom{font-size:8px}
 tr{page-break-inside:avoid}thead{display:table-header-group}h3{page-break-after:avoid}
 a{color:inherit;text-decoration:none}.stat{padding:4px 10px;min-width:110px}.stat .v{font-size:15px}
@@ -223,8 +271,7 @@ pre.log{background:var(--head);border:1px solid var(--line);border-radius:6px;pa
 .login input[type=text],.login input[type=password]{width:100%}.login .btn{width:100%;text-align:center;margin-top:14px;padding:9px}
 .or{display:flex;align-items:center;gap:10px;color:var(--muted);margin:18px 0 4px;font-size:12.5px}.or:before,.or:after{content:"";flex:1;border-top:1px solid var(--line)}
 .pager{display:flex;gap:8px;margin-top:12px}
-th.n{text-align:right}table.summary td a strong{font-size:15px}
-tr.failrow td{color:var(--crit);background:var(--crit-bg);font-size:12.5px;border-top:0}
+table.summary td a strong{font-size:15px}
 @media print{.top,.subbar,.noprint{display:none}}
 """
 

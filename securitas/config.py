@@ -59,10 +59,11 @@ class LdapConfig:
     display_attr: str = "displayName"
     email_attr: str = "mail"
     start_tls: bool = False
+    on: bool = True                    # switch in Settings > Authentication
 
     @property
     def enabled(self):
-        return bool(self.url and self.user_base)
+        return bool(self.on and self.url and self.user_base)
 
 
 @dataclass
@@ -74,10 +75,11 @@ class OidcConfig:
     username_claim: str = "preferred_username"
     groups_claim: str = "groups"
     label: str = "Single sign-on"
+    on: bool = True                    # switch in Settings > Authentication
 
     @property
     def enabled(self):
-        return bool(self.issuer and self.client_id)
+        return bool(self.on and self.issuer and self.client_id)
 
 
 @dataclass
@@ -120,6 +122,7 @@ class Config:
     host_concurrency: int = 4
     ssh_user: str = ""
     ssh_key_file: str = ""
+    ssh_key: str = ""                # private key text (set in Settings > Scan credentials; wins over ssh_key_file)
     ssh_known_hosts: str = ""        # optional known_hosts file; without it host keys are recorded on first contact
     ssh_port: int = 22
     linux_repos: list = field(default_factory=list)  # optional "name=url" pairs: scan against these repos only
@@ -130,6 +133,17 @@ class Config:
     winrm_auth: str = "negotiate"
     host_timeout: int = 600
     targets: list = field(default_factory=list)  # bootstrap "platform:host[:label]" entries
+
+    # Sources (Settings > Sources)
+    kev_enabled: bool = True
+    epss_enabled: bool = True
+    platforms_enabled: dict = field(default_factory=lambda: {p: True for p in PLATFORMS})
+
+    # Encrypts secrets saved in the web UI (the chart generates it)
+    secret_key: str = ""
+
+    def platform_on(self, p):
+        return bool(self.platforms_enabled.get(p, True))
 
     @classmethod
     def from_env(cls):
@@ -197,6 +211,7 @@ class Config:
             winrm_auth=e("SECURITAS_WINRM_AUTH", "negotiate"),
             host_timeout=max(30, _int("SECURITAS_HOST_TIMEOUT", 600)),
             targets=_list("SECURITAS_TARGETS"),
+            secret_key=_secret("SECURITAS_SECRET_KEY"),
         )
         c.database_url = e("SECURITAS_DATABASE_URL", "") or _db_url_from_parts() or f"sqlite:///{c.data_dir}/securitas.db"
         if c.paper.lower() not in ("letter", "a4"):

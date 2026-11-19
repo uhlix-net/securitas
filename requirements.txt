@@ -11,6 +11,8 @@ psycopg[binary]==3.3.9
 argon2-cffi==25.1.0
 ldap3==2.9.1
 joserfc==1.8.0
+# Encryption of secrets saved in the web UI (also a paramiko dependency)
+cryptography==50.0.2
 # Scans and schedules
 paramiko==5.1.0
 pypsrp==0.9.1
