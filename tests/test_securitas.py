@@ -392,6 +392,45 @@ class Web(unittest.TestCase):
         self.assertIn("e=localoff", login(client(self.app), "loc", "local-password-1").headers["location"])
         self.assertEqual(login(client(self.app), "admin", ADMIN_PW).headers["location"], "/")   # break-glass
 
+    def _scan(self, plats):
+        with self.db.Session() as s, s.begin():
+            self.jobs.enqueue(s, plats, "manual", "admin")
+        sid = self.jobs._claim()
+        self.jobs.run_scan(sid)
+        return sid
+
+    def test_failed_platform_shown_in_report(self):
+        # Windows has no targets, so its scan fails and it has never had a good result
+        login(self.c, "admin", ADMIN_PW)
+        self.jobs.scanners["windows"] = self.jobs._scan_windows
+        sid = self._scan(["kubernetes", "windows"])
+        for path in ("/", "/scans/%d" % sid):
+            page = self.c.get(path).text
+            self.assertIn('id="windows"', page, path)
+            self.assertIn("Scan failed", page, path)
+            self.assertIn("no Windows targets are configured", page, path)
+            self.assertIn("CVE-2099-0002", page, path)      # the good platform is still listed
+        self.assertIn("Scan failed", render.pdf_html(self.jobs.current_model()))
+
+    def test_newer_failure_flags_older_results(self):
+        login(self.c, "admin", ADMIN_PW)
+        self.jobs.scanners["windows"] = lambda say: dict(fake_kubernetes(say), id="windows", title="Windows")
+        good = self._scan(["windows"])
+        page = self.c.get("/").text
+        self.assertNotIn("Scan failed", page)
+
+        def broken(say):
+            raise RuntimeError("WinRM <refused>")
+        self.jobs.scanners["windows"] = broken
+        bad = self._scan(["windows"])
+        page = self.c.get("/").text
+        self.assertIn("Scan failed", page)
+        self.assertIn("The latest scan (#%d" % bad, page)
+        self.assertIn("from scan #%d" % good, page)
+        self.assertIn("WinRM &lt;refused&gt;", page)        # escaped
+        self.assertNotIn("WinRM <refused>", page)
+        self.assertIn("CVE-2099-0002", page)                 # older results still shown
+
     def test_schedule_runs(self):
         from securitas.db import Schedule, Scan, utcnow
         import datetime

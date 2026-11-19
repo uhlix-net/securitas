@@ -261,22 +261,41 @@ class Jobs:
                                                      PlatformResult.status.in_(("done", "partial")))
                         .order_by(PlatformResult.id.desc()).limit(1))
 
+    @staticmethod
+    def _newest(s, platform):
+        return s.scalar(select(PlatformResult).where(PlatformResult.platform == platform)
+                        .order_by(PlatformResult.id.desc()).limit(1))
+
+    def _when(self, r):
+        return fmt_time(r.scanned_at, self.cfg.timezone)
+
     def current_model(self):
         """Newest good result of each platform, re-ranked with the current KEV catalog and EPSS scores."""
         rk, src, warnings = self.feeds.ranker()
         with self.db.Session() as s:
-            latest = [r for r in (self._latest(s, p) for p in PLATFORMS) if r is not None]
-            key = (tuple(r.id for r in latest), src["kev"], src["epss"], self.feeds.at)
+            pairs = [(self._latest(s, p), self._newest(s, p)) for p in PLATFORMS]
+            pairs = [(g, n) for g, n in pairs if n is not None]
+            key = (tuple((g.id if g else 0, n.id) for g, n in pairs), src["kev"], src["epss"], self.feeds.at)
             with self._cache_lock:
                 if key in self._cache:
                     return self._cache[key]
             sections = []
-            for r in latest:
-                sec = report.build_platform(r.raw, rk)
-                sec["scanned"] = fmt_time(r.scanned_at, self.cfg.timezone)
-                sec["scan_id"] = r.scan_id
-                if r.status == "partial":
-                    sec["warnings"] = sec.get("warnings", [])
+            for good, newest in pairs:
+                if good is None:
+                    # never scanned successfully: show the failure instead of leaving the platform out
+                    sec = report.failed_platform(newest.platform, newest.error)
+                    sec["failure"] = "The latest scan (#%d, %s) failed: %s" % (newest.scan_id, self._when(newest), sec["failure"])
+                else:
+                    sec = report.build_platform(good.raw, rk)
+                    sec["status"] = good.status
+                    if good.status == "partial":
+                        sec["failure"] = "Scan #%d was only partly successful: %s" % (good.scan_id, good.error or "some systems failed")
+                    if newest.id != good.id:
+                        sec["status"] = "failed"
+                        sec["failure"] = ("The latest scan (#%d, %s) failed: %s. The results below are older, from scan #%d."
+                                          % (newest.scan_id, self._when(newest), newest.error or "unknown error", good.scan_id))
+                    sec["scanned"] = self._when(good)
+                    sec["scan_id"] = good.scan_id
                 sections.append(sec)
         if self.cfg.extra_dir:
             for p in report.load_extra(self.cfg.extra_dir, warnings):
@@ -293,10 +312,15 @@ class Jobs:
         """A past scan as it was reported at the time."""
         sections, warnings, src = [], [], {}
         for r in scan.results:
-            if not r.report:
-                continue
-            sec = dict(r.report)
-            sec["scanned"] = fmt_time(r.scanned_at, self.cfg.timezone)
+            if r.report:
+                sec = dict(r.report)
+                if r.status == "partial":
+                    sec["failure"] = "Only partly successful: %s" % (r.error or "some systems failed")
+            else:
+                sec = report.failed_platform(r.platform, r.error)
+                sec["failure"] = "This scan failed: %s" % sec["failure"]
+            sec["status"] = r.status
+            sec["scanned"] = self._when(r)
             sections.append(sec)
             src = r.sources or src
         return report.model(self.cfg, sections, src or {"kev": "", "epss": ""}, warnings,

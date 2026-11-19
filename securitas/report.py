@@ -85,6 +85,16 @@ def build_platform(raw, rk):
             "affected_label": raw.get("affected_label", "Systems"), "cves": rows, "warnings": raw.get("warnings", [])}
 
 
+PLATFORM_TITLE = {"kubernetes": "Kubernetes", "linux": "Linux", "windows": "Windows"}
+
+
+def failed_platform(platform, error):
+    """Section for a platform whose scan produced no results, so the report says so instead of leaving it out."""
+    return {"id": platform, "title": PLATFORM_TITLE.get(platform, platform.title()), "subtitle": "", "totals": {},
+            "systems_caption": "", "system_columns": [], "systems": [], "affected_label": "Systems", "cves": [],
+            "warnings": [], "status": "failed", "failure": error or "The scan failed.", "no_results": True}
+
+
 # ---------------------------------------------------------------- Kubernetes (Trivy Operator)
 
 def image_name(rep):

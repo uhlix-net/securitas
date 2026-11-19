@@ -78,15 +78,24 @@ def _section(p):
     totals = "".join('<div class="stat"><div class="v">%s</div><div class="k">%s</div></div>' % (
         format(v, ",") if isinstance(v, int) else e(v), e(k)) for k, v in p["totals"].items())
     scanned = (' <span class="scanned">Scanned %s</span>' % e(p["scanned"])) if p.get("scanned") else ""
+    st = p.get("status", "")
+    badge = (' <span class="badge b-%s">%s</span>' % (st, {"failed": "Scan failed", "partial": "Partial scan"}[st])
+             if st in ("failed", "partial") else "")
+    fail = '<div class="fail"><p>%s</p></div>' % e(p["failure"]) if p.get("failure") else ""
     warn = ""
     if p.get("warnings"):
         warn = '<div class="warn">%s</div>' % "".join("<p>%s</p>" % e(w) for w in p["warnings"])
-    return '<section id="%s"><h2>%s%s</h2><p class="sub">%s</p>%s<div class="stats">%s</div>%s%s</section>' % (
-        e(p["id"]), e(p["title"]), scanned, e(p["subtitle"]), warn, totals, _systems(p), _cves(p))
+    if p.get("no_results"):
+        return '<section id="%s"><h2>%s%s%s</h2>%s%s<p class="muted">No results: nothing from this platform is included in the report.</p></section>' % (
+            e(p["id"]), e(p["title"]), badge, scanned, fail, warn)
+    return '<section id="%s"><h2>%s%s%s</h2><p class="sub">%s</p>%s%s<div class="stats">%s</div>%s%s</section>' % (
+        e(p["id"]), e(p["title"]), badge, scanned, e(p["subtitle"]), fail, warn, totals, _systems(p), _cves(p))
 
 
 def platform_nav(model):
-    return "".join('<a href="#%s">%s <span>%d</span></a>' % (e(p["id"]), e(p["title"]), len(p["cves"])) for p in model["platforms"])
+    return "".join('<a href="#%s">%s <span>%s</span></a>' % (
+        e(p["id"]), e(p["title"]), "failed" if p.get("no_results") else "%d%s" % (len(p["cves"]), " !" if p.get("failure") else ""))
+        for p in model["platforms"])
 
 
 def report_body(model):
@@ -135,6 +144,10 @@ main{max-width:1500px;margin:0 auto;padding:20px 16px}
 .meta h1{font-size:20px;margin:0 0 6px}.meta p{margin:4px 0;color:var(--muted)}.meta strong{color:var(--ink)}
 .warn{background:var(--warn-bg);border:1px solid var(--warn-line);border-radius:8px;padding:10px 16px;margin-bottom:20px}
 .warn p{margin:3px 0}
+.fail{background:var(--crit-bg);border:1px solid var(--crit);color:var(--crit);border-radius:8px;padding:10px 16px;margin-bottom:16px;font-weight:600}
+.fail p{margin:3px 0}
+h2 .badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600;white-space:nowrap;vertical-align:middle}
+h2 .b-failed{color:var(--crit);background:var(--crit-bg)}h2 .b-partial{color:var(--imp);background:var(--imp-bg)}
 h2{font-size:20px;margin:0}.sub{color:var(--muted);margin:2px 0 14px}
 h2 .scanned{font-size:13px;font-weight:400;color:var(--muted);margin-left:10px}
 h3{font-size:13px;margin:20px 0 8px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
