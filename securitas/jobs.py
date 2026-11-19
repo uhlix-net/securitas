@@ -239,6 +239,10 @@ class Jobs:
         with self._cache_lock:
             self._cache.clear()
 
+    def clear_cache(self):
+        with self._cache_lock:
+            self._cache.clear()
+
     def _save_log(self, sid, lines):
         try:
             with self.db.Session() as s, s.begin():

@@ -13,7 +13,7 @@
       <td>{{ {"local": "Local", "ldap": "LDAP", "oidc": "SSO"}[u.source] }}</td>
       <td>{% if u.disabled %}<span class="badge b-off">Disabled</span>{% elif u.role %}<span class="badge b-role">{{ ROLE_LABEL[u.role] }}</span>{% else %}<span class="badge b-off">No role</span>{% endif %}</td>
       <td>{% if u.id != user.id %}
-        <form method="post" action="/admin/users/{{ u.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="role">
+        <form method="post" action="/settings/users/{{ u.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="role">
         <div class="row"><select name="role" aria-label="Role for {{ u.username }}">
           {% if u.source != "local" %}<option value=""{% if not u.role_override %} selected{% endif %}>From groups</option>{% endif %}
           {% for r in ROLES %}<option value="{{ r }}"{% if (u.source == "local" and u.role == r) or (u.source != "local" and u.role_override == r) %} selected{% endif %}>{{ ROLE_LABEL[r] }}{% if u.source != "local" %} (fixed){% endif %}</option>{% endfor %}
@@ -22,12 +22,12 @@
       <td class="small">{% for g in u.groups or [] %}{{ g.split(",")[0].replace("CN=", "").replace("cn=", "") }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
       <td class="date">{{ fmt(u.last_login_at) }}</td>
       <td>{% if u.id != user.id and u.username != bootstrap %}
-        <form method="post" action="/admin/users/{{ u.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="{{ 'enable' if u.disabled else 'disable' }}"><button class="btn small">{{ "Enable" if u.disabled else "Disable" }}</button></form>
+        <form method="post" action="/settings/users/{{ u.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="{{ 'enable' if u.disabled else 'disable' }}"><button class="btn small">{{ "Enable" if u.disabled else "Disable" }}</button></form>
         {% if u.source == "local" %}
-        <form method="post" action="/admin/users/{{ u.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="password">
+        <form method="post" action="/settings/users/{{ u.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="password">
           <div class="row"><input type="password" name="password" placeholder="New password" autocomplete="new-password" size="14" aria-label="New password for {{ u.username }}" required><button class="btn small">Reset</button></div></form>
         {% endif %}
-        <form method="post" action="/admin/users/{{ u.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="delete">
+        <form method="post" action="/settings/users/{{ u.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="delete">
           <div class="row"><label class="inline"><input type="checkbox" name="confirm" required> Confirm</label><button class="btn small danger">Delete</button></div></form>
       {% elif u.username == bootstrap %}<span class="muted small">Managed by the deployment</span>{% endif %}</td>
     </tr>
@@ -36,7 +36,7 @@
 </section>
 <section>
   <h2>Add a local user</h2>
-  <form method="post" action="/admin/users"><input type="hidden" name="csrf" value="{{ sess.csrf }}">
+  <form method="post" action="/settings/users"><input type="hidden" name="csrf" value="{{ sess.csrf }}">
     <div class="row">
       <div><label for="nu">User name</label><input id="nu" type="text" name="username" autocomplete="off" required></div>
       <div><label for="nd">Name</label><input id="nd" type="text" name="display_name"></div>

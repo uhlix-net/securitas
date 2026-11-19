@@ -271,6 +271,17 @@ pre.log{background:var(--head);border:1px solid var(--line);border-radius:6px;pa
 .login input[type=text],.login input[type=password]{width:100%}.login .btn{width:100%;text-align:center;margin-top:14px;padding:9px}
 .or{display:flex;align-items:center;gap:10px;color:var(--muted);margin:18px 0 4px;font-size:12.5px}.or:before,.or:after{content:"";flex:1;border-top:1px solid var(--line)}
 .pager{display:flex;gap:8px;margin-top:12px}
+.subnav{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:16px;border-bottom:1px solid var(--line);padding-bottom:8px}
+.subnav a{text-decoration:none;color:var(--ink);padding:5px 10px;border-radius:6px;font-weight:600;font-size:13.5px}
+.subnav a:hover{background:var(--head)}.subnav a.on{background:var(--accent);color:var(--accent-ink)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
+.card{display:block;border:1px solid var(--line);border-radius:8px;padding:14px 16px;text-decoration:none;color:var(--ink);background:var(--card)}
+.card:hover{border-color:var(--accent)}.card h3{margin:0 0 6px;font-size:15px;text-transform:none;letter-spacing:0;color:var(--ink)}.card p{margin:0;color:var(--muted);font-size:13px}
+.src{font-size:11.5px;font-weight:600;padding:1px 7px;border-radius:9px;background:var(--head);color:var(--muted);white-space:nowrap}.src.ui{background:var(--low-bg);color:var(--low)}
+.form-grid{display:grid;grid-template-columns:minmax(180px,260px) 1fr;gap:8px 16px;align-items:center}.form-grid input[type=text],.form-grid input[type=password],.form-grid select,.form-grid textarea{width:100%}
+.form-grid .lbl{font-weight:600}.form-grid .meta2{grid-column:2;margin-top:-4px}@media (max-width:700px){.form-grid{grid-template-columns:1fr}.form-grid .meta2{grid-column:1}}
+textarea{font:inherit;font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--ink);background:var(--input);border:1px solid var(--line);border-radius:6px;padding:6px 9px}
+details.script pre{background:var(--head);border:1px solid var(--line);border-radius:6px;padding:10px 12px;font-size:12px;overflow-x:auto;white-space:pre-wrap}
 table.summary td a strong{font-size:15px}
 @media print{.top,.subbar,.noprint{display:none}}
 """

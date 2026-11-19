@@ -8,7 +8,7 @@
     <tbody>
     {% for p in PLATFORMS %}{% set r = rows.get(p) %}
     <tr>
-      <td><strong>{{ PLATFORM_LABEL[p] }}</strong><form id="s-{{ p }}" method="post" action="/schedules/{{ p }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"></form></td>
+      <td><strong>{{ PLATFORM_LABEL[p] }}</strong><form id="s-{{ p }}" method="post" action="/settings/schedules/{{ p }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"></form></td>
       <td><input form="s-{{ p }}" type="text" class="mono" name="cron" value="{{ r.cron if r else '0 5 * * *' }}" size="16" aria-label="{{ PLATFORM_LABEL[p] }} schedule"></td>
       <td><label class="inline"><input form="s-{{ p }}" type="checkbox" name="enabled"{% if r and r.enabled %} checked{% endif %}> On</label></td>
       <td class="date">{{ fmt(r.next_run) if r and r.enabled else "" }}</td>

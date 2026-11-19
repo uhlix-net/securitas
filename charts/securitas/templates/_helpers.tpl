@@ -35,6 +35,10 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 {{- end }}
 
+{{- define "securitas.keySecret" -}}
+{{- .Values.settings.secretKey.existingSecret | default (printf "%s-key" (include "securitas.fullname" .)) }}
+{{- end }}
+
 {{- define "securitas.adminSecret" -}}
 {{- .Values.auth.admin.existingSecret | default (printf "%s-admin" (include "securitas.fullname" .)) }}
 {{- end }}

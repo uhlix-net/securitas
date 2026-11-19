@@ -1,0 +1,23 @@
+{# One settings field. d = Settings.describe(group)[name]. Secrets are never shown: blank keeps the current one. #}
+{% macro field(name, d, can_store=True) %}
+  <label class="lbl" for="f-{{ name }}">{{ d.label }}</label>
+  <div>
+  {% if d.kind == "bool" %}
+    <label class="inline"><input id="f-{{ name }}" type="checkbox" name="{{ name }}"{% if d.value %} checked{% endif %}> On</label>
+  {% elif d.kind.startswith("choice:") %}
+    <select id="f-{{ name }}" name="{{ name }}">{% for c in d.kind[7:].split("|") %}<option value="{{ c }}"{% if d.value == c %} selected{% endif %}>{{ c }}</option>{% endfor %}</select>
+  {% elif d.kind == "keytext" %}
+    <textarea id="f-{{ name }}" name="{{ name }}" rows="4" autocomplete="off" spellcheck="false" placeholder="{{ 'A key is set. Paste a new private key to replace it.' if d.state == 'set' else 'Paste the private key (OpenSSH or PEM, no passphrase).' }}"{% if not can_store %} disabled{% endif %}></textarea>
+  {% elif d.secret %}
+    <input id="f-{{ name }}" type="password" name="{{ name }}" autocomplete="new-password" placeholder="{{ '•••••• set. Type a new value to replace it.' if d.state == 'set' else 'Not set' }}"{% if not can_store %} disabled{% endif %}>
+  {% else %}
+    <input id="f-{{ name }}" type="text" name="{{ name }}" value="{{ d.value if d.value is not none else '' }}">
+  {% endif %}
+  </div>
+  <div class="meta2 hint">
+    {% if d.source == "ui" %}<span class="src ui">Set here</span>{% if d.secret and d.changed %} {{ d.changed }} by {{ d.by }}{% endif %}
+      <label class="inline"><input type="checkbox" name="revert_{{ name }}"> Use the deployment's value{% if not d.secret and d.deployment not in (none, "") %} (<span class="mono">{{ d.deployment }}</span>){% endif %}</label>
+    {% else %}<span class="src">From the deployment</span>{% endif %}
+    {% if d.secret and d.state == "unreadable" %}<span class="badge b-failed">Cannot be decrypted; enter it again</span>{% endif %}
+  </div>
+{% endmacro %}

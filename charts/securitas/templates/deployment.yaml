@@ -67,6 +67,9 @@ spec:
             {{- end }}
             - name: SECURITAS_DB_PASSWORD
               valueFrom: {secretKeyRef: {name: {{ include "securitas.dbSecret" . }}, key: {{ ternary "password" .Values.database.external.passwordSecret.key .Values.database.bundled.enabled }}}}
+            # key for secrets saved in the web UI
+            - name: SECURITAS_SECRET_KEY
+              valueFrom: {secretKeyRef: {name: {{ include "securitas.keySecret" . }}, key: {{ .Values.settings.secretKey.key }}}}
             # sign-in
             - {name: SECURITAS_LOCAL_LOGIN, value: {{ .Values.auth.localLogin | quote }}}
             - {name: SECURITAS_ADMIN_USERNAME, value: {{ .Values.auth.admin.username | quote }}}
