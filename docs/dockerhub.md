@@ -5,8 +5,9 @@ with the [CISA Known Exploited Vulnerabilities](https://www.cisa.gov/known-explo
 (KEV) catalog and [EPSS](https://www.first.org/epss/) scores, keeps every scan in its history, and serves the
 results as web pages behind a sign-in, with an **Export to PDF** button.
 
-> **0.2.0** adds Linux and Windows scans, schedules, history, a summary page, sign-in and roles. 0.1.0 was a
-> single-page Kubernetes-only report. See the [changelog](https://github.com/uhlix-net/securitas/blob/main/CHANGELOG.md)
+> **0.3.0** adds a Settings menu: LDAP, single sign-on, scan credentials and vulnerability sources are
+> configured in the browser (secrets encrypted, write-only), and a Sources page explains every data source and
+> shows the exact scripts the scanners run. See the [changelog](https://github.com/uhlix-net/securitas/blob/main/CHANGELOG.md)
 > and the upgrade notes there.
 
 ## Features
@@ -25,6 +26,12 @@ results as web pages behind a sign-in, with an **Export to PDF** button.
   - A CVE is a *priority* when it is in the KEV catalog or its EPSS score is at or above a threshold (default 0.10).
   - Known-exploited CVEs come first.
   - The current report is re-ranked when the KEV catalog or EPSS scores change, without a rescan.
+- **Settings in the browser:** LDAP, single sign-on, the SSH key and WinRM account for scans (with a connection
+  test), targets, schedules, users and sources. Secrets are encrypted in the database and never shown again;
+  anything not set there comes from the Helm values.
+- **Transparent sources:** a Sources page describes CISA KEV, EPSS, Trivy, dnf advisories and Microsoft's release
+  data, when each was last fetched, and what turning it off changes; KEV, EPSS and each platform can be turned
+  off. It also shows the exact script each scanner runs on a host.
 - **Sign-in**
   - Local accounts.
   - LDAP / Active Directory, including nested groups.
