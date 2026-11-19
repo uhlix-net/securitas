@@ -413,6 +413,24 @@ class Web(unittest.TestCase):
         self.assertIn('<section id="kubernetes">', self.c.get("/report").text)
         self.assertNotIn("CVE-2099-0002", page)          # the summary lists counts, not CVEs
 
+    def test_scan_history_platform_filter(self):
+        login(self.c, "admin", ADMIN_PW)
+        self.jobs.scanners["windows"] = self.jobs._scan_windows      # no targets: fails
+        k = self._scan(["kubernetes"])
+        w = self._scan(["windows"])
+        page = self.c.get("/scans").text
+        self.assertIn('href="/scans/%d"' % k, page)
+        self.assertIn('href="/scans/%d"' % w, page)
+        page = self.c.get("/scans?platform=windows").text
+        self.assertNotIn('href="/scans/%d' % k, page)
+        self.assertIn('href="/scans/%d#windows"' % w, page)
+        self.assertIn('<option value="windows" selected>', page)
+        self.assertIn("Failed", page)
+        page = self.c.get("/scans?platform=linux").text
+        self.assertIn("No scans included Linux", page)
+        page = self.c.get("/scans?platform=bogus").text          # unknown value: no filter
+        self.assertIn('href="/scans/%d"' % k, page)
+
     def test_failed_platform_shown_in_report(self):
         # Windows has no targets, so its scan fails and it has never had a good result
         login(self.c, "admin", ADMIN_PW)

@@ -19,25 +19,35 @@
 <section>
   <h2>History</h2>
   <p class="sub">Every scheduled and manual scan. Open one to see its report as it was at the time.{% if busy %} This page refreshes while a scan is running.{% endif %}</p>
-  {% if not scans %}<p class="muted">No scans yet.</p>{% else %}
+  <form method="get" action="/scans" class="row filter" style="align-items:center;margin-bottom:12px">
+    <label class="inline" for="fp">Platform</label>
+    <select id="fp" name="platform">
+      <option value=""{% if not plat %} selected{% endif %}>All platforms</option>
+      {% for p in PLATFORMS %}<option value="{{ p }}"{% if plat == p %} selected{% endif %}>{{ PLATFORM_LABEL[p] }}</option>{% endfor %}
+    </select>
+    <button class="btn small">Filter</button>
+    {% if plat %}<a class="btn small" href="/scans">Clear</a><span class="muted">Showing scans that included {{ PLATFORM_LABEL[plat] }}; status and counts are for {{ PLATFORM_LABEL[plat] }} only.</span>{% endif %}
+  </form>
+  {% if not scans %}<p class="muted">{% if plat %}No scans included {{ PLATFORM_LABEL[plat] }}.{% else %}No scans yet.{% endif %}</p>{% else %}
   <div class="scroll"><table>
     <thead><tr><th>Scan</th><th>Started</th><th>Platforms</th><th>Trigger</th><th>Status</th><th>Priority CVEs</th><th>Known exploited</th><th>Duration</th></tr></thead>
     <tbody>
     {% for s in scans %}
     {% set c = counts.get(s.id, {}) %}
     <tr>
-      <td class="mono"><a href="/scans/{{ s.id }}">#{{ s.id }}</a></td>
+      <td class="mono"><a href="/scans/{{ s.id }}{% if plat %}#{{ plat }}{% endif %}">#{{ s.id }}</a></td>
       <td class="date">{{ fmt(s.started_at or s.created_at) }}</td>
       <td>{% for p in s.platforms %}{{ PLATFORM_LABEL[p] }}{% if c.get(p) and c[p].status != "done" %} <span class="badge b-{{ c[p].status }}">{{ STATUS_LABEL[c[p].status] }}</span>{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</td>
       <td>{{ "Scheduled" if s.trigger == "schedule" else "Manual" }}{% if s.requested_by %} <span class="muted">by {{ s.requested_by }}</span>{% endif %}</td>
-      <td><span class="badge b-{{ s.status }}">{{ STATUS_LABEL[s.status] }}</span></td>
+      {% set st = pstatus.get(s.id, s.status) if plat else s.status %}
+      <td><span class="badge b-{{ st }}">{{ STATUS_LABEL[st] }}</span></td>
       <td class="n">{% if c %}{{ c.values()|sum(attribute="cves") }}{% endif %}</td>
       <td class="n{% if c and c.values()|sum(attribute='kev') %} hot{% endif %}">{% if c %}{{ c.values()|sum(attribute="kev") }}{% endif %}</td>
       <td class="n">{% if s.finished_at and s.started_at %}{{ ((s.finished_at - s.started_at).total_seconds())|round|int }} s{% endif %}</td>
     </tr>
     {% endfor %}
     </tbody></table></div>
-  {% if pages > 1 %}<div class="pager">{% if page > 1 %}<a class="btn small" href="?page={{ page - 1 }}">Newer</a>{% endif %}<span class="muted">Page {{ page }} of {{ pages }}</span>{% if page < pages %}<a class="btn small" href="?page={{ page + 1 }}">Older</a>{% endif %}</div>{% endif %}
+  {% if pages > 1 %}<div class="pager">{% if page > 1 %}<a class="btn small" href="?page={{ page - 1 }}{% if plat %}&amp;platform={{ plat }}{% endif %}">Newer</a>{% endif %}<span class="muted">Page {{ page }} of {{ pages }}</span>{% if page < pages %}<a class="btn small" href="?page={{ page + 1 }}{% if plat %}&amp;platform={{ plat }}{% endif %}">Older</a>{% endif %}</div>{% endif %}
   {% endif %}
 </section>
 {% endblock %}

@@ -15,7 +15,7 @@ import urllib.parse
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
-from sqlalchemy import delete, func, select
+from sqlalchemy import String, cast, delete, func, select
 
 from . import __version__, auth, render, report
 from .config import PLATFORMS
@@ -457,21 +457,30 @@ def create_app(cfg, db, jobs):
         return scan
 
     @api.get("/scans")
-    def scans(request: Request, page: int = 1, user=Depends(V)):
+    def scans(request: Request, page: int = 1, platform: str = "", user=Depends(V)):
         page = max(1, page)
+        plat = platform if platform in PLATFORMS else ""
+        # platforms is a JSON list; '"linux"' only matches the whole name, and plat is one of PLATFORMS
+        where = [cast(Scan.platforms, String).like('%%"%s"%%' % plat)] if plat else []
         with db.Session() as s:
-            total = s.scalar(select(func.count(Scan.id)))
-            rows = s.scalars(select(Scan).order_by(Scan.id.desc()).offset((page - 1) * 50).limit(50)).all()
+            total = s.scalar(select(func.count(Scan.id)).where(*where))
+            rows = s.scalars(select(Scan).where(*where).order_by(Scan.id.desc()).offset((page - 1) * 50).limit(50)).all()
             counts = {}
             res = s.execute(select(PlatformResult.scan_id, PlatformResult.platform, PlatformResult.status, PlatformResult.report)
                             .where(PlatformResult.scan_id.in_([r.id for r in rows]))).all() if rows else []
+            pstatus = {}
             for sid, p, st, rep in res:
+                if p == plat:
+                    pstatus[sid] = st
+                if plat and p != plat:
+                    continue          # filtered: the counts are this platform's only
                 counts.setdefault(sid, {})[p] = {"status": st, "cves": len((rep or {}).get("cves", [])),
                                                  "kev": sum(1 for c in (rep or {}).get("cves", []) if c.get("kev"))}
             ntargets = {p: s.scalar(select(func.count(Target.id)).where(Target.platform == p, Target.enabled.is_(True)))
                         for p in ("linux", "windows")}
         return a.page(request, "scans.html", {"user": user, "sess": request.state.sess, "title": "Scans", "scans": rows,
                                               "counts": counts, "page": page, "pages": max(1, (total + 49) // 50),
+                                              "plat": plat, "pstatus": pstatus,
                                               "ntargets": ntargets,
                                               "busy": any(r.status in ("queued", "running") for r in rows)},
                       refresh=15 if any(r.status in ("queued", "running") for r in rows) else None)
