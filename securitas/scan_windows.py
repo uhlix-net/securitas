@@ -2,7 +2,9 @@
 Microsoft's monthly security release data (MSRC CVRF).
 
 Read-only: one PowerShell script reads the OS caption, build and update revision (UBR), installation type,
-newest hotfix and installed programs. The account needs WinRM access only (Remote Management Users), not admin.
+newest hotfix and installed programs. The account needs no admin rights: Remote Management Users membership plus
+WMI Enable Account + Remote Enable on root\cimv2. For non-admins, Win32_QuickFixEngineering returns nothing, so
+the newest hotfix is blank; the CVE comparison uses the build and UBR only.
 Third-party software is listed in the raw result but not checked against vendor advisories.
 """
 import concurrent.futures

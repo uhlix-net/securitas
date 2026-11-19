@@ -122,7 +122,13 @@ upstream, set `scanning.linux.repos` to compare against upstream instead, for ex
 ### Windows scans
 
 Enable WinRM over HTTPS (port 5986) and add the scan account to *Remote Management Users*. It
-needs no admin rights. Set `scanning.windows.user` (`DOMAIN\user` or `user@domain`) and
+needs no admin rights, but a non-admin account also needs WMI access on each host: give it
+**Enable Account** and **Remote Enable** on the `root\cimv2` namespace (WMI Control > Properties > Security,
+or `__SystemSecurity.SetSecurityDescriptor` with access mask `0x21`). Without it the scan fails with
+"Access denied". The *Newest hotfix* column stays empty for non-admin accounts, because Windows only
+lists installed updates to administrators; the CVE results come from the build and are not affected.
+
+Set `scanning.windows.user` (`DOMAIN\user` or `user@domain`) and
 `scanning.windows.passwordSecret.name`, and add hosts on the Targets page. Securitas reads the OS
 build and update revision. It then lists every CVE whose fixed build, in Microsoft's monthly
 release data, is newer than the installed one. Third-party software is not checked.

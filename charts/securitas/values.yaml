@@ -121,7 +121,8 @@ scanning:
     #  - up-baseos=https://dl.rockylinux.org/pub/rocky/{major}/BaseOS/{arch}/os/
     #  - up-appstream=https://dl.rockylinux.org/pub/rocky/{major}/AppStream/{arch}/os/
   windows:
-    # Account for WinRM; it needs Remote Management Users membership, not admin. DOMAIN\user or user@domain.
+    # Account for WinRM; not admin: Remote Management Users membership plus WMI Enable Account + Remote Enable
+    # on root\cimv2 on each host. DOMAIN\user or user@domain.
     user: ""
     passwordSecret:
       name: ""
