@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0 (unreleased)
+## 0.4.0 (2026-11-19)
 
 The report shows every CVE, not only priority ones, and the Summary page shows how the counts change.
 
