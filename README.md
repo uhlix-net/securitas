@@ -9,7 +9,7 @@ serves the results as web pages with an **Export to PDF** button.
   - **Kubernetes:** reads the vulnerability reports that [Trivy Operator](https://aquasecurity.github.io/trivy-operator/) keeps in the cluster.
   - **Linux (RHEL family):** connects over SSH and lists pending security advisories with `dnf updateinfo`.
   - **Windows:** connects over WinRM, reads the OS build and compares it with Microsoft's monthly security release data.
-- **Read-only scans.** Nothing is installed or changed on the scanned systems, and the scan
+- **Scans change nothing.** Nothing is installed or changed on the scanned systems, and the scan
   accounts need no root or admin rights.
 - **Ranked, not just counted.** A CVE is a *priority* when it is in the KEV catalog (seen exploited
   in the wild) or its EPSS score is at or above a threshold (default 0.10). Known-exploited CVEs are
@@ -21,7 +21,8 @@ serves the results as web pages with an **Export to PDF** button.
   successful, the summary, the report and the PDF say so and show the error. Older results stay
   visible but are marked as older; a platform that has never been scanned successfully still gets a section saying so.
 - **Scheduled and on-demand scans, with history.** Each platform has its own cron schedule.
-  Operators can start a scan at any time. Every past scan can be opened and exported as it was at the time.
+  Operators can start a scan at any time. Every past scan can be opened and exported as it was at the time,
+  and the history can be filtered by platform.
 - **Sign-in and roles.**
   - Sign-in: local accounts, LDAP (Active Directory) and OpenID Connect single sign-on.
   - Three roles: Viewer, Operator and Admin. LDAP and SSO users get their role from their groups.
@@ -29,6 +30,9 @@ serves the results as web pages with an **Export to PDF** button.
 - **Light and dark mode.** Each user picks System, Light or Dark at the top of every page.
 - **No scripts in the pages.** The Content Security Policy blocks all scripts and every form
   carries a CSRF token. The container runs as non-root with a read-only filesystem.
+
+What's new in each version: [CHANGELOG.md](CHANGELOG.md). Upgrading from 0.1.0? See the
+[upgrade notes](CHANGELOG.md#upgrading-from-010).
 
 ## Roles
 

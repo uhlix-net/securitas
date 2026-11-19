@@ -5,8 +5,9 @@ with the [CISA Known Exploited Vulnerabilities](https://www.cisa.gov/known-explo
 (KEV) catalog and [EPSS](https://www.first.org/epss/) scores, keeps every scan in its history, and serves the
 results as web pages behind a sign-in, with an **Export to PDF** button.
 
-> **Versions:** the features below are in **0.2.0**, currently available as the pre-release tag `0.2.0-rc.2`.
-> `latest` is still **0.1.0**, a single-page Kubernetes-only report with no sign-in.
+> **0.2.0** adds Linux and Windows scans, schedules, history, a summary page, sign-in and roles. 0.1.0 was a
+> single-page Kubernetes-only report. See the [changelog](https://github.com/uhlix-net/securitas/blob/main/CHANGELOG.md)
+> and the upgrade notes there.
 
 ## Features
 
@@ -17,7 +18,7 @@ results as web pages behind a sign-in, with an **Export to PDF** button.
 - **Run scans whenever you want**
   - Operators and admins can start a scan of any platform from the Scans page.
   - Each platform also has its own cron schedule, which admins and operators can change in the browser.
-- **Scan history:** every scheduled and manual scan is kept, with its log, and can be opened and exported as it was at the time.
+- **Scan history:** every scheduled and manual scan is kept, with its log, and can be opened and exported as it was at the time. Filter it by platform to see that platform's status and counts.
 - **Summary page:** after sign-in, one row per platform shows its scan status, when it was last scanned, and its counts (systems, priority CVEs, known exploited, critical, high). Each platform name links to its section of the full report.
 - **Failed scans are flagged, not hidden:** if a platform's latest scan failed or was only partly successful, the summary, the report and the PDF say so and show the error.
 - **Ranked, not just counted**
