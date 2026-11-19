@@ -194,6 +194,10 @@ CSS_APP = """
 .subbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
 .export{margin-left:auto;background:var(--accent);color:var(--accent-ink);text-decoration:none;font-weight:600;padding:8px 16px;border-radius:6px;white-space:nowrap}
 section{scroll-margin-top:64px}
+main{max-width:none;width:85%}@media (max-width:1000px){main{width:auto}}
+table.targets{table-layout:fixed}table.targets td{vertical-align:middle}table.targets input[type=text]{width:100%}
+table.targets col.c-host{width:24%}table.targets col.c-role{width:26%}table.targets col.c-on{width:8%}
+table.targets col.c-key{width:16%}table.targets col.c-save{width:12%}table.targets col.c-del{width:14%}
 .scroll{overflow-x:auto}.mono{overflow-wrap:anywhere}.stats{gap:10px}.stat{margin:0}
 form{margin:0}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
