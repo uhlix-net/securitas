@@ -1,6 +1,9 @@
 """Render the report model to HTML (inside the web app, or standalone for the PDF) and the PDF with WeasyPrint."""
 import html
 import re
+import urllib.parse
+
+from .report import LEVEL_KEYS, LEVELS, is_priority, sev_level
 
 e = lambda s: html.escape(str(s), quote=True)
 
@@ -56,25 +59,118 @@ def _systems(p):
         e(p["systems_caption"]), head, rows)
 
 
-def _cves(p):
-    nkev = sum(1 for r in p["cves"] if r["kev"])
-    title = '<h3>Priority CVEs <span class="count">%d listed, %d known exploited</span></h3>' % (len(p["cves"]), nkev)
-    if not p["cves"]:
-        return title + '<p class="muted">No CVE on this platform is in the CISA KEV catalog or above the EPSS threshold.</p>'
+# ---------------------------------------------------------------- report view: severity filter and paging
+
+PAGE_SIZE = 200
+PDF_MAX_ROWS = 500      # per platform: WeasyPrint needs ~250 MB per 1,000 rows and the chart's memory limit is 1 GiB
+
+
+def parse_view(params):
+    """The report filter from the query string. `params` is a mapping with getlist (Starlette QueryParams) or a dict.
+    sev=critical&sev=high (no sev, or none valid: every level); priority=1: priority CVEs only; p_<platform>=n: page."""
+    get = params.getlist if hasattr(params, "getlist") else (lambda k: params.get(k, []) if isinstance(params.get(k), list)
+                                                             else [params[k]] if k in params else [])
+    levels = [k for k in LEVEL_KEYS if k in set(get("sev"))] or list(LEVEL_KEYS)
+    pages = {}
+    for k in (params.keys() if hasattr(params, "keys") else []):
+        if k.startswith("p_"):
+            try:
+                pages[k[2:]] = max(1, int(get(k)[0]))
+            except (ValueError, IndexError):
+                pass
+    return {"levels": levels, "priority_only": (get("priority") or [""])[0] == "1", "pages": pages}
+
+
+def default_view():
+    return {"levels": list(LEVEL_KEYS), "priority_only": False, "pages": {}}
+
+
+def view_query(view, pages=None):
+    """Query string that reproduces the filter (and the given pages), '' for the default view."""
+    q = []
+    if set(view["levels"]) != set(LEVEL_KEYS):
+        q += [("sev", k) for k in view["levels"]]
+    if view["priority_only"]:
+        q.append(("priority", "1"))
+    q += [("p_" + k, str(v)) for k, v in sorted((pages or {}).items()) if v > 1]
+    return urllib.parse.urlencode(q)
+
+
+def view_label(view):
+    names = dict(LEVELS)
+    lv = "all severity levels" if set(view["levels"]) == set(LEVEL_KEYS) else ", ".join(names[k] for k in view["levels"])
+    return lv + (", priority CVEs only" if view["priority_only"] else "")
+
+
+def filtered(p, view):
+    lv = set(view["levels"])
+    return [r for r in p["cves"] if (r.get("level") or sev_level(r.get("severity", ""))) in lv
+            and (not view["priority_only"] or is_priority(r))]
+
+
+def filter_form(view, action):
+    """Severity checkboxes and the priority switch, submitted with GET so the page needs no script."""
+    boxes = "".join('<label class="inline"><input type="checkbox" name="sev" value="%s"%s> <span class="sev sev-%s">%s</span></label>' % (
+        k, " checked" if k in view["levels"] else "", k if k != "unknown" else "unknown", e(name)) for k, name in LEVELS)
+    pri = '<label class="inline"><input type="checkbox" name="priority" value="1"%s> Priority CVEs only (CISA KEV or EPSS threshold)</label>' % (
+        " checked" if view["priority_only"] else "")
+    return ('<form class="filters noprint" method="get" action="%s"><fieldset><legend>Show severity</legend>%s</fieldset>'
+            '<fieldset><legend>Ranking</legend>%s</fieldset><div class="fbtn"><button class="btn primary" type="submit">Apply</button> '
+            '<a class="btn" href="%s">Reset</a></div></form>' % (e(action), boxes, pri, e(action)))
+
+
+def _pager(p, view, page, pages):
+    if pages <= 1:
+        return ""
+    def link(n, text):
+        q = view_query(view, {**view["pages"], p["id"]: n})
+        return '<a class="btn small" href="?%s#%s">%s</a>' % (e(q), e(p["id"]), text)
+    out = [link(page - 1, "&larr; Previous") if page > 1 else ""]
+    out.append('<span class="muted">Page %d of %d</span>' % (page, pages))
+    out.append(link(page + 1, "Next &rarr;") if page < pages else "")
+    return '<div class="pager noprint">%s</div>' % "".join(out)
+
+
+def _cves(p, view=None, paged=False):
+    view = view or default_view()
+    rows_all = filtered(p, view)
+    npri = sum(1 for r in p["cves"] if is_priority(r))
+    nkev = sum(1 for r in rows_all if r["kev"])
+    shown = "%s shown of %s" % (format(len(rows_all), ","), format(len(p["cves"]), ","))
+    title = '<h3>CVEs <span class="count">%s &middot; %s priority &middot; %s known exploited</span></h3>' % (
+        shown, format(npri, ","), format(nkev, ","))
+    if not rows_all:
+        if not p["cves"]:
+            return title + '<p class="muted">No CVEs were found on this platform.</p>'
+        return title + '<p class="muted">No CVE on this platform matches the filter (%s).</p>' % e(view_label(view))
+    page, pages = 1, 1
+    rows_page = rows_all
+    cut = ""
+    if not paged and len(rows_all) > PDF_MAX_ROWS:
+        rows_page = rows_all[:PDF_MAX_ROWS]
+        cut = ('<p class="cut">The first %s of %s matching CVEs are listed, in ranking order. Narrow the severity filter '
+               'for a complete list.</p>' % (format(PDF_MAX_ROWS, ","), format(len(rows_all), ",")))
+    if paged:
+        pages = (len(rows_all) + PAGE_SIZE - 1) // PAGE_SIZE
+        page = min(view["pages"].get(p["id"], 1), pages)
+        rows_page = rows_all[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
     head = "".join("<th>%s</th>" % e(h) for h in
                    ["CVE", "Description", "Severity", "Known exploited", "EPSS", p["affected_label"], "Component", "Fix", "Status"])
     rows = []
-    for r in p["cves"]:
-        rows.append('<tr%s><td class="mono nowrap">%s</td><td>%s</td><td>%s</td><td class="nowrap">%s</td><td class="n">%s</td>'
+    for r in rows_page:
+        pri = ' <span class="pri" title="Priority: in CISA KEV or at or above the EPSS threshold">priority</span>' if (
+            is_priority(r) and not r["kev"]) else ""
+        rows.append('<tr%s><td class="mono nowrap">%s%s</td><td>%s</td><td>%s</td><td class="nowrap">%s</td><td class="n">%s</td>'
                     '<td class="mono small aff">%s</td><td class="small">%s</td><td class="small">%s</td><td class="small">%s</td></tr>' % (
-                        ' class="iskev"' if r["kev"] else "", _link(r["cve"]),
+                        ' class="iskev"' if r["kev"] else "", _link(r["cve"]), pri,
                         e(r["title"]) or '<span class="muted">No description</span>', _sev(r["severity"]), _kev(r),
                         _epss(r["epss"]), "<br>".join(e(s) for s in r["systems"]), e(r["component"]), e(r["fix"]), e(r["status"])))
-    return title + '<div class="scroll"><table class="cves"><thead><tr>%s</tr></thead><tbody>%s</tbody></table></div>' % (
-        head, "\n".join(rows))
+    pager = _pager(p, view, page, pages)
+    return title + cut + pager + '<div class="scroll"><table class="cves"><thead><tr>%s</tr></thead><tbody>%s</tbody></table></div>' % (
+        head, "\n".join(rows)) + pager
 
 
-def _section(p):
+def _section(p, view=None, paged=False):
     totals = "".join('<div class="stat"><div class="v">%s</div><div class="k">%s</div></div>' % (
         format(v, ",") if isinstance(v, int) else e(v), e(k)) for k, v in p["totals"].items())
     scanned = (' <span class="scanned">Scanned %s</span>' % e(p["scanned"])) if p.get("scanned") else ""
@@ -88,16 +184,17 @@ def _section(p):
         return '<section id="%s"><h2>%s%s%s</h2>%s%s<p class="muted">No results: nothing from this platform is included in the report.</p></section>' % (
             e(p["id"]), e(p["title"]), badge, scanned, fail, warn)
     return '<section id="%s"><h2>%s%s%s</h2><p class="sub">%s</p>%s%s<div class="stats">%s</div>%s%s</section>' % (
-        e(p["id"]), e(p["title"]), badge, scanned, e(p["subtitle"]), fail, warn, totals, _systems(p), _cves(p))
+        e(p["id"]), e(p["title"]), badge, scanned, e(p["subtitle"]), fail, warn, totals, _systems(p), _cves(p, view, paged))
 
 
 STATUS_BADGE = {"done": "OK", "failed": "Scan failed", "partial": "Partial scan", "off": "Turned off"}
 
 
-def platform_nav(model):
+def platform_nav(model, view=None):
+    view = view or default_view()
     return "".join('<a href="#%s">%s <span>%s</span></a>' % (
         e(p["id"]), e(p["title"]), ("off" if p.get("turned_off") else "failed") if p.get("no_results")
-        else "%d%s" % (len(p["cves"]), " !" if p.get("failure") else "")) for p in model["platforms"])
+        else "%s%s" % (format(len(filtered(p, view)), ","), " !" if p.get("failure") else "")) for p in model["platforms"])
 
 
 def summary_table(model):
@@ -130,8 +227,10 @@ def summary_table(model):
             '</table></div></section>' % ("\n".join(body), foot))
 
 
-def report_body(model):
-    """Metadata box, one section per platform and the reading notes."""
+def report_body(model, view=None, paged=False):
+    """Metadata box, one section per platform and the reading notes. `view`: the severity filter (default: every
+    CVE); `paged`: split long CVE tables into pages (the web page; the PDF lists every matching row)."""
+    view = view or default_view()
     warn = ""
     if model["warnings"]:
         warn = '<div class="warn">%s</div>' % "".join("<p>%s</p>" % e(w) for w in model["warnings"])
@@ -142,11 +241,11 @@ def report_body(model):
         sections = ('<section><h2>No results yet</h2><p class="sub">No scan has finished yet. '
                     'Operators and admins can start one on the Scans page; scheduled scans run on their own.</p></section>')
     else:
-        sections = summary_table(model) + "\n" + "\n".join(_section(p) for p in model["platforms"])
+        sections = summary_table(model) + "\n" + "\n".join(_section(p, view, paged) for p in model["platforms"])
     kev_on, epss_on = model.get("kev_on", True), model.get("epss_on", True)
     if kev_on and epss_on:
         rule = ("A CVE is a priority when it is in the CISA Known Exploited Vulnerabilities (KEV) catalog, or its EPSS score "
-                "(probability of exploitation in the next 30 days) is %.2f or higher. Known-exploited CVEs are listed first." % model["epss_min"])
+                "(probability of exploitation in the next 30 days) is %.2f or higher. Priority CVEs are listed first, known-exploited ones at the top." % model["epss_min"])
     elif kev_on:
         rule = "A CVE is a priority when it is in the CISA Known Exploited Vulnerabilities (KEV) catalog. EPSS is turned off."
     elif epss_on:
@@ -158,14 +257,15 @@ def report_body(model):
 <div class="meta"><h1>%(heading)s</h1>
 <p><strong>Generated:</strong> %(generated)s</p>
 <p><strong>Sources:</strong> %(sources)s</p>
-<p><strong>What is listed:</strong> each platform has a table of its systems and a table of priority CVEs. %(rule)s</p></div>
+<p><strong>What is listed:</strong> each platform has a table of its systems and a table of its CVEs. %(rule)s</p>
+<p><strong>Showing:</strong> %(showing)s.</p></div>
 %(sections)s
 <div class="meta"><h1>How to read this report</h1><ul class="notes">
 <li>Counts are what the scanners report for the installed packages. Whether a CVE can actually be exploited on a given system was not analysed.</li>
 <li>KEV marks CVEs that CISA has seen exploited in the wild. EPSS is a probability, not proof: rank by KEV first.</li>
 <li>Generated by Securitas, https://github.com/uhlix-net/securitas</li>
 </ul></div>""" % dict(warn=warn, heading=heading, generated=e(model["generated"]), sources=e(sources) or "none",
-                     rule=e(rule), sections=sections)
+                     rule=e(rule), sections=sections, showing=e(view_label(view)))
 
 
 # Colour tokens. Light is the default; dark follows the system setting unless the viewer picked a theme
@@ -219,6 +319,8 @@ tr.iskev td{background:var(--kevrow)}
 .ransom{color:var(--crit);font-size:11.5px;font-weight:600}
 .epss-hi{color:var(--crit);font-weight:700}.epss-mid{color:var(--imp);font-weight:600}.epss-lo{color:var(--muted)}
 .notes{color:var(--muted);font-size:13px;margin:0;padding-left:20px}.notes li{margin:4px 0}
+.cut{background:var(--warn-bg);border:1px solid var(--warn-line);border-radius:6px;padding:6px 10px;margin:0 0 8px}
+.pri{display:inline-block;margin-left:6px;font-family:system-ui,sans-serif;font-size:10.5px;font-weight:700;padding:0 5px;border-radius:3px;color:var(--accent);border:1px solid var(--accent)}
 """
 
 CSS_PRINT = """
@@ -270,7 +372,10 @@ pre.log{background:var(--head);border:1px solid var(--line);border-radius:6px;pa
 .login{max-width:400px;margin:60px auto}.login .brand{text-align:center;margin-bottom:18px;font-size:24px}
 .login input[type=text],.login input[type=password]{width:100%}.login .btn{width:100%;text-align:center;margin-top:14px;padding:9px}
 .or{display:flex;align-items:center;gap:10px;color:var(--muted);margin:18px 0 4px;font-size:12.5px}.or:before,.or:after{content:"";flex:1;border-top:1px solid var(--line)}
-.pager{display:flex;gap:8px;margin-top:12px}
+.pager{display:flex;gap:8px;margin:10px 0;align-items:center}
+form.filters{display:flex;gap:10px 24px;flex-wrap:wrap;align-items:flex-end;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 16px;margin-bottom:16px}
+form.filters fieldset{border:0;margin:0;padding:0}form.filters legend{font-weight:600;font-size:12.5px;color:var(--muted);padding:0;margin-bottom:2px}
+form.filters .fbtn{margin-left:auto;display:flex;gap:8px}
 .subnav{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:16px;border-bottom:1px solid var(--line);padding-bottom:8px}
 .subnav a{text-decoration:none;color:var(--ink);padding:5px 10px;border-radius:6px;font-weight:600;font-size:13.5px}
 .subnav a:hover{background:var(--head)}.subnav a.on{background:var(--accent);color:var(--accent-ink)}
@@ -288,17 +393,19 @@ table.summary td a strong{font-size:15px}
 
 
 def app_css():
+    from .charts import CSS as CHART_CSS, TOKENS_DARK as CD, TOKENS_LIGHT as CL
+    light, dark = TOKENS_LIGHT + ";" + CL, TOKENS_DARK + ";" + CD
     return (":root{%s}\n@media (prefers-color-scheme:dark){:root:not([data-theme=light]){%s}}\n:root[data-theme=dark]{%s}\n"
             ":root{color-scheme:light}:root[data-theme=dark]{color-scheme:dark}"
             "@media (prefers-color-scheme:dark){:root:not([data-theme=light]){color-scheme:dark}}\n"
-            % (TOKENS_LIGHT, TOKENS_DARK, TOKENS_DARK)) + CSS_REPORT + CSS_APP
+            % (light, dark, dark)) + CSS_REPORT + CSS_APP + CHART_CSS
 
 
 ICON = ("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='%231f4e79' "
         "d='M8 1l6 2v4c0 4-2.6 6.9-6 8-3.4-1.1-6-4-6-8V3z'/%3E%3C/svg%3E")
 
 
-def pdf_html(model, paper="letter"):
+def pdf_html(model, paper="letter", view=None):
     """Standalone page for WeasyPrint: light colours, no navigation, print layout."""
     title = model["title"]
     sub = "CVE report" + (", " + model["cluster_name"] if model["cluster_name"] else "")
@@ -309,7 +416,7 @@ def pdf_html(model, paper="letter"):
 <html lang="en"><head><meta charset="utf-8"><title>%(title)s: CVE report</title><style>%(css)s</style></head><body>
 <div class="top"><div class="brand">%(title)s<small>%(sub)s</small></div></div>
 <main>%(body)s</main></body></html>
-""" % dict(title=e(title), css=css, sub=e(sub), body=report_body(model))
+""" % dict(title=e(title), css=css, sub=e(sub), body=report_body(model, view))
 
 
 def render_pdf(html_text):

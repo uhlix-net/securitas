@@ -16,6 +16,33 @@ import os
 SEV_RANK = {"CRITICAL": 0, "HIGH": 1, "IMPORTANT": 1, "MEDIUM": 2, "MODERATE": 2, "LOW": 3, "UNKNOWN": 4}
 
 
+# Severity levels shown in the report filter and the charts, most severe first. Vendors name them differently:
+# Microsoft and Red Hat say Important and Moderate where Trivy says High and Medium.
+LEVELS = [("critical", "Critical"), ("high", "High / Important"), ("medium", "Medium / Moderate"), ("low", "Low"),
+          ("unknown", "Unknown")]
+LEVEL_KEYS = [k for k, _ in LEVELS]
+_LEVEL_OF = {"CRITICAL": "critical", "HIGH": "high", "IMPORTANT": "high", "MEDIUM": "medium", "MODERATE": "medium",
+             "LOW": "low"}
+
+
+def sev_level(s):
+    """'Important' -> 'high'; anything unrated -> 'unknown'."""
+    return _LEVEL_OF.get((s or "").strip().upper(), "unknown")
+
+
+def level_counts(severities):
+    c = collections.Counter(sev_level(x) for x in severities)
+    return {k: c.get(k, 0) for k in LEVEL_KEYS}
+
+
+def raw_stats(raw):
+    """Distinct CVEs of a raw platform and their count per severity level."""
+    by = {}
+    for f in raw.get("findings") or []:
+        by[f["cve"]] = f.get("severity", "")
+    return len(by), level_counts(by.values())
+
+
 def sev_title(s):
     return (s or "Unknown").strip().title() or "Unknown"
 
@@ -73,13 +100,12 @@ def build_platform(raw, rk):
         systems.sort(key=lambda s: (-s.get("kev", 0), -s.get("critical", 0), -s.get("high", 0), s.get("name", "")))
     rows = []
     for f in raw.get("findings", []):
-        if not rk.priority(f["cve"]):
-            continue
         row = {"cve": f["cve"], "title": f.get("title", ""), "severity": sev_title(f.get("severity", "")),
+               "level": sev_level(f.get("severity", "")), "priority": bool(rk.priority(f["cve"])),
                "systems": sorted(f.get("systems", [])), "component": f.get("component", ""), "fix": f.get("fix", ""),
                "status": f.get("status", "Open")}
         rows.append(rk.enrich(row))
-    rows.sort(key=Ranker.order)
+    rows.sort(key=lambda r: (0 if r["priority"] else 1,) + Ranker.order(r))
     totals = dict(raw.get("totals", {}))
     if raw.get("findings") is not None:
         totals["In CISA KEV"] = sum(c in rk.kev for c in raw_ids(raw))
@@ -94,18 +120,89 @@ def build_platform(raw, rk):
 PLATFORM_TITLE = {"kubernetes": "Kubernetes", "linux": "Linux", "windows": "Windows"}
 
 
+def is_priority(row):
+    """Results stored before 0.4.0 list priority CVEs only and have no 'priority' field."""
+    return row.get("priority", True)
+
+
+def priority_rows(p):
+    return [r for r in p["cves"] if is_priority(r)]
+
+
 def summary(model):
     """One row per platform for the landing page: status and vulnerability counts from the current report."""
     rows = []
     for p in model["platforms"]:
-        sev = [str(r.get("severity", "")).lower() for r in p["cves"]]
+        pri = priority_rows(p)
+        sev = [str(r.get("severity", "")).lower() for r in pri]
         rows.append({"id": p["id"], "title": p["title"], "status": "off" if p.get("turned_off") else p.get("status", "done"),
                      "failure": p.get("failure", ""),
                      "scanned": p.get("scanned", ""), "scan_id": p.get("scan_id"), "no_results": bool(p.get("no_results")),
-                     "systems": p.get("system_count", len(p["systems"])), "priority": len(p["cves"]),
-                     "kev": sum(1 for r in p["cves"] if r.get("kev")), "critical": sev.count("critical"),
+                     "systems": p.get("system_count", len(p["systems"])), "priority": len(pri),
+                     "kev": sum(1 for r in pri if r.get("kev")), "critical": sev.count("critical"),
                      "high": sum(1 for x in sev if x in ("high", "important"))})
     return rows
+
+
+def result_stats(raw, rep):
+    """Values of a ResultStats row for a platform result (raw findings, ranked report section as of the scan)."""
+    total, levels = raw_stats(raw or {})
+    pri = [r for r in (rep or {}).get("cves", []) if is_priority(r)]
+    return {"total": total, "levels": levels, "priority": len(pri), "kev": sum(1 for r in pri if r.get("kev"))}
+
+
+def platform_levels(model):
+    """Pie chart data: per platform with results, the count of its distinct CVEs at every severity level."""
+    out = []
+    for p in model["platforms"]:
+        if p.get("no_results"):
+            continue
+        out.append({"id": p["id"], "title": p["title"], "total": len(p["cves"]),
+                    "levels": level_counts(r.get("severity", "") for r in p["cves"])})
+    return out
+
+
+# History graph ranges: (points, step). Each point is the distinct CVE count of a platform's newest good result
+# at or before the end of that day, week or month.
+RANGES = {"day": ("Daily", "7 days", 7), "week": ("Weekly", "3 months", 13), "month": ("Monthly", "1 year", 12)}
+DEFAULT_RANGE = "week"
+
+
+def range_points(rng, today):
+    """[(label, end date)] oldest first: the end of each day, week (ending today) or calendar month."""
+    _, _, n = RANGES[rng]
+    if rng == "day":
+        return [((today - datetime.timedelta(days=i)).strftime("%b %-d"), today - datetime.timedelta(days=i))
+                for i in range(n - 1, -1, -1)]
+    if rng == "week":
+        return [((today - datetime.timedelta(weeks=i)).strftime("%b %-d"), today - datetime.timedelta(weeks=i))
+                for i in range(n - 1, -1, -1)]
+    out, y, m = [], today.year, today.month
+    for _ in range(n):
+        nxt = datetime.date(y + (m == 12), m % 12 + 1, 1)
+        out.append((datetime.date(y, m, 1).strftime("%b %Y"), min(nxt - datetime.timedelta(days=1), today)))
+        y, m = (y, m - 1) if m > 1 else (y - 1, 12)
+    return out[::-1]
+
+
+def history(stats, rng, today, platforms):
+    """stats: [(platform, local scan date, total)] of good results, oldest first.
+    Returns {"labels": [...], "series": [{"id", "title", "values": [int or None]}]}: None before a platform's first scan."""
+    pts = range_points(rng, today)
+    by = collections.defaultdict(list)
+    for plat, d, total in stats:
+        by[plat].append((d, total))
+    series = []
+    for plat in platforms:
+        rows, vals, i, cur = by.get(plat, []), [], 0, None
+        for _, end in pts:
+            while i < len(rows) and rows[i][0] <= end:
+                cur = rows[i][1]
+                i += 1
+            vals.append(cur)
+        if any(v is not None for v in vals):
+            series.append({"id": plat, "title": PLATFORM_TITLE.get(plat, plat.title()), "values": vals})
+    return {"labels": [l for l, _ in pts], "series": series, "range": rng}
 
 
 def failed_platform(platform, error):

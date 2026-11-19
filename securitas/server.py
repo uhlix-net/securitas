@@ -45,6 +45,7 @@ def build(cfg, start_threads=True, scanners=None):
     bootstrap(cfg, db)
     jobs = Jobs(cfg, db, scanners)
     jobs.bootstrap()
+    jobs.backfill_stats()
     if start_threads:
         jobs.start()
     return create_app(cfg, db, jobs), db, jobs

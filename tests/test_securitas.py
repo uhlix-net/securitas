@@ -15,6 +15,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from securitas import auth, feeds, render, report, scan_linux, scan_windows  # noqa: E402
 from securitas.config import Config, LdapConfig, OidcConfig  # noqa: E402
+from securitas.db import PlatformResult, ResultStats, Scan, select  # noqa: E402
+
+
+def pri(sec):
+    """CVE IDs of a platform section's priority rows (the section lists every CVE since 0.4.0)."""
+    return [r["cve"] for r in sec["cves"] if r["priority"]]
 
 
 def vuln(vid, sev, pkg, fixed="", title=""):
@@ -46,7 +52,8 @@ def ranker():
 class Ranking(unittest.TestCase):
     def test_kubernetes(self):
         sec = report.build_platform(report.kubernetes_raw(REPORTS), ranker())
-        self.assertEqual([r["cve"] for r in sec["cves"]], ["CVE-2099-0002", "CVE-2099-0001", "CVE-2099-0004"])
+        self.assertEqual(pri(sec), ["CVE-2099-0002", "CVE-2099-0001", "CVE-2099-0004"])
+        self.assertEqual([r["cve"] for r in sec["cves"]][-1], "CVE-2099-0003")      # every CVE, non-priority last
         self.assertEqual(sec["totals"]["Images scanned"], 3)
         self.assertEqual(sec["totals"]["In CISA KEV"], 1)
         self.assertEqual([s["name"] for s in sec["systems"]], ["library/app:1.0", "ghcr.io/team/tool:2.3"])
@@ -60,8 +67,8 @@ class Ranking(unittest.TestCase):
     def test_rerank_without_rescan(self):
         raw = report.kubernetes_raw(REPORTS)
         later = report.Ranker({**KEV, "CVE-2099-0003": {"dateAdded": "2099-02-01"}}, EPSS, 0.10)
-        self.assertIn("CVE-2099-0003", [r["cve"] for r in report.build_platform(raw, later)["cves"]])
-        self.assertNotIn("CVE-2099-0003", [r["cve"] for r in report.build_platform(raw, ranker())["cves"]])
+        self.assertIn("CVE-2099-0003", pri(report.build_platform(raw, later)))
+        self.assertNotIn("CVE-2099-0003", pri(report.build_platform(raw, ranker())))
 
     def test_html_escaped_and_pdf_name(self):
         cfg = Config()
@@ -85,7 +92,7 @@ class Ranking(unittest.TestCase):
         self.assertEqual(len(ex), 1)
         self.assertEqual(len(w), 1)
         sec = report.build_platform(report.extra_raw(ex[0]), ranker())
-        self.assertEqual([r["cve"] for r in sec["cves"]], ["CVE-2099-0002"])
+        self.assertEqual(pri(sec), ["CVE-2099-0002"])
 
     def test_pdf(self):
         try:
@@ -112,6 +119,99 @@ CVE-2099-0002 Critical/Sec.  kernel-5.14.0-570.el9.x86_64
 """
 
 
+class Severity(unittest.TestCase):
+    def test_levels(self):
+        self.assertEqual([report.sev_level(x) for x in ("CRITICAL", "Important", "high", "Moderate", "MEDIUM", "Low", "", None, "?")],
+                         ["critical", "high", "high", "medium", "medium", "low", "unknown", "unknown", "unknown"])
+        total, lv = report.raw_stats(report.kubernetes_raw(REPORTS))
+        self.assertEqual(total, 4)
+        self.assertEqual(lv, {"critical": 1, "high": 1, "medium": 1, "low": 1, "unknown": 0})
+
+    def test_section_lists_every_cve_with_level(self):
+        sec = report.build_platform(report.kubernetes_raw(REPORTS), ranker())
+        self.assertEqual({r["cve"]: r["level"] for r in sec["cves"]},
+                         {"CVE-2099-0001": "critical", "CVE-2099-0002": "high", "CVE-2099-0004": "medium", "CVE-2099-0003": "low"})
+        self.assertFalse([r for r in sec["cves"] if r["cve"] == "CVE-2099-0003"][0]["priority"])
+        m = report.model(Config(), [sec], {"kev": "", "epss": ""}, [])
+        self.assertEqual(report.platform_levels(m)[0]["levels"]["low"], 1)
+        self.assertEqual(report.summary(m)[0]["priority"], 3)   # the summary table still counts priority CVEs
+
+    def test_old_stored_reports_count_as_priority(self):
+        self.assertTrue(report.is_priority({"cve": "x"}))
+        self.assertEqual(report.result_stats({}, {"cves": [{"cve": "a", "kev": "2099-01-01"}, {"cve": "b", "kev": ""}]}),
+                         {"total": 0, "levels": {k: 0 for k in report.LEVEL_KEYS}, "priority": 2, "kev": 1})
+
+    def test_filter_and_paging(self):
+        sec = report.build_platform(report.kubernetes_raw(REPORTS), ranker())
+        m = report.model(Config(), [sec], {"kev": "", "epss": ""}, [])
+        v = render.parse_view({"sev": ["critical", "low", "bogus"]})
+        self.assertEqual(v["levels"], ["critical", "low"])
+        body = render.report_body(m, v)
+        self.assertIn("CVE-2099-0003", body)
+        self.assertNotIn("CVE-2099-0002", body)
+        self.assertIn("2 shown of 4", body)
+        self.assertEqual(render.view_query(v), "sev=critical&sev=low")
+        v = render.parse_view({"priority": "1"})
+        self.assertEqual(v["levels"], report.LEVEL_KEYS)           # no level given: all of them
+        self.assertNotIn("CVE-2099-0003", render.report_body(m, v))
+        self.assertEqual(render.view_query(render.default_view()), "")
+        old, old_pdf = render.PAGE_SIZE, render.PDF_MAX_ROWS
+        render.PAGE_SIZE = 3
+        try:
+            page1 = render.report_body(m, render.default_view(), paged=True)
+            page2 = render.report_body(m, render.parse_view({"p_kubernetes": "2"}), paged=True)
+        finally:
+            render.PAGE_SIZE = old
+        self.assertIn("Page 1 of 2", page1)
+        self.assertNotIn("CVE-2099-0003", page1)
+        self.assertIn("CVE-2099-0003", page2)
+        self.assertIn('href="?p_kubernetes=2#kubernetes"', page1)
+        render.PDF_MAX_ROWS = 2
+        try:
+            pdf_body = render.report_body(m, render.default_view())            # not paged: the PDF
+        finally:
+            render.PDF_MAX_ROWS = old_pdf
+        self.assertIn("The first 2 of 4 matching CVEs are listed", pdf_body)
+        self.assertNotIn("CVE-2099-0003", pdf_body)
+
+
+class History(unittest.TestCase):
+    def test_points(self):
+        import datetime as dt
+        today = dt.date(2026, 11, 19)
+        pts = report.range_points("day", today)
+        self.assertEqual((len(pts), pts[0][1], pts[-1][1]), (7, dt.date(2026, 11, 13), today))
+        self.assertEqual(len(report.range_points("week", today)), 13)
+        m = report.range_points("month", today)
+        self.assertEqual((len(m), m[0][0], m[-1][1]), (12, "Dec 2025", today))
+        self.assertEqual(m[-2][1], dt.date(2026, 10, 31))
+        self.assertEqual(report.range_points("month", dt.date(2026, 3, 5))[0][1], dt.date(2025, 4, 30))
+
+    def test_carry_forward(self):
+        import datetime as dt
+        d = lambda x: dt.date(2026, 11, x)
+        h = report.history([("windows", d(1), 100), ("windows", d(15), 80), ("windows", d(15), 70), ("linux", d(18), 5)],
+                           "day", d(19), ("kubernetes", "linux", "windows"))
+        self.assertEqual([s["id"] for s in h["series"]], ["linux", "windows"])   # never scanned: no line
+        self.assertEqual(h["series"][1]["values"], [100, 100, 70, 70, 70, 70, 70])  # newest result of the day wins
+        self.assertEqual(h["series"][0]["values"], [None] * 5 + [5, 5])
+
+    def test_svg(self):
+        from securitas import charts
+        h = {"labels": ["a", "b"], "series": [{"id": "linux", "title": "Linux", "values": [3, 7]}], "range": "week"}
+        out = charts.history_svg(h)
+        self.assertIn("<svg", out)
+        self.assertIn("var(--pl-linux", out)
+        self.assertIn("<title>Linux, b: 7 CVEs</title>", out)
+        self.assertIn("Show as a table", out)
+        self.assertIn("No history yet", charts.history_svg({"labels": [], "series": [], "range": "day"}))
+        pie = charts.pie_svg({"id": "k", "title": "K", "total": 4, "levels": {"critical": 1, "high": 3, "medium": 0, "low": 0, "unknown": 0}})
+        self.assertEqual(pie.count('class="slice"'), 2)
+        self.assertIn("75.0%", pie)
+        self.assertIn('class="slice" cx="90"', charts.pie_svg({"id": "k", "title": "K", "total": 2,
+                                                               "levels": {"low": 2}}))   # one level: a full circle
+
+
 class Linux(unittest.TestCase):
     def test_parse(self):
         r = scan_linux.parse(LINUX_OUT)
@@ -134,7 +234,7 @@ class Linux(unittest.TestCase):
             scan_linux.run_host = orig
         self.assertEqual(raw["failed"], 1)
         sec = report.build_platform(raw, ranker())
-        self.assertEqual([r["cve"] for r in sec["cves"]], ["CVE-2099-0002"])
+        self.assertEqual(pri(sec), ["CVE-2099-0002"])
         self.assertEqual(sec["systems"][0]["kev"], 1)
         self.assertEqual(sec["systems"][1]["status"], "Scan failed")
         self.assertIn("openssl", [f for f in raw["findings"] if f["cve"] == "CVE-2099-1000"][0]["component"])
@@ -414,10 +514,51 @@ class Web(unittest.TestCase):
         self.assertIn('href="/report#kubernetes"', page)
         m = self.jobs.current_model()
         row = report.summary(m)[0]
-        self.assertEqual(row["priority"], len(m["platforms"][0]["cves"]))
+        self.assertEqual(row["priority"], len(pri(m["platforms"][0])))
         self.assertEqual(row["kev"], sum(1 for r in m["platforms"][0]["cves"] if r["kev"]))
         self.assertIn('<section id="kubernetes">', self.c.get("/report").text)
         self.assertNotIn("CVE-2099-0002", page)          # the summary lists counts, not CVEs
+
+    def test_summary_charts_and_report_filter(self):
+        login(self.c, "admin", ADMIN_PW)
+        self.jobs.scanners["kubernetes"] = fake_kubernetes
+        with self.db.Session() as s, s.begin():
+            self.jobs.enqueue(s, ["kubernetes"], "manual", "admin")
+        self.jobs.run_scan(self.jobs._claim())
+        page = self.c.get("/").text
+        self.assertIn('id="history"', page)
+        self.assertIn('class="on" aria-current="true" href="/?range=week#history"', page)   # default: weekly
+        self.assertIn("<title>Kubernetes,", page)
+        self.assertIn('id="pie-kubernetes"', page)
+        self.assertNotIn("<script", page)
+        self.assertIn('aria-current="true" href="/?range=month#history"', self.c.get("/?range=month").text)
+        self.assertIn('aria-current="true" href="/?range=week#history"', self.c.get("/?range=bogus").text)
+        rep_ = self.c.get("/report").text
+        self.assertIn("CVE-2099-0003", rep_)                       # low, not a priority: listed now
+        self.assertIn('name="sev" value="low" checked', rep_)
+        rep_ = self.c.get("/report?sev=critical").text
+        self.assertNotIn("CVE-2099-0003", rep_)
+        self.assertIn('href="/report.pdf?sev=critical"', rep_)
+        self.assertNotIn("CVE-2099-0003", self.c.get("/report?priority=1").text)
+        with self.db.Session() as s:
+            st = s.scalars(select(ResultStats)).all()
+        self.assertEqual([(x.platform, x.total, x.priority, x.kev) for x in st], [("kubernetes", 4, 3, 1)])
+        self.assertIn(">3<", self.c.get("/scans").text.replace(" ", ""))
+
+    def test_stats_backfill(self):
+        with self.db.Session() as s, s.begin():
+            sc = Scan(platforms=["kubernetes"], trigger="manual", status="done")
+            s.add(sc)
+            s.flush()
+            raw = report.kubernetes_raw(REPORTS)
+            s.add(PlatformResult(scan_id=sc.id, platform="kubernetes", status="done", raw=raw,
+                                 report=report.build_platform(raw, ranker()), sources={}))
+        self.jobs.backfill_stats()
+        self.jobs.backfill_stats()                                 # idempotent
+        with self.db.Session() as s:
+            self.assertEqual([x.total for x in s.scalars(select(ResultStats)).all()], [4])
+        h = self.jobs.history("day")
+        self.assertEqual(h["series"][0]["values"][-1], 4)
 
     def test_scan_history_platform_filter(self):
         login(self.c, "admin", ADMIN_PW)
@@ -747,7 +888,7 @@ class SettingsUI(unittest.TestCase):
         with self.db.Session() as s, s.begin():
             self.jobs.enqueue(s, ["kubernetes"], "manual", "admin")
         self.jobs.run_scan(self.jobs._claim())
-        cves = lambda: [r["cve"] for r in self.jobs.current_model()["platforms"][0]["cves"]]
+        cves = lambda: pri(self.jobs.current_model()["platforms"][0])
         self.assertIn("CVE-2099-0002", cves())                    # KEV
         self.post("/settings/sources", "/settings/sources", epss_enabled="on", epss_min="0.10", platform_kubernetes="on",
                   platform_linux="on", platform_windows="on")      # KEV off

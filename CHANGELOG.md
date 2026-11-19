@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.4.0 (2026-11-19)
+
+The report shows every CVE, not only priority ones, and the Summary page shows how the counts change.
+
+### New
+
+- **CVEs over time.** The Summary page has a graph of distinct CVEs per platform, one shaded line each, under
+  the summary table. Choose daily (last 7 days), weekly (last 3 months, the default) or monthly (last year).
+  Each point is the newest successful scan at the end of that day, week or month. Hover a point for its
+  value; *Show as a table* lists the numbers.
+- **CVEs by severity.** Under the graph, a pie chart per platform of its CVEs at every severity level, with
+  counts and percentages.
+- **Severity filter on the report.** Tick one or more levels (Critical, High / Important, Medium / Moderate,
+  Low, Unknown) and optionally *Priority CVEs only*. Works on the current report, past scans and Export to PDF.
+  Long CVE tables are split into pages of 200 on the web page. The PDF lists the first 500 matching CVEs per
+  platform in ranking order and says how many it left out (a PDF of every CVE would not fit the pod's memory).
+
+### Changed
+
+- **Every CVE is listed.** The report used to list only priority CVEs (CISA KEV or EPSS at or above the
+  threshold). It now lists all of them, priority CVEs first and tagged *priority*. *Priority CVEs only* brings
+  back the old view. The summary table's counts are still priority CVEs.
+- The page needs no script: charts are drawn on the server as SVG, so the Content-Security-Policy is unchanged.
+
+### Upgrading from 0.3.0
+
+- A new table, `result_stats`, is created at startup and filled from the scans already stored, so the graph
+  has history straight away (up to the retention period). This runs once and takes a moment per stored scan.
+- Scans saved from 0.4.0 on store every CVE in their report, so the database grows faster than before.
+  Past scans saved by earlier versions still show only their priority CVEs.
+- PDFs are now made one at a time, since each can use a few hundred MB. Keep the memory limit at 1 GiB or more.
+
 ## 0.3.0 (2026-11-19)
 
 Administration moves into the browser, and Securitas explains where its data comes from.

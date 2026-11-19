@@ -18,10 +18,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlalchemy import String, cast, delete, func, select
 
-from . import __version__, auth, render, report, scan_linux, scan_windows, sources
+from . import __version__, auth, charts, render, report, scan_linux, scan_windows, sources
 from .config import PLATFORMS
 from .settings import FIELDS, SettingsError
-from .db import (AuditEvent, LoginState, PlatformResult, RoleMapping, Scan, Schedule, Session, Target, User, audit,
+from .db import (AuditEvent, LoginState, PlatformResult, ResultStats, RoleMapping, Scan, Schedule, Session, Target, User, audit,
                  get_setting, set_setting, utcnow)
 from .jobs import STATUS_LABEL, fmt_time, next_run, valid_cron
 
@@ -67,6 +67,7 @@ class App:
         self.css = render.app_css()
         self._pdf = {}
         self._pdf_lock = threading.Lock()
+        self._pdf_render_lock = threading.Lock()
 
     # ------------------------------------------------------------ helpers
 
@@ -440,21 +441,31 @@ def create_app(cfg, db, jobs):
         m = jobs.current_model()
         rows = report.summary(m)
         tot = {k: sum(r[k] for r in rows) for k in ("systems", "priority", "kev", "critical", "high")}
+        rng = request.query_params.get("range", report.DEFAULT_RANGE)
+        rng = rng if rng in report.RANGES else report.DEFAULT_RANGE
         return a.page(request, "summary.html", {"user": user, "sess": request.state.sess, "title": "Summary", "model": m,
-                                                "rows": rows, "tot": tot})
+                                                "rows": rows, "tot": tot, "range": rng,
+                                                "range_switch": charts.range_switch(rng),
+                                                "history": charts.history_svg(jobs.history(rng)),
+                                                "pies": charts.pies(report.platform_levels(m))})
 
     @api.get("/report")
     def current_report(request: Request, user=Depends(V)):
         m = jobs.current_model()
+        view = render.parse_view(request.query_params)
+        q = render.view_query(view)
         return a.page(request, "report.html", {"user": user, "sess": request.state.sess, "title": "Report", "model": m,
-                                               "body": render.report_body(m), "nav": render.platform_nav(m),
-                                               "pdf": "/report.pdf", "pdf_name": render.pdf_name(m)})
+                                               "body": render.report_body(m, view, paged=True), "nav": render.platform_nav(m, view),
+                                               "filters": render.filter_form(view, "/report"),
+                                               "pdf": "/report.pdf" + ("?" + q if q else ""), "pdf_name": render.pdf_name(m)})
 
-    def pdf_response(m, key):
+    def pdf_response(m, key, view=None):
+        key = key + (render.view_query(view or render.default_view()),)
         with a._pdf_lock:
             data = a._pdf.get(key)
         if data is None:
-            data = render.render_pdf(render.pdf_html(m, cfg.paper))
+            with a._pdf_render_lock:          # one PDF at a time: each can take a few hundred MB
+                data = render.render_pdf(render.pdf_html(m, cfg.paper, view))
             with a._pdf_lock:
                 if len(a._pdf) > 20:
                     a._pdf.clear()
@@ -465,7 +476,8 @@ def create_app(cfg, db, jobs):
     @api.get("/report.pdf")
     def report_pdf(request: Request, user=Depends(V)):
         m = jobs.current_model()
-        return pdf_response(m, ("current", json.dumps(m, sort_keys=True, default=str).__hash__()))
+        return pdf_response(m, ("current", json.dumps(m, sort_keys=True, default=str).__hash__()),
+                            render.parse_view(request.query_params))
 
     @api.get("/data.json")
     def data_json(request: Request, user=Depends(V)):
@@ -489,16 +501,17 @@ def create_app(cfg, db, jobs):
             total = s.scalar(select(func.count(Scan.id)).where(*where))
             rows = s.scalars(select(Scan).where(*where).order_by(Scan.id.desc()).offset((page - 1) * 50).limit(50)).all()
             counts = {}
-            res = s.execute(select(PlatformResult.scan_id, PlatformResult.platform, PlatformResult.status, PlatformResult.report)
+            res = s.execute(select(PlatformResult.scan_id, PlatformResult.platform, PlatformResult.status,
+                                   ResultStats.priority, ResultStats.kev)
+                            .outerjoin(ResultStats, ResultStats.result_id == PlatformResult.id)
                             .where(PlatformResult.scan_id.in_([r.id for r in rows]))).all() if rows else []
             pstatus = {}
-            for sid, p, st, rep in res:
+            for sid, p, st, npri, nkev in res:
                 if p == plat:
                     pstatus[sid] = st
                 if plat and p != plat:
                     continue          # filtered: the counts are this platform's only
-                counts.setdefault(sid, {})[p] = {"status": st, "cves": len((rep or {}).get("cves", [])),
-                                                 "kev": sum(1 for c in (rep or {}).get("cves", []) if c.get("kev"))}
+                counts.setdefault(sid, {})[p] = {"status": st, "cves": npri or 0, "kev": nkev or 0}
             ntargets = {p: s.scalar(select(func.count(Target.id)).where(Target.platform == p, Target.enabled.is_(True)))
                         for p in ("linux", "windows")}
         return a.page(request, "scans.html", {"user": user, "sess": request.state.sess, "title": "Scans", "scans": rows,
@@ -529,9 +542,13 @@ def create_app(cfg, db, jobs):
             m = jobs.scan_model(scan) if scan.results else None
             s.expunge_all()
         active = scan.status in ("queued", "running")
+        view = render.parse_view(request.query_params)
+        q = render.view_query(view)
         return a.page(request, "scan.html", {"user": user, "sess": request.state.sess, "title": "Scan #%d" % sid, "scan": scan,
-                                             "model": m, "body": render.report_body(m) if m and m["platforms"] else "",
-                                             "nav": render.platform_nav(m) if m else "", "pdf": "/scans/%d/report.pdf" % sid,
+                                             "model": m, "body": render.report_body(m, view, paged=True) if m and m["platforms"] else "",
+                                             "filters": render.filter_form(view, "/scans/%d" % sid),
+                                             "nav": render.platform_nav(m, view) if m else "",
+                                             "pdf": "/scans/%d/report.pdf" % sid + ("?" + q if q else ""),
                                              "pdf_name": render.pdf_name(m) if m else ""},
                       refresh=5 if active else None)
 
@@ -543,7 +560,7 @@ def create_app(cfg, db, jobs):
                 raise HTTPException(404, "This scan has no results.")
             m = jobs.scan_model(scan)
             key = ("scan", sid, scan.status)
-        return pdf_response(m, key)
+        return pdf_response(m, key, render.parse_view(request.query_params))
 
     @api.get("/scans/{sid}/data.json")
     def scan_json(request: Request, sid: int, user=Depends(V)):

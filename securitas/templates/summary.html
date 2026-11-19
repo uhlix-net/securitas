@@ -30,4 +30,16 @@
   <p><a class="btn" href="/report">Open the full report</a></p>
   {% endif %}
 </section>
+{% if rows %}
+<section class="chartcard" id="history">
+  <h2>CVEs over time {{ range_switch|safe }}</h2>
+  <p class="sub">Distinct CVEs per platform, every severity level, from the newest successful scan at the end of each {{ {"day": "day", "week": "week", "month": "month"}[range] }}. Hover a point for its value.</p>
+  {{ history|safe }}
+</section>
+<section class="chartcard" id="severity">
+  <h2>CVEs by severity</h2>
+  <p class="sub">Distinct CVEs per platform in the current report, at every severity level. Microsoft and Red Hat call High and Medium <em>Important</em> and <em>Moderate</em>.</p>
+  {{ pies|safe }}
+</section>
+{% endif %}
 {% endblock %}

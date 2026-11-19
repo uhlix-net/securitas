@@ -12,6 +12,7 @@
 {% if body %}
 <div class="subbar"><nav class="nav" aria-label="Platforms">{{ nav|safe }}</nav>
 <a class="btn" href="/scans">All scans</a><a class="export" style="margin-left:0" href="{{ pdf }}" download="{{ pdf_name }}">Export to PDF</a></div>
+{{ filters|safe }}
 {{ body|safe }}
 {% endif %}
 {% endblock %}

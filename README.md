@@ -12,11 +12,17 @@ serves the results as web pages with an **Export to PDF** button.
 - **Scans change nothing.** Nothing is installed or changed on the scanned systems, and the scan
   accounts need no root or admin rights.
 - **Ranked, not just counted.** A CVE is a *priority* when it is in the KEV catalog (seen exploited
-  in the wild) or its EPSS score is at or above a threshold (default 0.10). Known-exploited CVEs are
-  listed first, then by EPSS. The current report is re-ranked when the KEV catalog changes, without a rescan.
+  in the wild) or its EPSS score is at or above a threshold (default 0.10). The report lists every CVE at
+  every severity level, priority CVEs first (known-exploited at the top, then by EPSS). The current report is
+  re-ranked when the KEV catalog changes, without a rescan.
+- **Severity filter.** The report, past scans and the PDF can be narrowed to one or more severity levels
+  (Critical, High / Important, Medium / Moderate, Low, Unknown) and to priority CVEs only. The filter is in
+  the address, so a filtered view can be bookmarked or shared; Export to PDF uses the same filter.
 - **Summary first.** After sign-in, a summary page lists each platform with its scan status, when it was
   last scanned, and its counts: systems, priority CVEs, known exploited, critical and high. Each platform
   name links to its section of the full report at `/report`. The same table opens the report and the PDF.
+  Below it, a graph of distinct CVEs per platform over time (daily for 7 days, weekly for 3 months or
+  monthly for a year; weekly by default) and a pie chart per platform of its CVEs by severity.
 - **Failed scans are flagged, not hidden.** If a platform's latest scan failed or was only partly
   successful, the summary, the report and the PDF say so and show the error. Older results stay
   visible but are marked as older; a platform that has never been scanned successfully still gets a section saying so.
@@ -161,8 +167,8 @@ release data, is newer than the installed one. Third-party software is not check
 ## Extra platforms (optional)
 
 Hosts scanned by other tools can be added as extra sections. Put one JSON file per platform in a
-ConfigMap and set `extraPlatforms.configMap`. Securitas adds the KEV and EPSS data and lists only
-priority CVEs.
+ConfigMap and set `extraPlatforms.configMap`. Securitas adds the KEV and EPSS data and ranks the CVEs.
+Extra platforms appear in the report and the severity pies, not in the history graph.
 
 ```json
 {
