@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlalchemy import delete, func, select
 
-from . import __version__, auth, render
+from . import __version__, auth, render, report
 from .config import PLATFORMS
 from .db import (AuditEvent, LoginState, PlatformResult, RoleMapping, Scan, Schedule, Session, Target, User, audit,
                  get_setting, set_setting, utcnow)
@@ -414,6 +414,14 @@ def create_app(cfg, db, jobs):
 
     @api.get("/")
     def index(request: Request, user=Depends(V)):
+        m = jobs.current_model()
+        rows = report.summary(m)
+        tot = {k: sum(r[k] for r in rows) for k in ("systems", "priority", "kev", "critical", "high")}
+        return a.page(request, "summary.html", {"user": user, "sess": request.state.sess, "title": "Summary", "model": m,
+                                                "rows": rows, "tot": tot})
+
+    @api.get("/report")
+    def current_report(request: Request, user=Depends(V)):
         m = jobs.current_model()
         return a.page(request, "report.html", {"user": user, "sess": request.state.sess, "title": "Report", "model": m,
                                                "body": render.report_body(m), "nav": render.platform_nav(m),

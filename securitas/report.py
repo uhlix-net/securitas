@@ -81,18 +81,31 @@ def build_platform(raw, rk):
     if raw.get("systems_filter") == "critical_or_priority":
         caption = "%s (%d of %d)" % (caption, len(systems), total)
     return {"id": raw["id"], "title": raw["title"], "subtitle": raw.get("subtitle", ""), "totals": totals,
-            "systems_caption": caption, "system_columns": raw.get("system_columns", []), "systems": systems,
+            "system_count": total, "systems_caption": caption, "system_columns": raw.get("system_columns", []), "systems": systems,
             "affected_label": raw.get("affected_label", "Systems"), "cves": rows, "warnings": raw.get("warnings", [])}
 
 
 PLATFORM_TITLE = {"kubernetes": "Kubernetes", "linux": "Linux", "windows": "Windows"}
 
 
+def summary(model):
+    """One row per platform for the landing page: status and vulnerability counts from the current report."""
+    rows = []
+    for p in model["platforms"]:
+        sev = [str(r.get("severity", "")).lower() for r in p["cves"]]
+        rows.append({"id": p["id"], "title": p["title"], "status": p.get("status", "done"), "failure": p.get("failure", ""),
+                     "scanned": p.get("scanned", ""), "scan_id": p.get("scan_id"), "no_results": bool(p.get("no_results")),
+                     "systems": p.get("system_count", len(p["systems"])), "priority": len(p["cves"]),
+                     "kev": sum(1 for r in p["cves"] if r.get("kev")), "critical": sev.count("critical"),
+                     "high": sum(1 for x in sev if x in ("high", "important"))})
+    return rows
+
+
 def failed_platform(platform, error):
     """Section for a platform whose scan produced no results, so the report says so instead of leaving it out."""
     return {"id": platform, "title": PLATFORM_TITLE.get(platform, platform.title()), "subtitle": "", "totals": {},
-            "systems_caption": "", "system_columns": [], "systems": [], "affected_label": "Systems", "cves": [],
-            "warnings": [], "status": "failed", "failure": error or "The scan failed.", "no_results": True}
+            "systems_caption": "", "system_columns": [], "systems": [], "system_count": 0, "affected_label": "Systems",
+            "cves": [], "warnings": [], "status": "failed", "failure": error or "The scan failed.", "no_results": True}
 
 
 # ---------------------------------------------------------------- Kubernetes (Trivy Operator)

@@ -10,7 +10,8 @@
 <div class="top">
   <div class="brand">{{ cfg.title }}<small>CVE report{% if cfg.cluster_name %}, {{ cfg.cluster_name }}{% endif %}</small></div>
   <nav class="nav" aria-label="Main">
-    <a href="/"{% if path == "/" %} class="on"{% endif %}>Report</a>
+    <a href="/"{% if path == "/" %} class="on"{% endif %}>Summary</a>
+    <a href="/report"{% if path == "/report" %} class="on"{% endif %}>Report</a>
     <a href="/scans"{% if path.startswith("/scans") %} class="on"{% endif %}>Scans</a>
     {% if can(user.role, "schedule.edit") %}<a href="/schedules"{% if path == "/schedules" %} class="on"{% endif %}>Schedules</a>{% endif %}
     {% if can(user.role, "target.edit") %}<a href="/admin/targets"{% if path == "/admin/targets" %} class="on"{% endif %}>Targets</a>{% endif %}

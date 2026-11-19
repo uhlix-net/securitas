@@ -285,7 +285,7 @@ class Web(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn("script-src", r.headers["content-security-policy"].replace("default-src 'none'", "script-src"))
         self.assertNotIn("<script", r.text)
-        self.assertIn("No results yet", r.text)
+        self.assertIn("No scan has finished yet", r.text)
 
     def test_login_needs_form_token(self):
         r = self.c.post("/login", data={"username": "admin", "password": ADMIN_PW, "pre": "x"}, follow_redirects=False)
@@ -310,7 +310,7 @@ class Web(unittest.TestCase):
         page = self.c.get("/scans/1").text
         self.assertIn("CVE-2099-0002", page)
         self.assertNotIn("http-equiv=\"refresh\"", page)
-        self.assertIn("CVE-2099-0002", self.c.get("/").text)
+        self.assertIn("CVE-2099-0002", self.c.get("/report").text)
         self.assertIn("#1", self.c.get("/scans").text)
         data = self.c.get("/scans/1/data.json").json()
         self.assertEqual(data["label"], "Scan #1")
@@ -399,31 +399,50 @@ class Web(unittest.TestCase):
         self.jobs.run_scan(sid)
         return sid
 
+    def test_summary_landing_page(self):
+        login(self.c, "admin", ADMIN_PW)
+        self.assertIn("No scan has finished yet", self.c.get("/").text)
+        self._scan(["kubernetes"])
+        page = self.c.get("/").text
+        self.assertIn("<title>Summary", page)
+        self.assertIn('href="/report#kubernetes"', page)
+        m = self.jobs.current_model()
+        row = report.summary(m)[0]
+        self.assertEqual(row["priority"], len(m["platforms"][0]["cves"]))
+        self.assertEqual(row["kev"], sum(1 for r in m["platforms"][0]["cves"] if r["kev"]))
+        self.assertIn('<section id="kubernetes">', self.c.get("/report").text)
+        self.assertNotIn("CVE-2099-0002", page)          # the summary lists counts, not CVEs
+
     def test_failed_platform_shown_in_report(self):
         # Windows has no targets, so its scan fails and it has never had a good result
         login(self.c, "admin", ADMIN_PW)
         self.jobs.scanners["windows"] = self.jobs._scan_windows
         sid = self._scan(["kubernetes", "windows"])
-        for path in ("/", "/scans/%d" % sid):
+        for path in ("/report", "/scans/%d" % sid):
             page = self.c.get(path).text
             self.assertIn('id="windows"', page, path)
             self.assertIn("Scan failed", page, path)
             self.assertIn("no Windows targets are configured", page, path)
             self.assertIn("CVE-2099-0002", page, path)      # the good platform is still listed
         self.assertIn("Scan failed", render.pdf_html(self.jobs.current_model()))
+        summary = self.c.get("/").text
+        self.assertIn('href="/report#windows"', summary)
+        self.assertIn('href="/report#kubernetes"', summary)
+        self.assertIn("Scan failed", summary)
+        self.assertIn("No results", summary)
 
     def test_newer_failure_flags_older_results(self):
         login(self.c, "admin", ADMIN_PW)
         self.jobs.scanners["windows"] = lambda say: dict(fake_kubernetes(say), id="windows", title="Windows")
         good = self._scan(["windows"])
-        page = self.c.get("/").text
+        page = self.c.get("/report").text
         self.assertNotIn("Scan failed", page)
 
         def broken(say):
             raise RuntimeError("WinRM <refused>")
         self.jobs.scanners["windows"] = broken
         bad = self._scan(["windows"])
-        page = self.c.get("/").text
+        page = self.c.get("/report").text
         self.assertIn("Scan failed", page)
         self.assertIn("The latest scan (#%d" % bad, page)
         self.assertIn("from scan #%d" % good, page)

@@ -219,6 +219,8 @@ pre.log{background:var(--head);border:1px solid var(--line);border-radius:6px;pa
 .login input[type=text],.login input[type=password]{width:100%}.login .btn{width:100%;text-align:center;margin-top:14px;padding:9px}
 .or{display:flex;align-items:center;gap:10px;color:var(--muted);margin:18px 0 4px;font-size:12.5px}.or:before,.or:after{content:"";flex:1;border-top:1px solid var(--line)}
 .pager{display:flex;gap:8px;margin-top:12px}
+th.n{text-align:right}table.summary td a strong{font-size:15px}
+tr.failrow td{color:var(--crit);background:var(--crit-bg);font-size:12.5px;border-top:0}
 @media print{.top,.subbar,.noprint{display:none}}
 """
 
