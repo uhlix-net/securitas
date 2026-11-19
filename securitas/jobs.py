@@ -11,6 +11,7 @@ from sqlalchemy import delete, select, update
 from . import feeds, k8s, report, scan_linux, scan_windows
 from .config import PLATFORMS
 from .db import PlatformResult, Scan, Schedule, Target, utcnow
+from .settings import Settings
 
 log = logging.getLogger("securitas.jobs")
 STATUS_LABEL = {"queued": "Queued", "running": "Running", "done": "Done", "partial": "Partial", "failed": "Failed"}
@@ -27,29 +28,46 @@ def valid_cron(cron):
 
 
 class Feeds:
-    """KEV and EPSS, loaded at most every few minutes (the files themselves are re-downloaded hourly / daily)."""
+    """KEV and EPSS, loaded at most every few minutes (the files themselves are re-downloaded hourly / daily).
+    A source turned off in Settings > Sources is not downloaded at all."""
 
-    def __init__(self, cfg):
-        self.cfg, self.lock, self.at, self.value = cfg, threading.Lock(), 0, None
+    def __init__(self, settings):
+        self.settings, self.lock, self.at, self.value, self.key = settings, threading.Lock(), 0, None, None
+
+    @property
+    def cfg(self):
+        return self.settings.effective()
 
     def get(self, force=False):
+        cfg = self.cfg
+        key = (cfg.kev_enabled, cfg.epss_enabled, cfg.kev_url, cfg.epss_url)
         with self.lock:
-            if self.value is None or force or time.time() - self.at > 300:
+            if self.value is None or force or key != self.key or time.time() - self.at > 300:
                 w = []
-                kev, kev_src = feeds.kev(self.cfg, w)
-                epss, epss_src = feeds.epss(self.cfg, None, w)
-                self.value, self.at = (kev, epss, {"kev": kev_src, "epss": epss_src}, w), time.time()
+                if cfg.kev_enabled:
+                    kev, kev_src = feeds.kev(cfg, w)
+                else:
+                    kev, kev_src = {}, "CISA KEV catalog turned off"
+                if cfg.epss_enabled:
+                    epss, epss_src = feeds.epss(cfg, None, w)
+                else:
+                    epss, epss_src = {}, "EPSS scores turned off"
+                if not cfg.kev_enabled and not cfg.epss_enabled:
+                    w.append("CISA KEV and EPSS are both turned off (Settings > Sources), so every CVE is listed, unranked.")
+                self.value, self.at, self.key = (kev, epss, {"kev": kev_src, "epss": epss_src}, w), time.time(), key
             return self.value
 
     def ranker(self, force=False):
+        cfg = self.cfg
         kev, epss, src, w = self.get(force)
-        return report.Ranker(kev, epss, self.cfg.epss_min), src, list(w)
+        return report.Ranker(kev, epss, cfg.epss_min, cfg.kev_enabled, cfg.epss_enabled), src, list(w)
 
 
 class Jobs:
     def __init__(self, cfg, db, scanners=None):
         self.cfg, self.db = cfg, db
-        self.feeds = Feeds(cfg)
+        self.settings = Settings(cfg, db)
+        self.feeds = Feeds(self.settings)
         self.scanners = scanners or {"kubernetes": self._scan_kubernetes, "linux": self._scan_linux,
                                      "windows": self._scan_windows}
         self.wake = threading.Event()
@@ -116,7 +134,9 @@ class Jobs:
                     continue
                 queued = [x for x in s.scalars(select(Scan).where(Scan.status.in_(("queued", "running")))).all()
                           if sc.platform in (x.platforms or [])]
-                if queued:
+                if not self.settings.effective().platform_on(sc.platform):
+                    log.info("schedule %s: scanning of this platform is turned off (Settings > Sources), skipped", sc.platform)
+                elif queued:
                     log.info("schedule %s: a scan of this platform is already queued or running, skipped", sc.platform)
                 else:
                     self.enqueue(s, [sc.platform], "schedule")
@@ -188,6 +208,8 @@ class Jobs:
             t0 = time.time()
             status, raw, err = "done", None, ""
             try:
+                if not self.settings.effective().platform_on(p):
+                    raise RuntimeError("scanning of this platform is turned off (Settings > Sources)")
                 raw = self.scanners[p](say)
                 if raw is None:
                     status, err = "failed", "nothing to scan"
@@ -217,6 +239,10 @@ class Jobs:
         with self._cache_lock:
             self._cache.clear()
 
+    def clear_cache(self):
+        with self._cache_lock:
+            self._cache.clear()
+
     def _save_log(self, sid, lines):
         try:
             with self.db.Session() as s, s.begin():
@@ -237,7 +263,7 @@ class Jobs:
                 t.host_key = key
 
     def _scan_kubernetes(self, say):
-        reports = k8s.list_reports(self.cfg)
+        reports = k8s.list_reports(self.settings.effective())
         say("kubernetes: %d vulnerability reports" % len(reports))
         return report.kubernetes_raw(reports, self.cfg.cluster_name)
 
@@ -245,13 +271,13 @@ class Jobs:
         t = self._targets("linux")
         if not t:
             raise RuntimeError("no Linux targets are configured")
-        return scan_linux.scan(self.cfg, t, say, self._record_key)
+        return scan_linux.scan(self.settings.effective(), t, say, self._record_key)
 
     def _scan_windows(self, say):
         t = self._targets("windows")
         if not t:
             raise RuntimeError("no Windows targets are configured")
-        return scan_windows.scan(self.cfg, t, say)
+        return scan_windows.scan(self.settings.effective(), t, say)
 
     # ------------------------------------------------------------ reports
 
@@ -272,15 +298,29 @@ class Jobs:
     def current_model(self):
         """Newest good result of each platform, re-ranked with the current KEV catalog and EPSS scores."""
         rk, src, warnings = self.feeds.ranker()
+        eff = self.settings.effective()
         with self.db.Session() as s:
             pairs = [(self._latest(s, p), self._newest(s, p)) for p in PLATFORMS]
             pairs = [(g, n) for g, n in pairs if n is not None]
-            key = (tuple((g.id if g else 0, n.id) for g, n in pairs), src["kev"], src["epss"], self.feeds.at)
+            key = (tuple((g.id if g else 0, n.id) for g, n in pairs), src["kev"], src["epss"], self.feeds.at,
+                   self.settings.rev)
             with self._cache_lock:
                 if key in self._cache:
                     return self._cache[key]
             sections = []
             for good, newest in pairs:
+                plat = newest.platform
+                if not eff.platform_on(plat):
+                    off = "Scanning of %s is turned off (Settings > Sources)." % report.PLATFORM_TITLE.get(plat, plat)
+                    if good is None:
+                        sec = report.failed_platform(plat, off)
+                    else:
+                        sec = report.build_platform(good.raw, rk)
+                        sec["failure"] = off + " The results below are from scan #%d and are no longer updated." % good.scan_id
+                        sec["scanned"], sec["scan_id"] = self._when(good), good.scan_id
+                    sec["status"], sec["turned_off"] = "off", True
+                    sections.append(sec)
+                    continue
                 if good is None:
                     # never scanned successfully: show the failure instead of leaving the platform out
                     sec = report.failed_platform(newest.platform, newest.error)
@@ -302,7 +342,7 @@ class Jobs:
                 sec = report.build_platform(report.extra_raw(p), rk)
                 sec["scanned"] = str(p.get("scan_date", "")) or "imported"
                 sections.append(sec)
-        m = report.model(self.cfg, sections, src, warnings)
+        m = report.model(eff, sections, src, warnings)
         with self._cache_lock:
             self._cache.clear()
             self._cache[key] = m
@@ -323,7 +363,7 @@ class Jobs:
             sec["scanned"] = self._when(r)
             sections.append(sec)
             src = r.sources or src
-        return report.model(self.cfg, sections, src or {"kev": "", "epss": ""}, warnings,
+        return report.model(self.settings.effective(), sections, src or {"kev": "", "epss": ""}, warnings,
                             generated=scan.finished_at or scan.created_at, label="Scan #%d" % scan.id)
 
 

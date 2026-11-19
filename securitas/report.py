@@ -26,11 +26,17 @@ def worse(a, b):
 
 
 class Ranker:
-    def __init__(self, kev, epss, epss_min):
-        self.kev, self.epss, self.epss_min = kev, epss, epss_min
+    """kev_on / epss_on: the source switches in Settings > Sources. With both off every CVE is a priority,
+    because there is nothing left to rank by."""
+
+    def __init__(self, kev, epss, epss_min, kev_on=True, epss_on=True):
+        self.kev, self.epss, self.epss_min = (kev if kev_on else {}), (epss if epss_on else {}), epss_min
+        self.kev_on, self.epss_on = kev_on, epss_on
 
     def priority(self, cve):
-        return cve in self.kev or self.epss.get(cve, 0.0) >= self.epss_min
+        if not self.kev_on and not self.epss_on:
+            return True
+        return (self.kev_on and cve in self.kev) or (self.epss_on and self.epss.get(cve, 0.0) >= self.epss_min)
 
     def enrich(self, row):
         k = self.kev.get(row["cve"])
@@ -93,7 +99,8 @@ def summary(model):
     rows = []
     for p in model["platforms"]:
         sev = [str(r.get("severity", "")).lower() for r in p["cves"]]
-        rows.append({"id": p["id"], "title": p["title"], "status": p.get("status", "done"), "failure": p.get("failure", ""),
+        rows.append({"id": p["id"], "title": p["title"], "status": "off" if p.get("turned_off") else p.get("status", "done"),
+                     "failure": p.get("failure", ""),
                      "scanned": p.get("scanned", ""), "scan_id": p.get("scan_id"), "no_results": bool(p.get("no_results")),
                      "systems": p.get("system_count", len(p["systems"])), "priority": len(p["cves"]),
                      "kev": sum(1 for r in p["cves"] if r.get("kev")), "critical": sev.count("critical"),
@@ -242,6 +249,8 @@ def model(cfg, sections, sources, warnings, generated=None, label=""):
         "generated": now.strftime("%Y-%m-%d %H:%M %Z"),
         "date": now.strftime("%Y-%m-%d"),
         "epss_min": cfg.epss_min,
+        "kev_on": getattr(cfg, "kev_enabled", True),
+        "epss_on": getattr(cfg, "epss_enabled", True),
         "sources": sources,
         "warnings": warnings,
         "platforms": sections,

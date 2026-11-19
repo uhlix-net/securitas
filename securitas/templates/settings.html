@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+  <h2>Settings</h2>
+  <p class="sub">Changes made here are stored in Securitas' database and take effect immediately. A value set here overrides the deployment's (Helm values); anything not set here comes from the deployment. Secrets are encrypted and never shown again.</p>
+  <div class="cards">
+  {% for key, label, perm, desc in SETTINGS_PAGES %}{% if can(user.role, perm) %}
+    <a class="card" href="/settings/{{ key }}"><h3>{{ label }}</h3><p>{{ desc }}</p></a>
+  {% endif %}{% endfor %}
+  </div>
+</section>
+{% endblock %}

@@ -227,24 +227,30 @@ def fake_kubernetes(say):
 
 
 class FakeFeeds:
-    def __init__(self, cfg):
-        self.cfg, self.at = cfg, 1
+    """Test KEV/EPSS data that follows the source switches in Settings, like jobs.Feeds."""
+
+    def __init__(self, settings):
+        self.settings, self.at = settings, 1
 
     def get(self, force=False):
         return KEV, EPSS, {"kev": "test KEV", "epss": "test EPSS"}, []
 
     def ranker(self, force=False):
-        return report.Ranker(KEV, EPSS, 0.10), {"kev": "test KEV", "epss": "test EPSS"}, []
+        c = self.settings.effective()
+        src = {"kev": "test KEV" if c.kev_enabled else "CISA KEV catalog turned off",
+               "epss": "test EPSS" if c.epss_enabled else "EPSS scores turned off"}
+        return report.Ranker(KEV, EPSS, c.epss_min, c.kev_enabled, c.epss_enabled), src, []
 
 
 def make_app(**over):
     from securitas.server import build
+    over.setdefault("secret_key", "test-secret-key")
     cfg = Config(database_url="sqlite://", data_dir=tempfile.mkdtemp(), secure_cookies=False, admin_password=ADMIN_PW,
                  role_map=["Securitas-Admins=admin", "Securitas-Operators=operator", "Securitas-Viewers=viewer"],
                  base_url="http://testserver",
                  schedules={"kubernetes": "5 * * * *", "linux": "0 5 * * *", "windows": "30 5 * * *"}, **over)
     app, db, jobs = build(cfg, start_threads=False, scanners={"kubernetes": fake_kubernetes})
-    jobs.feeds = FakeFeeds(cfg)
+    jobs.feeds = FakeFeeds(jobs.settings)
     return app, db, jobs, cfg
 
 
@@ -269,7 +275,7 @@ class Web(unittest.TestCase):
         self.c = client(self.app)
 
     def test_requires_login(self):
-        for p in ("/", "/scans", "/report.pdf", "/data.json", "/admin/users"):
+        for p in ("/", "/scans", "/report.pdf", "/data.json", "/settings/users"):
             r = self.c.get(p, follow_redirects=False)
             self.assertEqual(r.status_code, 303, p)
             self.assertTrue(r.headers["location"].startswith("/login"), p)
@@ -330,46 +336,46 @@ class Web(unittest.TestCase):
         login(self.c, "admin", ADMIN_PW)
         tok = csrf(self.c)
         for name, role in (("vera", "viewer"), ("otto", "operator")):
-            self.c.post("/admin/users", data={"csrf": tok, "username": name, "password": "a-long-password-1", "role": role})
+            self.c.post("/settings/users", data={"csrf": tok, "username": name, "password": "a-long-password-1", "role": role})
         v = client(self.app)
         self.assertEqual(login(v, "vera", "a-long-password-1").headers["location"], "/")
         self.assertEqual(v.get("/").status_code, 200)
         self.assertEqual(v.get("/scans").status_code, 200)
         self.assertNotIn("Run scan", v.get("/scans").text)
         self.assertEqual(v.post("/scans", data={"csrf": csrf(v), "platform": "kubernetes"}).status_code, 403)
-        for p in ("/schedules", "/admin/targets", "/admin/users", "/admin/auth", "/admin/audit"):
+        for p in ("/settings/schedules", "/settings/targets", "/settings/users", "/settings/authentication", "/settings/audit"):
             self.assertEqual(v.get(p).status_code, 403, p)
         o = client(self.app)
         login(o, "otto", "a-long-password-1")
         self.assertEqual(o.post("/scans", data={"csrf": csrf(o), "platform": "kubernetes"}, follow_redirects=False).status_code, 303)
-        self.assertEqual(o.get("/schedules").status_code, 200)
-        r = o.post("/schedules/linux", data={"csrf": csrf(o), "cron": "15 3 * * 1", "enabled": "on"}, follow_redirects=False)
+        self.assertEqual(o.get("/settings/schedules").status_code, 200)
+        r = o.post("/settings/schedules/linux", data={"csrf": csrf(o), "cron": "15 3 * * 1", "enabled": "on"}, follow_redirects=False)
         self.assertIn("ok=saved", r.headers["location"])
-        self.assertIn("err=cron", o.post("/schedules/linux", data={"csrf": csrf(o), "cron": "bad"}, follow_redirects=False).headers["location"])
-        for p in ("/admin/targets", "/admin/users", "/admin/auth", "/admin/audit"):
+        self.assertIn("err=cron", o.post("/settings/schedules/linux", data={"csrf": csrf(o), "cron": "bad"}, follow_redirects=False).headers["location"])
+        for p in ("/settings/targets", "/settings/users", "/settings/authentication", "/settings/audit"):
             self.assertEqual(o.get(p).status_code, 403, p)
-        audit = self.c.get("/admin/audit").text
+        audit = self.c.get("/settings/audit").text
         self.assertIn("scan.run", audit)
         self.assertIn("schedule.saved", audit)
 
     def test_targets(self):
         login(self.c, "admin", ADMIN_PW)
         tok = csrf(self.c)
-        self.c.post("/admin/targets", data={"csrf": tok, "platform": "linux", "host": "web1.example.com", "label": "Web"})
-        self.assertIn("err=host", self.c.post("/admin/targets", data={"csrf": tok, "platform": "linux", "host": "bad host;rm"},
+        self.c.post("/settings/targets", data={"csrf": tok, "platform": "linux", "host": "web1.example.com", "label": "Web"})
+        self.assertIn("err=host", self.c.post("/settings/targets", data={"csrf": tok, "platform": "linux", "host": "bad host;rm"},
                                               follow_redirects=False).headers["location"])
-        self.assertIn("web1.example.com", self.c.get("/admin/targets").text)
+        self.assertIn("web1.example.com", self.c.get("/settings/targets").text)
         self.assertIn("1 target)", self.c.get("/scans").text)
 
     def test_last_admin_and_self(self):
         login(self.c, "admin", ADMIN_PW)
-        r = self.c.post("/admin/users/1", data={"csrf": csrf(self.c), "action": "role", "role": "viewer"}, follow_redirects=False)
+        r = self.c.post("/settings/users/1", data={"csrf": csrf(self.c), "action": "role", "role": "viewer"}, follow_redirects=False)
         self.assertIn("err=self", r.headers["location"])
 
     def test_password_change_and_disable(self):
         login(self.c, "admin", ADMIN_PW)
         tok = csrf(self.c)
-        self.c.post("/admin/users", data={"csrf": tok, "username": "pat", "password": "first-password-1", "role": "viewer"})
+        self.c.post("/settings/users", data={"csrf": tok, "username": "pat", "password": "first-password-1", "role": "viewer"})
         p = client(self.app)
         login(p, "pat", "first-password-1")
         r = p.post("/account/password", data={"csrf": csrf(p), "current": "first-password-1", "new": "second-password-2",
@@ -380,15 +386,15 @@ class Web(unittest.TestCase):
         from securitas.db import User
         with self.db.Session() as s:
             uid = s.query(User).filter_by(username="pat").one().id
-        self.c.post("/admin/users/%d" % uid, data={"csrf": tok, "action": "disable"})
+        self.c.post("/settings/users/%d" % uid, data={"csrf": tok, "action": "disable"})
         self.assertEqual(p.get("/", follow_redirects=False).status_code, 303)
         self.assertIn("e=", login(client(self.app), "pat", "second-password-2").headers["location"])
 
     def test_local_login_off(self):
         login(self.c, "admin", ADMIN_PW)
         tok = csrf(self.c)
-        self.c.post("/admin/users", data={"csrf": tok, "username": "loc", "password": "local-password-1", "role": "viewer"})
-        self.c.post("/admin/auth/local", data={"csrf": tok})
+        self.c.post("/settings/users", data={"csrf": tok, "username": "loc", "password": "local-password-1", "role": "viewer"})
+        self.c.post("/settings/authentication/local", data={"csrf": tok})
         self.assertIn("e=localoff", login(client(self.app), "loc", "local-password-1").headers["location"])
         self.assertEqual(login(client(self.app), "admin", ADMIN_PW).headers["location"], "/")   # break-glass
 
@@ -518,8 +524,25 @@ class Ldap(unittest.TestCase):
         self.assertIsNone(auth.ldap_lookup(self.cfg.ldap, "", "ghost", "x"))
         c = client(self.app)
         self.assertEqual(login(c, "ann", "ann-password").headers["location"], "/")
-        self.assertIn("Users", c.get("/").text)
+        self.assertIn("Users", c.get("/settings").text)
         self.assertIn("e=norole", login(client(self.app), "nobody", "nobody-password").headers["location"])
+
+    def test_ldap_settings_in_ui(self):
+        c = client(self.app)
+        login(c, "admin", ADMIN_PW)
+        base = {"url": "ldaps://dc.example.com", "bind_dn": "cn=svc,dc=example,dc=com", "user_base": "ou=users,dc=example,dc=com",
+                "user_filter": self.cfg.ldap.user_filter, "group_base": "", "nested_groups": ""}
+        post = lambda **d: c.post("/settings/authentication/ldap", data={"csrf": csrf(c, "/settings/authentication"),
+                                                                         **{k: v for k, v in {**base, **d}.items() if v != ""}},
+                                  follow_redirects=False)
+        post()                                                          # "on" unticked: LDAP off
+        self.assertIn("e=denied", login(client(self.app), "ann", "ann-password").headers["location"])
+        post(on="on", bind_password="wrong-svc-password")               # on, but the bind password is wrong
+        self.assertIn("e=ldapdown", login(client(self.app), "ann", "ann-password").headers["location"])
+        post(on="on", revert_bind_password="on")                        # back to the deployment's password
+        self.assertEqual(login(client(self.app), "ann", "ann-password").headers["location"], "/")
+        page = c.get("/settings/authentication").text
+        self.assertNotIn("svcpw", page)
 
 
 class Oidc(unittest.TestCase):
@@ -595,6 +618,215 @@ class Oidc(unittest.TestCase):
         self.claims.update(preferred_username="admin", groups=["Securitas-Admins"])
         r, _ = self.flow(client(self.app))
         self.assertIn("e=clash", r.headers["location"])
+
+
+class SettingsUI(unittest.TestCase):
+    """0.3.0: settings saved in the web UI (LDAP, SSO, scan credentials, sources), Settings menu, report summary."""
+
+    def setUp(self):
+        self.app, self.db, self.jobs, self.cfg = make_app(ssh_user="deploy-user", winrm_user="deploy@example.com")
+        self.c = client(self.app)
+        login(self.c, "admin", ADMIN_PW)
+
+    def post(self, path, page, **data):
+        return self.c.post(path, data={"csrf": csrf(self.c, page), **data}, follow_redirects=False)
+
+    def stored(self):
+        from securitas.db import Setting
+        with self.db.Session() as s:
+            row = s.get(Setting, "ui_settings")
+            return json.dumps(row.value) if row else ""
+
+    def test_text_override_secret_encryption_and_revert(self):
+        st = self.jobs.settings
+        r = self.post("/settings/credentials/windows", "/settings/credentials", winrm_user="svc@example.com",
+                      winrm_password="Sup3r-secret!", winrm_port="5986", winrm_ssl="on", winrm_auth="ntlm")
+        self.assertEqual(r.headers["location"], "/settings/credentials?ok=saved")
+        eff = st.effective()
+        self.assertEqual((eff.winrm_user, eff.winrm_password, eff.winrm_auth), ("svc@example.com", "Sup3r-secret!", "ntlm"))
+        self.assertEqual(self.cfg.winrm_user, "deploy@example.com")          # the deployment's value is untouched
+        self.assertNotIn("Sup3r-secret!", self.stored())                      # encrypted at rest
+        page = self.c.get("/settings/credentials").text
+        self.assertNotIn("Sup3r-secret!", page)                               # never shown
+        self.assertIn("Set here", page)
+        # blank secret keeps the stored one
+        self.post("/settings/credentials/windows", "/settings/credentials", winrm_user="svc@example.com", winrm_password="",
+                  winrm_port="5986", winrm_ssl="on", winrm_auth="ntlm")
+        self.assertEqual(st.effective().winrm_password, "Sup3r-secret!")
+        # revert goes back to the deployment
+        self.post("/settings/credentials/windows", "/settings/credentials", winrm_user="x", revert_winrm_user="on",
+                  revert_winrm_password="on", winrm_port="5986", winrm_ssl="on", winrm_auth="negotiate")
+        eff = st.effective()
+        self.assertEqual((eff.winrm_user, eff.winrm_password), ("deploy@example.com", ""))
+        actions = [a for (a,) in self._audit()]
+        self.assertIn("settings.windows", actions)
+        self.assertNotIn("Sup3r-secret!", json.dumps(self._audit(detail=True)))
+
+    def _audit(self, detail=False):
+        from securitas.db import AuditEvent
+        with self.db.Session() as s:
+            return [((a.action, a.detail) if detail else (a.action,)) for a in s.query(AuditEvent).all()]
+
+    def test_invalid_values_rejected(self):
+        r = self.post("/settings/credentials/windows", "/settings/credentials", winrm_user="u", winrm_port="99999",
+                      winrm_ssl="on", winrm_auth="negotiate")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("between 1 and 65535", r.text)
+        r = self.post("/settings/credentials/linux", "/settings/credentials", ssh_user="u", ssh_port="22",
+                      ssh_key="not a key")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("private key", r.text)
+
+    def test_ssh_key_pasted_in_ui(self):
+        import io
+        import paramiko
+        k = paramiko.Ed25519Key.from_private_key(io.StringIO(ED25519_KEY))
+        self.post("/settings/credentials/linux", "/settings/credentials", ssh_user="scan", ssh_port="22", ssh_key=ED25519_KEY)
+        eff = self.jobs.settings.effective()
+        from securitas import scan_linux
+        self.assertEqual(scan_linux.load_key(eff).get_fingerprint(), k.get_fingerprint())
+        self.assertNotIn("PRIVATE KEY", self.stored())
+        self.assertNotIn("PRIVATE KEY", self.c.get("/settings/credentials").text)
+
+    def test_secrets_need_the_key(self):
+        app, db, jobs, cfg = make_app(secret_key="")
+        c = client(app)
+        login(c, "admin", ADMIN_PW)
+        r = c.post("/settings/credentials/windows", data={"csrf": csrf(c, "/settings/credentials"), "winrm_user": "u",
+                                                          "winrm_password": "pw", "winrm_port": "5986", "winrm_ssl": "on",
+                                                          "winrm_auth": "negotiate"}, follow_redirects=False)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("SECURITAS_SECRET_KEY", r.text)
+
+    def test_oidc_configured_in_ui(self):
+        self.assertNotIn("/login/oidc", client(self.app).get("/login").text)
+        self.post("/settings/authentication/oidc", "/settings/authentication", on="on", issuer="https://idp.example.com/app/",
+                  client_id="abc", client_secret="s3cret", scopes="openid profile email", username_claim="preferred_username",
+                  groups_claim="groups", label="Sign in with Example")
+        page = client(self.app).get("/login").text
+        self.assertIn("/login/oidc", page)
+        self.assertIn("Sign in with Example", page)
+        self.assertEqual(self.app.state.securitas.oidc.cfg.client_secret, "s3cret")
+        # switching it off hides the button again
+        self.post("/settings/authentication/oidc", "/settings/authentication", issuer="https://idp.example.com/app/",
+                  client_id="abc", scopes="openid profile email", username_claim="preferred_username", groups_claim="groups",
+                  label="Sign in with Example")
+        self.assertNotIn("/login/oidc", client(self.app).get("/login").text)
+
+    def test_platform_switch(self):
+        self.post("/settings/sources", "/settings/sources", kev_enabled="on", epss_enabled="on", epss_min="0.10",
+                  platform_kubernetes="on", platform_linux="on")      # windows off
+        self.assertFalse(self.jobs.settings.effective().platform_on("windows"))
+        page = self.c.get("/scans").text
+        self.assertIn("turned off in", page)
+        r = self.post("/scans", "/scans", platform="windows")
+        self.assertIn("err=noplat", r.headers["location"])
+        from securitas.db import Schedule, Scan, utcnow
+        import datetime
+        with self.db.Session() as s, s.begin():
+            for sc in s.query(Schedule).all():
+                sc.next_run = utcnow() - datetime.timedelta(minutes=1)
+        self.jobs.run_due()
+        with self.db.Session() as s:
+            self.assertEqual(sorted(p for x in s.query(Scan).all() for p in x.platforms), ["kubernetes", "linux"])
+
+    def test_turned_off_platform_keeps_old_results_marked(self):
+        self.jobs.scanners["windows"] = lambda say: dict(fake_kubernetes(say), id="windows", title="Windows")
+        with self.db.Session() as s, s.begin():
+            self.jobs.enqueue(s, ["windows"], "manual", "admin")
+        self.jobs.run_scan(self.jobs._claim())
+        self.post("/settings/sources", "/settings/sources", kev_enabled="on", epss_enabled="on", epss_min="0.10",
+                  platform_kubernetes="on", platform_linux="on")
+        page = self.c.get("/report").text
+        self.assertIn("Turned off", page)
+        self.assertIn("no longer updated", page)
+        self.assertIn("Turned off", self.c.get("/").text)
+
+    def test_ranking_switches(self):
+        self.jobs.scanners["kubernetes"] = fake_kubernetes
+        with self.db.Session() as s, s.begin():
+            self.jobs.enqueue(s, ["kubernetes"], "manual", "admin")
+        self.jobs.run_scan(self.jobs._claim())
+        cves = lambda: [r["cve"] for r in self.jobs.current_model()["platforms"][0]["cves"]]
+        self.assertIn("CVE-2099-0002", cves())                    # KEV
+        self.post("/settings/sources", "/settings/sources", epss_enabled="on", epss_min="0.10", platform_kubernetes="on",
+                  platform_linux="on", platform_windows="on")      # KEV off
+        self.assertNotIn("CVE-2099-0002", cves())
+        self.assertIn("The CISA KEV catalog is turned off", self.c.get("/report").text)
+        self.post("/settings/sources", "/settings/sources", epss_min="0.10", platform_kubernetes="on", platform_linux="on",
+                  platform_windows="on")                           # both off: everything listed
+        self.assertEqual(sorted(cves()), ["CVE-2099-0001", "CVE-2099-0002", "CVE-2099-0003", "CVE-2099-0004"])
+        self.assertIn("every CVE is listed, unranked", self.c.get("/report").text)
+        r = self.post("/settings/sources", "/settings/sources", kev_enabled="on", epss_enabled="on", epss_min="1.5",
+                      platform_kubernetes="on", platform_linux="on", platform_windows="on")
+        self.assertEqual(r.status_code, 400)
+
+    def test_real_feeds_skip_turned_off_sources(self):
+        from securitas import feeds, jobs as jobsmod
+        calls = []
+        old = feeds.kev, feeds.epss
+        feeds.kev = lambda cfg, w: (calls.append("kev"), ({}, "k"))[1]
+        feeds.epss = lambda cfg, wanted, w: (calls.append("epss"), ({}, "e"))[1]
+        try:
+            f = jobsmod.Feeds(self.jobs.settings)
+            f.get()
+            self.assertEqual(calls, ["kev", "epss"])
+            self.post("/settings/sources", "/settings/sources", epss_enabled="on", epss_min="0.10",
+                      platform_kubernetes="on", platform_linux="on", platform_windows="on")
+            calls.clear()
+            _, _, src, _ = f.get()
+            self.assertEqual(calls, ["epss"])
+            self.assertIn("turned off", src["kev"])
+        finally:
+            feeds.kev, feeds.epss = old
+
+    def test_sources_page_documents_scanners(self):
+        page = self.c.get("/settings/sources").text
+        for s in ("CISA Known Exploited", "EPSS", "Trivy Operator", "dnf", "MSRC", "updateinfo list --security",
+                  "Win32_OperatingSystem", "How Windows is scanned"):
+            self.assertIn(s, page)
+
+    def test_report_starts_with_summary(self):
+        self.jobs.scanners["kubernetes"] = fake_kubernetes
+        with self.db.Session() as s, s.begin():
+            self.jobs.enqueue(s, ["kubernetes"], "manual", "admin")
+        sid = self.jobs._claim()
+        self.jobs.run_scan(sid)
+        for html_text in (self.c.get("/report").text, self.c.get("/scans/%d" % sid).text,
+                          render.pdf_html(self.jobs.current_model())):
+            self.assertIn('<table class="summary">', html_text)
+            self.assertLess(html_text.index('<table class="summary">'), html_text.index('<section id="kubernetes">'))
+
+    def test_menu_redirects_and_permissions(self):
+        page = self.c.get("/settings").text
+        for label in ("Users", "Authentication", "Scan credentials", "Targets", "Schedules", "Sources", "Audit log"):
+            self.assertIn(label, page)
+        for old, new in (("/admin/users", "/settings/users"), ("/admin/auth", "/settings/authentication"),
+                         ("/schedules", "/settings/schedules")):
+            r = self.c.get(old, follow_redirects=False)
+            self.assertEqual((r.status_code, r.headers["location"]), (301, new))
+        self.assertIn("Add a local user", self.c.get("/settings/users").text)
+        tok = csrf(self.c, "/settings/users")
+        self.c.post("/settings/users", data={"csrf": tok, "username": "vic", "password": "a-long-password-1", "role": "viewer"})
+        v = client(self.app)
+        login(v, "vic", "a-long-password-1")
+        page = v.get("/settings").text
+        self.assertIn("Sources", page)
+        self.assertNotIn("Scan credentials", page)
+        self.assertEqual(v.get("/settings/sources").status_code, 200)
+        self.assertEqual(v.get("/settings/credentials").status_code, 403)
+        r = v.post("/settings/sources", data={"csrf": csrf(v, "/settings/sources")}, follow_redirects=False)
+        self.assertEqual(r.status_code, 403)
+
+
+def _ed25519_key():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    return Ed25519PrivateKey.generate().private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH,
+                                                      serialization.NoEncryption()).decode()
+
+
+ED25519_KEY = _ed25519_key()
 
 
 if __name__ == "__main__":

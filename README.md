@@ -16,13 +16,21 @@ serves the results as web pages with an **Export to PDF** button.
   listed first, then by EPSS. The current report is re-ranked when the KEV catalog changes, without a rescan.
 - **Summary first.** After sign-in, a summary page lists each platform with its scan status, when it was
   last scanned, and its counts: systems, priority CVEs, known exploited, critical and high. Each platform
-  name links to its section of the full report at `/report`.
+  name links to its section of the full report at `/report`. The same table opens the report and the PDF.
 - **Failed scans are flagged, not hidden.** If a platform's latest scan failed or was only partly
   successful, the summary, the report and the PDF say so and show the error. Older results stay
   visible but are marked as older; a platform that has never been scanned successfully still gets a section saying so.
 - **Scheduled and on-demand scans, with history.** Each platform has its own cron schedule.
   Operators can start a scan at any time. Every past scan can be opened and exported as it was at the time,
   and the history can be filtered by platform.
+- **Settings in the browser.** Admins configure LDAP, single sign-on, the scan accounts (SSH key,
+  WinRM password), targets, schedules, users and vulnerability sources on the Settings pages. Changes
+  apply immediately; secrets are encrypted in the database and never shown again. Anything not set
+  there comes from the Helm values, so a plain Helm install still works unchanged.
+- **Transparent sources.** The Sources page explains every data source (CISA KEV, EPSS, Trivy, dnf
+  advisories, Microsoft release data), when it was last fetched, what turning it off changes, and shows
+  the exact script each scanner runs on a host. KEV and EPSS can be turned off; each platform can be
+  turned off.
 - **Sign-in and roles.**
   - Sign-in: local accounts, LDAP (Active Directory) and OpenID Connect single sign-on.
   - Three roles: Viewer, Operator and Admin. LDAP and SSO users get their role from their groups.
@@ -31,8 +39,7 @@ serves the results as web pages with an **Export to PDF** button.
 - **No scripts in the pages.** The Content Security Policy blocks all scripts and every form
   carries a CSRF token. The container runs as non-root with a read-only filesystem.
 
-What's new in each version: [CHANGELOG.md](CHANGELOG.md). Upgrading from 0.1.0? See the
-[upgrade notes](CHANGELOG.md#upgrading-from-010).
+What's new in each version: [CHANGELOG.md](CHANGELOG.md). Upgrading? See the upgrade notes there.
 
 ## Roles
 
@@ -41,10 +48,15 @@ What's new in each version: [CHANGELOG.md](CHANGELOG.md). Upgrading from 0.1.0? 
 | View the summary, report and scan history, export PDF | Yes | Yes | Yes |
 | Run scans now | | Yes | Yes |
 | Change schedules | | Yes | Yes |
+| See the Sources page (data sources and how each platform is scanned) | Yes | Yes | Yes |
 | Change scan targets | | | Yes |
+| Scan credentials (SSH key, WinRM account) and connection tests | | | Yes |
+| Turn sources on or off, EPSS threshold | | | Yes |
 | Manage users | | | Yes |
-| Authentication settings and group-to-role mappings | | | Yes |
+| Authentication settings (LDAP, single sign-on) and group-to-role mappings | | | Yes |
 | Audit log | | | Yes |
+
+Everything administrative is under **Settings**; each user sees only the pages their role allows.
 
 ## Install
 
@@ -65,7 +77,13 @@ HTTPS-only: for a plain-HTTP trial with `kubectl port-forward`, set `web.secureC
 
 ## Configuration
 
-The full list with comments is in [`charts/securitas/values.yaml`](charts/securitas/values.yaml).
+Two places, with one rule: **a value saved on a Settings page wins; anything not saved there comes from
+the Helm values.** Each field on those pages shows where its current value comes from, and can be put back
+to the deployment's value. LDAP, single sign-on, the Linux and Windows scan accounts, sources and the EPSS
+threshold can be set either way. Secrets saved in the browser are encrypted with a key the chart generates
+(`settings.secretKey`; keep it with your database backups: without it those secrets cannot be read).
+
+The full list of Helm values with comments is in [`charts/securitas/values.yaml`](charts/securitas/values.yaml).
 The main groups:
 
 | Values | What they set |
@@ -81,6 +99,7 @@ The main groups:
 | `scanning.linux.*` | SSH user, key Secret, optional known_hosts ConfigMap, optional repository override |
 | `scanning.windows.*` | WinRM user, password Secret, port, HTTPS, authentication method |
 | `database.*` | Bundled PostgreSQL (StatefulSet with a PersistentVolume) or an external server |
+| `settings.secretKey.*` | The key that encrypts secrets saved in the browser (generated if not given) |
 
 Outbound access needed:
 - The Kubernetes API.
@@ -91,7 +110,8 @@ Outbound access needed:
 ### Single sign-on
 
 Register a confidential OpenID Connect client with the redirect URI
-`<web.baseUrl>/auth/oidc/callback`, and make the provider send a `groups` claim. Then:
+`<web.baseUrl>/auth/oidc/callback`, and make the provider send a `groups` claim. Then either fill in
+**Settings > Authentication > Single sign-on** (and press *Test the provider*), or use Helm values:
 
 ```bash
 kubectl -n securitas create secret generic securitas-oidc --from-literal=client-secret=...
@@ -109,14 +129,14 @@ gives them a fixed role. An SSO or LDAP sign-in never takes over a local account
 
 Users are looked up with a service account and then verified by binding as the user. Groups come
 from `memberOf`. With `groupBase` set, nested groups are found with the Active Directory
-in-chain matching rule. On the Authentication page, admins can look a user up to see their DN,
-groups and the resulting role.
+in-chain matching rule. Configure it in **Settings > Authentication > LDAP** or with `auth.ldap.*`. On the
+same page, admins can look a user up to see their DN, groups and the resulting role.
 
 ### Linux scans
 
-Create a user on each host that can log in with an SSH key. It needs no sudo. Store the private
-key in a Secret and set `scanning.linux.user` and `scanning.linux.sshKeySecret.name`. Add hosts on
-the Targets page. Without a `knownHosts` ConfigMap, each host's key is recorded on its first scan.
+Create a user on each host that can log in with an SSH key. It needs no sudo. Paste the private key in
+**Settings > Scan credentials** (or store it in a Secret and set `scanning.linux.user` and
+`scanning.linux.sshKeySecret.name`), add hosts on the Targets page, and use *Test a connection*. Without a `knownHosts` ConfigMap, each host's key is recorded on its first scan.
 After that, a changed key fails the scan until an admin resets it.
 
 By default the hosts' own repositories are used. If your hosts point at a mirror that lags behind
@@ -132,8 +152,9 @@ or `__SystemSecurity.SetSecurityDescriptor` with access mask `0x21`). Without it
 "Access denied". The *Newest hotfix* column stays empty for non-admin accounts, because Windows only
 lists installed updates to administrators; the CVE results come from the build and are not affected.
 
-Set `scanning.windows.user` (`DOMAIN\user` or `user@domain`) and
-`scanning.windows.passwordSecret.name`, and add hosts on the Targets page. Securitas reads the OS
+Enter the account (`DOMAIN\user` or `user@domain`) and password in **Settings > Scan credentials** (or set
+`scanning.windows.user` and `scanning.windows.passwordSecret.name`), add hosts on the Targets page, and use
+*Test a connection*. Securitas reads the OS
 build and update revision. It then lists every CVE whose fixed build, in Microsoft's monthly
 release data, is newer than the installed one. Third-party software is not checked.
 

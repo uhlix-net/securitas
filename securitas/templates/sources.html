@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+  <h2>Vulnerability sources</h2>
+  <p class="sub">Everything Securitas reports comes from the sources below. Ranking sources decide which CVEs are priorities; platform sources are what each platform's scan is built on, so turning one off stops scanning that platform. {% if not can(user.role, "sources.edit") %}Only admins can change these settings.{% endif %}</p>
+  <form method="post" action="/settings/sources"><input type="hidden" name="csrf" value="{{ sess.csrf }}">
+  {% set editable = can(user.role, "sources.edit") %}
+  {% for s in sources %}{% set d = f[s.setting] %}{% set st = status.get(s.id, {}) %}
+  <div class="scroll" style="margin-bottom:14px"><table>
+    <thead><tr><th colspan="2">{{ s.name }} <span class="src">{{ "Ranking" if s.kind == "ranking" else PLATFORM_LABEL[s.platform] + " scans" }}</span>
+      {% if d.value %}<span class="badge b-done">On</span>{% else %}<span class="badge b-off">Off</span>{% endif %}
+      {% if d.source == "ui" %}<span class="src ui">Set here</span>{% endif %}</th></tr></thead>
+    <tbody>
+      <tr><th style="width:190px">What it is</th><td>{{ s.what }}</td></tr>
+      <tr><th>How Securitas uses it</th><td>{{ s.use }}</td></tr>
+      <tr><th>When it is off</th><td>{{ s.off }}</td></tr>
+      <tr><th>Updates</th><td>{{ s.refresh }}</td></tr>
+      <tr><th>Where from</th><td class="small">{% if st.url %}<span class="mono">{{ st.url }}</span><br>{% endif %}<a href="{{ s.home }}" rel="noopener noreferrer">{{ s.home }}</a></td></tr>
+      {% if st.version or st.fetched %}<tr><th>Last fetched</th><td class="small">{{ st.version }}{% if st.fetched %}{% if st.version %}; {% endif %}file updated {{ fmt(st.fetched) }}{% endif %}</td></tr>{% endif %}
+      {% if st.last_scan %}<tr><th>Last scan</th><td class="small">{{ fmt(st.last_scan[0]) }}, <a href="/scans/{{ st.last_scan[1] }}">scan #{{ st.last_scan[1] }}</a> <span class="badge b-{{ st.last_scan[2] }}">{{ STATUS_LABEL[st.last_scan[2]] }}</span></td></tr>{% endif %}
+      {% if s.id == "dnf" %}<tr><th>Repositories</th><td class="small">{% if repos %}Upstream override: {% for r in repos %}<span class="mono">{{ r }}</span>{% if not loop.last %}, {% endif %}{% endfor %}{% else %}Each host's own repositories.{% endif %}</td></tr>{% endif %}
+      {% if s.id == "trivy" %}<tr><th>Namespaces</th><td class="small">{% if namespaces %}{{ namespaces|join(", ") }}{% else %}All namespaces.{% endif %}</td></tr>{% endif %}
+      {% if editable %}<tr><th>Use this source</th><td><label class="inline"><input type="checkbox" name="{{ s.setting }}"{% if d.value %} checked{% endif %}> On</label>
+        {% if d.source == "ui" %}<label class="inline"><input type="checkbox" name="revert_{{ s.setting }}"> Use the deployment's setting ({{ "on" if d.deployment else "off" }})</label>{% endif %}</td></tr>{% endif %}
+    </tbody></table></div>
+  {% endfor %}
+  {% set e = f.epss_min %}
+  <div class="scroll" style="margin-bottom:14px"><table><tbody>
+    <tr><th style="width:190px">EPSS threshold</th><td>A CVE whose EPSS score is at or above this value is a priority (0 to 1; default 0.10, a 10% chance of exploitation within 30 days).
+      {% if editable %}<div class="row" style="margin-top:6px"><input type="text" name="epss_min" value="{{ '%.2f'|format(e.value) }}" size="6" aria-label="EPSS threshold">
+        {% if e.source == "ui" %}<label class="inline"><input type="checkbox" name="revert_epss_min"> Use the deployment's value ({{ '%.2f'|format(e.deployment) }})</label>{% endif %}</div>
+      {% else %} Currently <strong>{{ '%.2f'|format(e.value) }}</strong>.{% endif %}</td></tr>
+  </tbody></table></div>
+  {% if editable %}<p><button class="btn primary">Save sources</button></p>{% endif %}
+  </form>
+</section>
+{% for p in PLATFORMS %}{% set t = tools[p] %}
+<section>
+  <h2>How {{ t.title }} is scanned</h2>
+  <ul class="notes" style="color:var(--ink)">{% for line in t.how %}<li>{{ line }}</li>{% endfor %}</ul>
+  {% if p in scripts %}
+  <details class="script"><summary>The exact {{ "shell script" if p == "linux" else "PowerShell script" }} Securitas runs on each host</summary><pre>{{ scripts[p] }}</pre></details>
+  {% endif %}
+</section>
+{% endfor %}
+{% endblock %}

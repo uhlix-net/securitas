@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.3.0 (2026-11-19)
+
+Administration moves into the browser, and Securitas explains where its data comes from.
+
+### New
+
+- **Settings menu.** One place for everything administrative: Users, Authentication, Scan credentials,
+  Targets, Schedules, Sources and the Audit log. Each user sees the pages their role allows (viewers see
+  Sources). The old addresses (`/admin/...`, `/schedules`) redirect.
+- **LDAP and single sign-on configured in the browser.** Server, bind account and password, search bases,
+  nested groups and StartTLS for LDAP; issuer, client ID and secret, scopes, claims and button label for
+  OpenID Connect; an on/off switch for each, and a *Test the provider* button for SSO. Changes apply to the
+  next sign-in, without a restart.
+- **Scan credentials in the browser.** The Linux SSH user, port and private key, and the Windows WinRM
+  account, password, port, HTTPS and authentication method, with a *Test a connection* button that signs in
+  to a chosen target and reports who it signed in as (recorded in the audit log).
+- **Secrets are encrypted and write-only.** Passwords, the SSH key and the OIDC client secret saved in the
+  browser are encrypted in the database with a key the chart generates (`settings.secretKey`). They are never
+  shown again; they can only be replaced or put back to the deployment's value. Every change is in the audit
+  log, without secret values.
+- **Sources page.** Describes each data source (CISA KEV, FIRST EPSS, Trivy Operator, dnf security advisories,
+  Microsoft MSRC release data): what it is, how Securitas uses it, how often it updates, where it comes from,
+  when it was last fetched or scanned, and what turning it off changes. It also explains how each platform is
+  scanned and shows the exact shell and PowerShell scripts the scanners run on a host.
+- **Sources can be turned off.** KEV and EPSS each have a switch (with both off, every CVE is listed
+  unranked), and the EPSS threshold can be changed. Turning off Trivy, dnf or MSRC turns off scanning of that
+  platform: scheduled and manual scans skip it, and its last results stay in the report marked as no longer updated.
+- **Summary at the top of the report.** The Summary page's table (status, last scan, systems, priority CVEs,
+  known exploited, critical, high, totals) now opens the report, past scans and the PDF.
+
+### Changed
+
+- **Settings and Helm values.** A value saved on a Settings page overrides the Helm value; anything not saved
+  there still comes from Helm. Every field shows which applies.
+- **Top menu.** Now Summary, Report, Scans and Settings.
+
+### Upgrading from 0.2.0
+
+- `helm upgrade` adds the Secret `<release>-key` (the encryption key). Back it up with the database: without
+  it, secrets saved in the browser cannot be read (Securitas then falls back to the Helm values and says so on
+  the Settings page). To bring your own key, set `settings.secretKey.existingSecret`.
+- Nothing else changes until you save something on a Settings page.
+
 ## 0.2.0 (2026-11-19)
 
 Securitas grows from a single Kubernetes report page into a scanner for Kubernetes, Linux and Windows,

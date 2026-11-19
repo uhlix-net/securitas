@@ -82,12 +82,24 @@ def missing(info, months):
     return out, name
 
 
-def run_host(cfg, host):
+def client(cfg, host):
     from pypsrp.client import Client
-    c = Client(host, username=cfg.winrm_user, password=cfg.winrm_password, ssl=cfg.winrm_ssl, port=cfg.winrm_port,
-               auth=cfg.winrm_auth, cert_validation=(cfg.ca_file or True) if cfg.winrm_ssl else False,
-               connection_timeout=20, operation_timeout=cfg.host_timeout, read_timeout=cfg.host_timeout + 30)
-    out, streams, had_errors = c.execute_ps(PS_SCRIPT)
+    return Client(host, username=cfg.winrm_user, password=cfg.winrm_password, ssl=cfg.winrm_ssl, port=cfg.winrm_port,
+                  auth=cfg.winrm_auth, cert_validation=(cfg.ca_file or True) if cfg.winrm_ssl else False,
+                  connection_timeout=20, operation_timeout=cfg.host_timeout, read_timeout=cfg.host_timeout + 30)
+
+
+def test_host(cfg, host):
+    """Settings > Scan credentials > Test: sign in and read the OS name, as a scan would. Changes nothing."""
+    out, streams, had_errors = client(cfg, host).execute_ps(
+        "$o = Get-CimInstance Win32_OperatingSystem; '{0} on {1} build {2}' -f (whoami), $o.Caption, $o.BuildNumber")
+    if had_errors:
+        raise RuntimeError("signed in, but PowerShell reported: " + "; ".join(str(e) for e in streams.error)[:300])
+    return "signed in as " + out.strip()
+
+
+def run_host(cfg, host):
+    out, streams, had_errors = client(cfg, host).execute_ps(PS_SCRIPT)
     if had_errors:
         errs = "; ".join(str(e) for e in streams.error)[:300]
         raise RuntimeError("PowerShell error: " + errs)
@@ -96,7 +108,7 @@ def run_host(cfg, host):
 
 def scan(cfg, targets, log, warnings_out=None):
     if not cfg.winrm_user or not cfg.winrm_password:
-        raise RuntimeError("Windows scans need a WinRM account (SECURITAS_WINRM_USER, SECURITAS_WINRM_PASSWORD)")
+        raise RuntimeError("Windows scans need a WinRM account (Settings > Scan credentials, or the Helm values)")
     infos, warnings = {}, []
     with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.host_concurrency) as ex:
         futs = {ex.submit(run_host, cfg, t["host"]): t for t in targets}

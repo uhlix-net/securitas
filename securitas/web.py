@@ -3,6 +3,7 @@
 All pages need a signed-in user. Pages are rendered on the server and contain no scripts, so the Content
 Security Policy allows none. Every form carries a per-session CSRF token.
 """
+import copy
 import datetime
 import ipaddress
 import json
@@ -17,8 +18,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlalchemy import String, cast, delete, func, select
 
-from . import __version__, auth, render, report
+from . import __version__, auth, render, report, scan_linux, scan_windows, sources
 from .config import PLATFORMS
+from .settings import FIELDS, SettingsError
 from .db import (AuditEvent, LoginState, PlatformResult, RoleMapping, Scan, Schedule, Session, Target, User, audit,
                  get_setting, set_setting, utcnow)
 from .jobs import STATUS_LABEL, fmt_time, next_run, valid_cron
@@ -31,7 +33,7 @@ HEADERS = {"X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Refe
            "Cache-Control": "no-store", "Content-Security-Policy": CSP, "Cross-Origin-Opener-Policy": "same-origin"}
 PLATFORM_LABEL = {"kubernetes": "Kubernetes", "linux": "Linux", "windows": "Windows"}
 MESSAGES = {
-    "saved": "Saved.", "queued": "Scan queued.", "deleted": "Deleted.", "added": "Added.", "pw": "Password changed.",
+    "saved": "Saved.", "nochange": "Nothing changed.", "queued": "Scan queued.", "deleted": "Deleted.", "added": "Added.", "pw": "Password changed.",
     "hostkey": "Host key cleared; the next scan records the key the host presents.",
     "loggedout": "You are signed out.",
 }
@@ -53,7 +55,8 @@ class App:
     def __init__(self, cfg, db, jobs):
         self.cfg, self.db, self.jobs = cfg, db, jobs
         self.throttle = auth.Throttle()
-        self.oidc = auth.Oidc(cfg.oidc, cfg.base_url, cfg.ca_file) if cfg.oidc.enabled else None
+        self.settings = jobs.settings
+        self._oidc, self._oidc_key, self._oidc_lock = None, None, threading.Lock()
         self.cookie = "__Host-securitas" if cfg.secure_cookies else "securitas"
         self.proxies = [ipaddress.ip_network(p, strict=False) for p in cfg.trusted_proxies]
         self.env = Environment(loader=FileSystemLoader(os.path.join(os.path.dirname(__file__), "templates")),
@@ -66,6 +69,22 @@ class App:
         self._pdf_lock = threading.Lock()
 
     # ------------------------------------------------------------ helpers
+
+    def eff(self):
+        """The configuration with the changes saved in Settings applied."""
+        return self.settings.effective()
+
+    @property
+    def oidc(self):
+        """The single sign-on client for the current settings (rebuilt when they change), or None."""
+        c = self.eff().oidc
+        if not c.enabled:
+            return None
+        key = (c.issuer, c.client_id, c.client_secret, c.scopes, c.username_claim, c.groups_claim)
+        with self._oidc_lock:
+            if self._oidc is None or self._oidc_key != key:
+                self._oidc, self._oidc_key = auth.Oidc(copy.copy(c), self.cfg.base_url, self.cfg.ca_file), key
+            return self._oidc
 
     def ip(self, request):
         host = request.client.host if request.client else ""
@@ -185,9 +204,10 @@ class App:
             if u.disabled or not u.role:
                 return None, "", "This account is disabled." if u.disabled else "This account has no role."
             return u, "local", ""
-        if self.cfg.ldap.enabled:
+        ldap = self.eff().ldap
+        if ldap.enabled:
             try:
-                info = auth.ldap_lookup(self.cfg.ldap, self.cfg.ca_file, username, password)
+                info = auth.ldap_lookup(ldap, self.cfg.ca_file, username, password)
             except Exception as e:
                 log.warning("LDAP sign-in for %s failed: %s", username, e)
                 return None, "", "The directory could not be reached. Try again later."
@@ -270,9 +290,10 @@ def create_app(cfg, db, jobs):
         with db.Session() as s:
             local = a.local_login_on(s) or bool(cfg.admin_password)
         pre = secrets.token_urlsafe(16)
+        eff = a.eff()
         resp = a.page(request, "login.html", {"title": "Sign in", "next": _safe_next(next, cfg.base_url), "pre": pre,
-                                              "password_form": local or cfg.ldap.enabled, "sso": a.oidc is not None,
-                                              "sso_label": cfg.oidc.label,
+                                              "password_form": local or eff.ldap.enabled, "sso": a.oidc is not None,
+                                              "sso_label": eff.oidc.label,
                                               "error": LOGIN_ERRORS.get(request.query_params.get("e", ""), "")})
         resp.set_cookie("securitas_pre", pre, max_age=1800, httponly=True, secure=cfg.secure_cookies, samesite="strict", path="/login")
         return resp
@@ -310,11 +331,12 @@ def create_app(cfg, db, jobs):
 
     @api.get("/login/oidc")
     def oidc_start(request: Request, next: str = ""):
-        if a.oidc is None:
+        oidc = a.oidc
+        if oidc is None:
             raise HTTPException(404, "Single sign-on is not configured.")
-        state, nonce, verifier = a.oidc.new_request()
+        state, nonce, verifier = oidc.new_request()
         try:
-            url = a.oidc.authorize_url(state, nonce, verifier)
+            url = oidc.authorize_url(state, nonce, verifier)
         except Exception as e:
             log.warning("OIDC start failed: %s", e)
             return go("/login", e="ssodown")
@@ -327,7 +349,8 @@ def create_app(cfg, db, jobs):
 
     @api.get("/auth/oidc/callback")
     def oidc_callback(request: Request, code: str = "", state: str = "", error: str = ""):
-        if a.oidc is None:
+        oidc = a.oidc
+        if oidc is None:
             raise HTTPException(404, "Single sign-on is not configured.")
         ck = request.cookies.get("securitas_oidc", "")
         cstate, _, nxt = ck.partition("|")
@@ -345,7 +368,7 @@ def create_app(cfg, db, jobs):
             nonce, verifier = ls.nonce, ls.verifier
             s.delete(ls)
         try:
-            info = a.oidc.identity(a.oidc.finish(code, nonce, verifier))
+            info = oidc.identity(oidc.finish(code, nonce, verifier))
         except Exception as e:
             log.warning("OIDC sign-in failed: %s", e)
             with db.Session() as s, s.begin():
@@ -481,6 +504,7 @@ def create_app(cfg, db, jobs):
         return a.page(request, "scans.html", {"user": user, "sess": request.state.sess, "title": "Scans", "scans": rows,
                                               "counts": counts, "page": page, "pages": max(1, (total + 49) // 50),
                                               "plat": plat, "pstatus": pstatus,
+                                              "plat_on": {p: a.eff().platform_on(p) for p in PLATFORMS},
                                               "ntargets": ntargets,
                                               "busy": any(r.status in ("queued", "running") for r in rows)},
                       refresh=15 if any(r.status in ("queued", "running") for r in rows) else None)
@@ -488,7 +512,8 @@ def create_app(cfg, db, jobs):
     @api.post("/scans")
     async def scan_run(request: Request, user=Depends(OP)):
         form = await a.csrf(request)
-        plats = [p for p in PLATFORMS if p in form.getlist("platform")]
+        eff = a.eff()
+        plats = [p for p in PLATFORMS if p in form.getlist("platform") and eff.platform_on(p)]
         if not plats:
             return go("/scans", err="noplat")
         with db.Session() as s, s.begin():
@@ -528,13 +553,13 @@ def create_app(cfg, db, jobs):
 
     # ------------------------------------------------------------ schedules
 
-    @api.get("/schedules")
+    @api.get("/settings/schedules")
     def schedules(request: Request, user=Depends(a.need("schedule.edit"))):
         with db.Session() as s:
             rows = {x.platform: x for x in s.scalars(select(Schedule)).all()}
         return a.page(request, "schedules.html", {"user": user, "sess": request.state.sess, "title": "Schedules", "rows": rows})
 
-    @api.post("/schedules/{platform}")
+    @api.post("/settings/schedules/{platform}")
     async def schedule_save(request: Request, platform: str, user=Depends(a.need("schedule.edit"))):
         form = await a.csrf(request)
         if platform not in PLATFORMS:
@@ -542,7 +567,7 @@ def create_app(cfg, db, jobs):
         cron = " ".join(str(form.get("cron", "")).split())
         enabled = form.get("enabled") == "on"
         if not valid_cron(cron):
-            return go("/schedules", err="cron")
+            return go("/settings/schedules", err="cron")
         with db.Session() as s, s.begin():
             sc = s.scalar(select(Schedule).where(Schedule.platform == platform))
             if sc is None:
@@ -551,21 +576,21 @@ def create_app(cfg, db, jobs):
             sc.cron, sc.enabled = cron, enabled
             sc.next_run = next_run(cron, cfg.timezone)
             a.audit(s, request, "schedule.saved", "%s: %s, %s" % (platform, cron, "on" if enabled else "off"))
-        return go("/schedules", ok="saved")
+        return go("/settings/schedules", ok="saved")
 
     # ------------------------------------------------------------ admin: targets
 
     T = a.need("target.edit")
 
-    @api.get("/admin/targets")
+    @api.get("/settings/targets")
     def targets(request: Request, user=Depends(T)):
         with db.Session() as s:
             rows = s.scalars(select(Target).order_by(Target.platform, Target.host)).all()
         return a.page(request, "targets.html", {"user": user, "sess": request.state.sess, "title": "Targets", "rows": rows,
-                                                "ssh_ready": bool(cfg.ssh_user and cfg.ssh_key_file),
-                                                "winrm_ready": bool(cfg.winrm_user and cfg.winrm_password)})
+                                                "ssh_ready": bool(a.eff().ssh_user and (a.eff().ssh_key or a.eff().ssh_key_file)),
+                                                "winrm_ready": bool(a.eff().winrm_user and a.eff().winrm_password)})
 
-    @api.post("/admin/targets")
+    @api.post("/settings/targets")
     async def target_add(request: Request, user=Depends(T)):
         form = await a.csrf(request)
         platform, host = str(form.get("platform", "")), str(form.get("host", "")).strip().lower()
@@ -573,15 +598,15 @@ def create_app(cfg, db, jobs):
         if platform not in ("linux", "windows"):
             raise HTTPException(400, "Unknown platform.")
         if not host or len(host) > 255 or not all(c.isalnum() or c in ".-_:" for c in host):
-            return go("/admin/targets", err="host")
+            return go("/settings/targets", err="host")
         with db.Session() as s, s.begin():
             if s.scalar(select(Target).where(Target.platform == platform, Target.host == host)):
-                return go("/admin/targets", err="exists")
+                return go("/settings/targets", err="exists")
             s.add(Target(platform=platform, host=host, label=label))
             a.audit(s, request, "target.added", "%s %s" % (platform, host))
-        return go("/admin/targets", ok="added")
+        return go("/settings/targets", ok="added")
 
-    @api.post("/admin/targets/{tid}")
+    @api.post("/settings/targets/{tid}")
     async def target_edit(request: Request, tid: int, user=Depends(T)):
         form = await a.csrf(request)
         action = str(form.get("action", ""))
@@ -600,13 +625,13 @@ def create_app(cfg, db, jobs):
                 msg = "hostkey"
             elif action == "delete":
                 if form.get("confirm") != "on":
-                    return go("/admin/targets", err="csrf")
+                    return go("/settings/targets", err="csrf")
                 a.audit(s, request, "target.deleted", "%s %s" % (t.platform, t.host))
                 s.delete(t)
                 msg = "deleted"
             else:
                 raise HTTPException(400, "Unknown action.")
-        return go("/admin/targets", ok=msg)
+        return go("/settings/targets", ok=msg)
 
     # ------------------------------------------------------------ admin: users
 
@@ -615,14 +640,14 @@ def create_app(cfg, db, jobs):
     def admins_left(s, excluding):
         return s.scalar(select(func.count(User.id)).where(User.role == "admin", User.disabled.is_(False), User.id != excluding))
 
-    @api.get("/admin/users")
+    @api.get("/settings/users")
     def users(request: Request, user=Depends(U)):
         with db.Session() as s:
             rows = s.scalars(select(User).order_by(User.source, User.username)).all()
         return a.page(request, "users.html", {"user": user, "sess": request.state.sess, "title": "Users", "rows": rows,
                                               "bootstrap": cfg.admin_username if cfg.admin_password else ""})
 
-    @api.post("/admin/users")
+    @api.post("/settings/users")
     async def user_add(request: Request, user=Depends(U)):
         form = await a.csrf(request)
         uname = str(form.get("username", "")).strip().lower()
@@ -647,14 +672,14 @@ def create_app(cfg, db, jobs):
             s.add(User(username=uname, display_name=str(form.get("display_name", "")).strip()[:255], source="local",
                        password_hash=auth.hash_password(pw), role=role))
             a.audit(s, request, "user.added", "%s (%s)" % (uname, role))
-        return go("/admin/users", ok="added")
+        return go("/settings/users", ok="added")
 
-    @api.post("/admin/users/{uid}")
+    @api.post("/settings/users/{uid}")
     async def user_edit(request: Request, uid: int, user=Depends(U)):
         form = await a.csrf(request)
         action = str(form.get("action", ""))
         if uid == user.id and action in ("role", "disable", "delete"):
-            return go("/admin/users", err="self")
+            return go("/settings/users", err="self")
         with db.Session() as s, s.begin():
             u = s.get(User, uid)
             if u is None:
@@ -671,7 +696,7 @@ def create_app(cfg, db, jobs):
                     u.role_override = role
                     new = role or auth.role_from_groups(u.groups or [], a.mappings(s))
                 if u.role == "admin" and new != "admin" and not admins_left(s, u.id):
-                    return go("/admin/users", err="lastadmin")
+                    return go("/settings/users", err="lastadmin")
                 u.role = new
                 if u.source == "local" and not u.role:
                     u.role = role
@@ -681,7 +706,7 @@ def create_app(cfg, db, jobs):
                                                                "" if u.source == "local" else " (fixed)" if role else " (from groups)"))
             elif action in ("disable", "enable"):
                 if action == "disable" and u.role == "admin" and not admins_left(s, u.id):
-                    return go("/admin/users", err="lastadmin")
+                    return go("/settings/users", err="lastadmin")
                 u.disabled = action == "disable"
                 if u.disabled:
                     s.execute(delete(Session).where(Session.user_id == u.id))
@@ -690,7 +715,7 @@ def create_app(cfg, db, jobs):
                 if u.source != "local":
                     raise HTTPException(400, "Only local accounts have a password here.")
                 if cfg.admin_password and u.username == cfg.admin_username:
-                    return go("/admin/users", err="managed")
+                    return go("/settings/users", err="managed")
                 pw = str(form.get("password", ""))
                 prob = auth.password_problem(pw)
                 if prob:
@@ -703,26 +728,29 @@ def create_app(cfg, db, jobs):
                 a.audit(s, request, "user.password_reset", u.username)
             elif action == "delete":
                 if form.get("confirm") != "on":
-                    return go("/admin/users", err="csrf")
+                    return go("/settings/users", err="csrf")
                 if u.role == "admin" and not admins_left(s, u.id):
-                    return go("/admin/users", err="lastadmin")
+                    return go("/settings/users", err="lastadmin")
                 if cfg.admin_password and u.username == cfg.admin_username:
-                    return go("/admin/users", err="managed")
+                    return go("/settings/users", err="managed")
                 a.audit(s, request, "user.deleted", u.username)
                 s.delete(u)
             else:
                 raise HTTPException(400, "Unknown action.")
-        return go("/admin/users", ok="saved" if action != "delete" else "deleted")
+        return go("/settings/users", ok="saved" if action != "delete" else "deleted")
 
     # ------------------------------------------------------------ admin: authentication
 
     AU = a.need("auth.manage")
 
     def auth_ctx(s, request, user, **extra):
+        eff = a.eff()
         return {"user": user, "sess": request.state.sess, "title": "Authentication",
                 "maps": s.scalars(select(RoleMapping).order_by(RoleMapping.role.desc(), RoleMapping.group)).all(),
-                "local_on": a.local_login_on(s), "ldap": cfg.ldap, "oidc": cfg.oidc, "oidc_on": a.oidc is not None,
-                "redirect_uri": a.oidc.redirect_uri if a.oidc else (cfg.base_url + "/auth/oidc/callback"),
+                "local_on": a.local_login_on(s), "ldap": eff.ldap, "oidc": eff.oidc, "oidc_on": eff.oidc.enabled,
+                "redirect_uri": cfg.base_url + "/auth/oidc/callback",
+                "f_ldap": a.settings.describe("ldap"), "f_oidc": a.settings.describe("oidc"),
+                "can_store": a.settings.can_store_secrets,
                 "bootstrap": cfg.admin_username if cfg.admin_password else "", **extra}
 
     def recompute_roles(s):
@@ -734,17 +762,17 @@ def create_app(cfg, db, jobs):
                 if not new:
                     s.execute(delete(Session).where(Session.user_id == u.id))
 
-    @api.get("/admin/auth")
+    @api.get("/settings/authentication")
     def auth_page(request: Request, user=Depends(AU)):
         with db.Session() as s:
             return a.page(request, "auth.html", auth_ctx(s, request, user))
 
-    @api.post("/admin/auth/mappings")
+    @api.post("/settings/authentication/mappings")
     async def mapping_add(request: Request, user=Depends(AU)):
         form = await a.csrf(request)
         group, role = str(form.get("group", "")).strip(), str(form.get("role", ""))
         if not group or len(group) > 255:
-            return go("/admin/auth", err="group")
+            return go("/settings/authentication", err="group")
         if role not in auth.ROLES:
             raise HTTPException(400, "Unknown role.")
         with db.Session() as s, s.begin():
@@ -758,11 +786,11 @@ def create_app(cfg, db, jobs):
             recompute_roles(s)
             if not admins_left(s, -1):
                 s.rollback()
-                return go("/admin/auth", err="lastadmin")
+                return go("/settings/authentication", err="lastadmin")
             a.audit(s, request, "rolemap.saved", "%s -> %s" % (g, role))
-        return go("/admin/auth", ok="saved")
+        return go("/settings/authentication", ok="saved")
 
-    @api.post("/admin/auth/mappings/{mid}/delete")
+    @api.post("/settings/authentication/mappings/{mid}/delete")
     async def mapping_delete(request: Request, mid: int, user=Depends(AU)):
         await a.csrf(request)
         with db.Session() as s, s.begin():
@@ -775,11 +803,11 @@ def create_app(cfg, db, jobs):
             recompute_roles(s)
             if not admins_left(s, -1):
                 s.rollback()
-                return go("/admin/auth", err="lastadmin")
+                return go("/settings/authentication", err="lastadmin")
             a.audit(s, request, "rolemap.deleted", detail)
-        return go("/admin/auth", ok="deleted")
+        return go("/settings/authentication", ok="deleted")
 
-    @api.post("/admin/auth/local")
+    @api.post("/settings/authentication/local")
     async def local_toggle(request: Request, user=Depends(AU)):
         form = await a.csrf(request)
         on = form.get("enabled") == "on"
@@ -790,19 +818,20 @@ def create_app(cfg, db, jobs):
                 if ids:
                     s.execute(delete(Session).where(Session.user_id.in_(ids)))
             a.audit(s, request, "auth.local_login", "on" if on else "off")
-        return go("/admin/auth", ok="saved")
+        return go("/settings/authentication", ok="saved")
 
-    @api.post("/admin/auth/ldap-test")
+    @api.post("/settings/authentication/ldap-test")
     async def ldap_test(request: Request, user=Depends(AU)):
         form = await a.csrf(request)
         uname = str(form.get("username", "")).strip().lower()[:255]
         result = {"username": uname}
-        if not cfg.ldap.enabled:
-            result["error"] = "LDAP is not configured."
+        ldap = a.eff().ldap
+        if not ldap.enabled:
+            result["error"] = "LDAP is not configured or is turned off."
         elif uname:
             from starlette.concurrency import run_in_threadpool
             try:
-                info = await run_in_threadpool(auth.ldap_lookup, cfg.ldap, cfg.ca_file, uname)
+                info = await run_in_threadpool(auth.ldap_lookup, ldap, cfg.ca_file, uname)
                 if info is None:
                     result["error"] = "The service account bound, but no single user matched '%s'." % uname
                 else:
@@ -814,9 +843,159 @@ def create_app(cfg, db, jobs):
                 result["role"] = auth.role_from_groups(result["groups"], a.mappings(s))
             return a.page(request, "auth.html", auth_ctx(s, request, user, test=result))
 
+    # ------------------------------------------------------------ settings: menu, saving, old addresses
+
+    SETTINGS_PAGES = [
+        ("users", "Users", "user.manage", "Local accounts (add, reset passwords, disable), and LDAP and SSO users with their roles."),
+        ("authentication", "Authentication", "auth.manage", "Local sign-in, LDAP and single sign-on settings, group to role mappings."),
+        ("credentials", "Scan credentials", "credentials.edit", "The SSH account and key for Linux scans and the WinRM account for Windows scans, with a connection test."),
+        ("targets", "Targets", "target.edit", "The Linux and Windows hosts to scan."),
+        ("schedules", "Schedules", "schedule.edit", "When each platform is scanned."),
+        ("sources", "Sources", "view", "Where vulnerability data comes from, which sources are on, and how each platform is scanned."),
+        ("audit", "Audit log", "audit.view", "Every sign-in, scan and change."),
+    ]
+    a.env.globals["SETTINGS_PAGES"] = SETTINGS_PAGES
+
+    @api.get("/settings")
+    def settings_index(request: Request, user=Depends(a.need("settings.view"))):
+        return a.page(request, "settings.html", {"user": user, "sess": request.state.sess, "title": "Settings"})
+
+    for old, new_path in (("/admin/users", "/settings/users"), ("/admin/auth", "/settings/authentication"),
+                          ("/admin/targets", "/settings/targets"), ("/admin/audit", "/settings/audit"),
+                          ("/schedules", "/settings/schedules")):
+        api.add_api_route(old, (lambda target: (lambda: RedirectResponse(target, status_code=301, headers=HEADERS)))(new_path),
+                          methods=["GET"], include_in_schema=False)
+
+    async def save_settings(request, user, group, back, ctx_fn):
+        """Save one settings form; re-render the page with the error when a value is not valid."""
+        form = await a.csrf(request)
+        try:
+            with db.Session() as s, s.begin():
+                changed = a.settings.save(s, group, form, user.username)
+                if changed:
+                    a.audit(s, request, "settings." + group, ", ".join(changed))
+        except SettingsError as e:
+            with db.Session() as s:
+                return a.page(request, ctx_fn[0], {**ctx_fn[1](s, request, user), "error": str(e)}, status=400)
+        a.settings.bump()
+        return go(back, ok="saved" if changed else "nochange")
+
+    @api.post("/settings/authentication/ldap")
+    async def ldap_save(request: Request, user=Depends(AU)):
+        return await save_settings(request, user, "ldap", "/settings/authentication", ("auth.html", auth_ctx))
+
+    @api.post("/settings/authentication/oidc")
+    async def oidc_save(request: Request, user=Depends(AU)):
+        return await save_settings(request, user, "oidc", "/settings/authentication", ("auth.html", auth_ctx))
+
+    @api.post("/settings/authentication/oidc-test")
+    async def oidc_test(request: Request, user=Depends(AU)):
+        await a.csrf(request)
+        c = a.eff().oidc
+        result = {}
+        if not (c.issuer and c.client_id):
+            result["error"] = "Single sign-on needs an issuer URL and a client ID."
+        else:
+            from starlette.concurrency import run_in_threadpool
+            try:
+                meta = await run_in_threadpool(auth.Oidc(copy.copy(c), cfg.base_url, cfg.ca_file).metadata)
+                result = {"issuer": meta.get("issuer"), "authorization_endpoint": meta.get("authorization_endpoint"),
+                          "token_endpoint": meta.get("token_endpoint"),
+                          "match": meta.get("issuer", "").rstrip("/") == c.issuer.rstrip("/")}
+            except Exception as e:
+                result["error"] = str(e) or type(e).__name__
+        with db.Session() as s:
+            return a.page(request, "auth.html", auth_ctx(s, request, user, sso_test=result))
+
+    # ------------------------------------------------------------ settings: scan credentials
+
+    CR = a.need("credentials.edit")
+
+    def cred_ctx(s, request, user, **extra):
+        eff = a.eff()
+        return {"user": user, "sess": request.state.sess, "title": "Scan credentials",
+                "f_linux": a.settings.describe("linux"), "f_windows": a.settings.describe("windows"),
+                "key_file": cfg.ssh_key_file, "can_store": a.settings.can_store_secrets,
+                "targets": s.scalars(select(Target).where(Target.enabled.is_(True)).order_by(Target.platform, Target.host)).all(),
+                "known_hosts": bool(eff.ssh_known_hosts), **extra}
+
+    @api.get("/settings/credentials")
+    def credentials(request: Request, user=Depends(CR)):
+        with db.Session() as s:
+            return a.page(request, "credentials.html", cred_ctx(s, request, user))
+
+    @api.post("/settings/credentials/linux")
+    async def cred_linux(request: Request, user=Depends(CR)):
+        return await save_settings(request, user, "linux", "/settings/credentials", ("credentials.html", cred_ctx))
+
+    @api.post("/settings/credentials/windows")
+    async def cred_windows(request: Request, user=Depends(CR)):
+        return await save_settings(request, user, "windows", "/settings/credentials", ("credentials.html", cred_ctx))
+
+    @api.post("/settings/credentials/test")
+    async def cred_test(request: Request, user=Depends(CR)):
+        form = await a.csrf(request)
+        try:
+            tid = int(form.get("target", "0"))
+        except ValueError:
+            tid = 0
+        with db.Session() as s:
+            t = s.get(Target, tid)
+            if t is None:
+                raise HTTPException(404, "No such target.")
+            target = {"id": t.id, "host": t.host, "label": t.label, "host_key": t.host_key, "platform": t.platform}
+        eff = a.eff()
+        from starlette.concurrency import run_in_threadpool
+
+        def work():
+            if target["platform"] == "linux":
+                if not eff.ssh_user or not (eff.ssh_key or eff.ssh_key_file):
+                    raise RuntimeError("no SSH user or key is set")
+                return scan_linux.test_host(eff, target, jobs._record_key)
+            if not eff.winrm_user or not eff.winrm_password:
+                raise RuntimeError("no WinRM user or password is set")
+            return scan_windows.test_host(eff, target["host"])
+        try:
+            result = {"host": target["host"], "ok": await run_in_threadpool(work)}
+        except Exception as e:
+            result = {"host": target["host"], "error": ("%s: %s" % (type(e).__name__, e)) if str(e) else type(e).__name__}
+        with db.Session() as s:
+            a.audit(s, request, "credentials.test", "%s %s: %s" % (target["platform"], target["host"],
+                                                                   "OK" if "ok" in result else "failed"))
+            s.commit()
+            return a.page(request, "credentials.html", cred_ctx(s, request, user, test=result))
+
+    # ------------------------------------------------------------ settings: sources
+
+    def sources_ctx(s, request, user, **extra):
+        eff = a.eff()
+        _, src, _ = jobs.feeds.ranker()
+        st = sources.status(eff, src)
+        for item in sources.SOURCES:
+            if item.get("platform"):
+                r = s.scalar(select(PlatformResult).where(PlatformResult.platform == item["platform"])
+                             .order_by(PlatformResult.id.desc()).limit(1))
+                if r is not None:
+                    st.setdefault(item["id"], {})["last_scan"] = (r.scanned_at, r.scan_id, r.status)
+        return {"user": user, "sess": request.state.sess, "title": "Sources", "sources": sources.SOURCES,
+                "tools": sources.TOOLS, "status": st, "scripts": sources.scripts(eff),
+                "f": a.settings.describe("sources"), "eff": eff, "repos": eff.linux_repos,
+                "namespaces": eff.namespaces, **extra}
+
+    @api.get("/settings/sources")
+    def sources_page(request: Request, user=Depends(V)):
+        with db.Session() as s:
+            return a.page(request, "sources.html", sources_ctx(s, request, user))
+
+    @api.post("/settings/sources")
+    async def sources_save(request: Request, user=Depends(a.need("sources.edit"))):
+        resp = await save_settings(request, user, "sources", "/settings/sources", ("sources.html", sources_ctx))
+        jobs.clear_cache()
+        return resp
+
     # ------------------------------------------------------------ admin: audit
 
-    @api.get("/admin/audit")
+    @api.get("/settings/audit")
     def audit_page(request: Request, page: int = 1, user=Depends(a.need("audit.view"))):
         page = max(1, page)
         with db.Session() as s:

@@ -39,6 +39,14 @@ web:
   # e.g. the pod network of your ingress controller: ["10.42.0.0/16"]
   trustedProxies: []
 
+# Settings changed in the web UI (Settings menu) are stored in the database and override these values; anything
+# not changed there keeps coming from here. Secrets saved in the UI are encrypted with this key. With no
+# existingSecret the chart generates one (kept across upgrades). Back it up with the database.
+settings:
+  secretKey:
+    existingSecret: ""
+    key: key
+
 auth:
   # Local accounts (stored in Securitas). Turning this off leaves the admin below as break-glass access.
   localLogin: true

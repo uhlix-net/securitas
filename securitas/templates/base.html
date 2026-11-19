@@ -13,11 +13,7 @@
     <a href="/"{% if path == "/" %} class="on"{% endif %}>Summary</a>
     <a href="/report"{% if path == "/report" %} class="on"{% endif %}>Report</a>
     <a href="/scans"{% if path.startswith("/scans") %} class="on"{% endif %}>Scans</a>
-    {% if can(user.role, "schedule.edit") %}<a href="/schedules"{% if path == "/schedules" %} class="on"{% endif %}>Schedules</a>{% endif %}
-    {% if can(user.role, "target.edit") %}<a href="/admin/targets"{% if path == "/admin/targets" %} class="on"{% endif %}>Targets</a>{% endif %}
-    {% if can(user.role, "user.manage") %}<a href="/admin/users"{% if path == "/admin/users" %} class="on"{% endif %}>Users</a>{% endif %}
-    {% if can(user.role, "auth.manage") %}<a href="/admin/auth"{% if path.startswith("/admin/auth") %} class="on"{% endif %}>Authentication</a>{% endif %}
-    {% if can(user.role, "audit.view") %}<a href="/admin/audit"{% if path == "/admin/audit" %} class="on"{% endif %}>Audit</a>{% endif %}
+    <a href="/settings"{% if path.startswith("/settings") %} class="on"{% endif %}>Settings</a>
   </nav>
   <div class="right">
     <form method="post" action="/account/theme" class="seg" aria-label="Theme">
@@ -32,6 +28,12 @@
 </div>
 {% endif %}
 <main>
+{% if user and path.startswith("/settings") %}
+<nav class="subnav" aria-label="Settings">
+  <a href="/settings"{% if path == "/settings" %} class="on"{% endif %}>Overview</a>
+  {% for key, label, perm, _ in SETTINGS_PAGES %}{% if can(user.role, perm) %}<a href="/settings/{{ key }}"{% if path.startswith("/settings/" ~ key) %} class="on"{% endif %}>{{ label }}</a>{% endif %}{% endfor %}
+</nav>
+{% endif %}
 {% if ok %}<div class="flash ok">{{ ok }}</div>{% endif %}
 {% if err %}<div class="flash err">{{ err }}</div>{% endif %}
 {% block content %}{% endblock %}
