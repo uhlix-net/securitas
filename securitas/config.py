@@ -137,7 +137,7 @@ class Config:
         c = cls(
             title=e("SECURITAS_TITLE", "Securitas"),
             cluster_name=e("SECURITAS_CLUSTER_NAME", ""),
-            port=_int("SECURITAS_PORT", 8080),
+            port=_int("SECURITAS_LISTEN_PORT", 8080),
             epss_min=_float("SECURITAS_EPSS_MIN", 0.10),
             namespaces=_list("SECURITAS_NAMESPACES"),
             kev_url=e("SECURITAS_KEV_URL", KEV_URL),
