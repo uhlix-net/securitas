@@ -1,9 +1,6 @@
-.git
-.github
-charts
-docs
-tests
-*.md
-__pycache__
+__pycache__/
 *.pyc
-dist*
+.git/
+tests/
+charts/
+docs/

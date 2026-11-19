@@ -1,10 +1,10 @@
-# Securitas: read-only CVE report for Kubernetes clusters scanned by Trivy Operator.
-# PDF export uses WeasyPrint (no browser in the image).
+# Securitas: CVE reports for Kubernetes (Trivy Operator), Linux (SSH) and Windows (WinRM) with scheduled scans,
+# history, sign-in (local, LDAP, OpenID Connect) and roles. PDF export uses WeasyPrint (no browser in the image).
 FROM python:3.12.16-slim-trixie
 
 ARG VERSION=dev
 LABEL org.opencontainers.image.title="securitas" \
-      org.opencontainers.image.description="Read-only CVE report for Kubernetes clusters scanned by Trivy Operator, ranked by CISA KEV and EPSS, with PDF export" \
+      org.opencontainers.image.description="CVE reports for Kubernetes, Linux and Windows, ranked by CISA KEV and EPSS: scheduled scans, history, SSO/LDAP sign-in, roles, PDF export" \
       org.opencontainers.image.source="https://github.com/uhlix-net/securitas" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.version="${VERSION}"

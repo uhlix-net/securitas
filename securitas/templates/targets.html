@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+  <h2>Scan targets</h2>
+  <p class="sub">Linux and Windows hosts to scan. Kubernetes needs no targets: Securitas reads Trivy Operator's reports from its own cluster.</p>
+  {% if not ssh_ready %}<div class="warn"><p>Linux scans need an SSH user and key. Set <span class="mono">scanning.linux</span> in the Helm values.</p></div>{% endif %}
+  {% if not winrm_ready %}<div class="warn"><p>Windows scans need a WinRM account. Set <span class="mono">scanning.windows</span> in the Helm values.</p></div>{% endif %}
+  <form method="post" action="/admin/targets"><input type="hidden" name="csrf" value="{{ sess.csrf }}">
+    <div class="row">
+      <div><label for="tp">Platform</label><select id="tp" name="platform"><option value="linux">Linux</option><option value="windows">Windows</option></select></div>
+      <div><label for="th">Host name</label><input id="th" type="text" name="host" placeholder="server.example.com" required></div>
+      <div><label for="tl">Role or description</label><input id="tl" type="text" name="label" placeholder="Web server"></div>
+      <div><button class="btn primary">Add target</button></div>
+    </div>
+  </form>
+</section>
+{% for plat in ("linux", "windows") %}
+<section>
+  <h2>{{ PLATFORM_LABEL[plat] }}</h2>
+  {% set list = rows|selectattr("platform", "equalto", plat)|list %}
+  {% if not list %}<p class="muted">No {{ PLATFORM_LABEL[plat] }} targets.</p>{% else %}
+  <div class="scroll"><table class="targets">
+    <colgroup><col class="c-host"><col class="c-role"><col class="c-on"><col class="c-key"><col class="c-save"><col class="c-del"></colgroup>
+    <thead><tr><th>Host</th><th>Role or description</th><th>Enabled</th><th>{% if plat == "linux" %}SSH host key{% endif %}</th><th></th><th>Remove</th></tr></thead>
+    <tbody>
+    {% for t in list %}
+    <tr>
+      <td class="mono">{{ t.host }}<form id="t-{{ t.id }}" method="post" action="/admin/targets/{{ t.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="save"></form></td>
+      <td><input form="t-{{ t.id }}" type="text" name="label" value="{{ t.label }}" aria-label="Role of {{ t.host }}"></td>
+      <td><label class="inline"><input form="t-{{ t.id }}" type="checkbox" name="enabled"{% if t.enabled %} checked{% endif %}> On</label></td>
+      <td class="mono small">{% if plat == "linux" %}{% if t.host_key %}{{ t.host_key.split(" ")[0] }} …{{ t.host_key[-12:] }}{% else %}<span class="muted">recorded on first scan</span>{% endif %}{% endif %}</td>
+      <td><button form="t-{{ t.id }}" class="btn small">Save</button>
+        {% if plat == "linux" and t.host_key %}<form method="post" action="/admin/targets/{{ t.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="hostkey"><button class="btn small">Reset host key</button></form>{% endif %}</td>
+      <td><form method="post" action="/admin/targets/{{ t.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="delete">
+        <div class="row"><label class="inline"><input type="checkbox" name="confirm" required> Confirm</label><button class="btn small danger">Remove</button></div></form></td>
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+  {% endif %}
+</section>
+{% endfor %}
+{% endblock %}

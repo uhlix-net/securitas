@@ -23,5 +23,5 @@ jobs:
           username: uhlix
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: uhlix/securitas
-          short-description: "CVE report for Kubernetes: Trivy Operator findings ranked by CISA KEV and EPSS, with PDF export"
+          short-description: "CVE reports for Kubernetes, Linux and Windows, ranked by CISA KEV and EPSS. Scans, history, SSO, PDF"
           readme-filepath: docs/dockerhub.md

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+  <h2>Your account</h2>
+  <div class="scroll"><table><tbody>
+    <tr><th>User name</th><td class="mono">{{ user.username }}</td></tr>
+    <tr><th>Name</th><td>{{ user.display_name }}</td></tr>
+    <tr><th>Signed in with</th><td>{{ {"local": "Local account", "ldap": "LDAP", "oidc": "Single sign-on"}[user.source] }}</td></tr>
+    <tr><th>Role</th><td><span class="badge b-role">{{ ROLE_LABEL[user.role] }}</span></td></tr>
+    {% if user.groups %}<tr><th>Groups</th><td class="small">{% for g in user.groups %}{{ g.split(",")[0].replace("CN=", "") }}{% if not loop.last %}, {% endif %}{% endfor %}</td></tr>{% endif %}
+    <tr><th>Theme</th><td>{{ {"system": "Follows your system setting", "light": "Light", "dark": "Dark"}[theme] }} <span class="muted">(change it at the top of any page)</span></td></tr>
+  </tbody></table></div>
+</section>
+{% if user.source == "local" and not managed %}
+<section>
+  <h2>Change password</h2>
+  <form method="post" action="/account/password"><input type="hidden" name="csrf" value="{{ sess.csrf }}">
+    <div class="row">
+      <div><label for="c">Current password</label><input id="c" type="password" name="current" autocomplete="current-password" required></div>
+      <div><label for="n">New password</label><input id="n" type="password" name="new" autocomplete="new-password" required></div>
+      <div><label for="a">New password again</label><input id="a" type="password" name="again" autocomplete="new-password" required></div>
+      <div><button class="btn primary">Change password</button></div>
+    </div>
+    <p class="hint">At least 12 characters. Your other sessions are signed out.</p>
+  </form>
+</section>
+{% elif managed %}
+<section><h2>Password</h2><p class="sub">This account's password is managed by the deployment (Kubernetes Secret).</p></section>
+{% endif %}
+{% endblock %}

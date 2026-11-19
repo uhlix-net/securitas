@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="meta">
+  <h1>Scan #{{ scan.id }} <span class="badge b-{{ scan.status }}">{{ STATUS_LABEL[scan.status] }}</span></h1>
+  <p><strong>Platforms:</strong> {% for p in scan.platforms %}{{ PLATFORM_LABEL[p] }}{% if not loop.last %}, {% endif %}{% endfor %}
+   &nbsp;·&nbsp; <strong>Trigger:</strong> {{ "Scheduled" if scan.trigger == "schedule" else "Manual" }}{% if scan.requested_by %} by {{ scan.requested_by }}{% endif %}</p>
+  <p><strong>Queued:</strong> {{ fmt(scan.created_at) }}{% if scan.started_at %} &nbsp;·&nbsp; <strong>Started:</strong> {{ fmt(scan.started_at) }}{% endif %}{% if scan.finished_at %} &nbsp;·&nbsp; <strong>Finished:</strong> {{ fmt(scan.finished_at) }}{% endif %}</p>
+  {% if scan.error %}<p><strong>Problems:</strong> {{ scan.error }}</p>{% endif %}
+  {% if scan.status in ("queued", "running") %}<p class="muted">This page refreshes every 5 seconds until the scan finishes.</p>{% endif %}
+  {% if scan.log %}<details{% if scan.status in ("queued", "running", "failed") %} open{% endif %}><summary>Scan log</summary><pre class="log">{{ scan.log }}</pre></details>{% endif %}
+</div>
+{% if body %}
+<div class="subbar"><nav class="nav" aria-label="Platforms">{{ nav|safe }}</nav>
+<a class="btn" href="/scans">All scans</a><a class="export" style="margin-left:0" href="{{ pdf }}" download="{{ pdf_name }}">Export to PDF</a></div>
+{{ body|safe }}
+{% endif %}
+{% endblock %}

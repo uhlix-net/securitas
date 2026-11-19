@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+  <h2>Summary</h2>
+  <p class="sub">Vulnerability counts per platform from the latest report. Select a platform to open its section of the report. Counts are the report's priority CVEs: in the CISA KEV catalog, or EPSS {{ "%.2f"|format(model.epss_min) }} or higher.</p>
+  {% if not rows %}<p class="muted">No scan has finished yet. Operators and admins can start one on the <a href="/scans">Scans</a> page.</p>{% else %}
+  <div class="scroll"><table class="summary">
+    <thead><tr><th>Platform</th><th>Status</th><th>Last scanned</th><th class="n">Systems</th><th class="n">Priority CVEs</th><th class="n">Known exploited</th><th class="n">Critical</th><th class="n">High</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+    <tr>
+      <td><a href="/report#{{ r.id }}"><strong>{{ r.title }}</strong></a></td>
+      <td>{% if r.status in ("failed", "partial") %}<span class="badge b-{{ r.status }}" title="{{ r.failure }}">{{ "Scan failed" if r.status == "failed" else "Partial scan" }}</span>{% else %}<span class="badge b-done">OK</span>{% endif %}</td>
+      <td class="date">{% if r.scanned %}{{ r.scanned }}{% endif %}{% if r.scan_id %} <a class="muted" href="/scans/{{ r.scan_id }}">#{{ r.scan_id }}</a>{% endif %}</td>
+      {% if r.no_results %}
+      <td class="muted" colspan="5">No results</td>
+      {% else %}
+      <td class="n">{{ "{:,}".format(r.systems) }}</td>
+      <td class="n">{{ "{:,}".format(r.priority) }}</td>
+      <td class="n{% if r.kev %} hot{% endif %}">{{ "{:,}".format(r.kev) }}</td>
+      <td class="n{% if r.critical %} hot{% endif %}">{{ "{:,}".format(r.critical) }}</td>
+      <td class="n">{{ "{:,}".format(r.high) }}</td>
+      {% endif %}
+    </tr>
+    {% if r.failure %}<tr class="failrow"><td colspan="8">{{ r.failure }}</td></tr>{% endif %}
+    {% endfor %}
+    </tbody>
+    {% if rows|length > 1 %}<tfoot><tr><th colspan="3">Total</th><th class="n">{{ "{:,}".format(tot.systems) }}</th><th class="n">{{ "{:,}".format(tot.priority) }}</th><th class="n">{{ "{:,}".format(tot.kev) }}</th><th class="n">{{ "{:,}".format(tot.critical) }}</th><th class="n">{{ "{:,}".format(tot.high) }}</th></tr></tfoot>{% endif %}
+  </table></div>
+  <p><a class="btn" href="/report">Open the full report</a></p>
+  {% endif %}
+</section>
+{% endblock %}

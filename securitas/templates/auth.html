@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+  <h2>Sign-in methods</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Method</th><th>State</th><th>Settings</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Local accounts</strong></td><td>{% if local_on %}<span class="badge b-done">On</span>{% else %}<span class="badge b-off">Off</span>{% endif %}</td>
+        <td><form method="post" action="/admin/auth/local"><input type="hidden" name="csrf" value="{{ sess.csrf }}">
+          <div class="row"><label class="inline"><input type="checkbox" name="enabled"{% if local_on %} checked{% endif %}> Allow local accounts to sign in</label><button class="btn small">Save</button></div></form>
+          {% if bootstrap %}<p class="hint">The deployment's admin account <span class="mono">{{ bootstrap }}</span> can always sign in (break-glass).</p>{% endif %}</td></tr>
+      <tr><td><strong>LDAP</strong></td><td>{% if ldap.enabled %}<span class="badge b-done">On</span>{% else %}<span class="badge b-off">Not configured</span>{% endif %}</td>
+        <td class="small">{% if ldap.enabled %}<span class="mono">{{ ldap.url }}</span>, users in <span class="mono">{{ ldap.user_base }}</span>, filter <span class="mono">{{ ldap.user_filter }}</span>{% if ldap.nested_groups and ldap.group_base %}, nested groups in <span class="mono">{{ ldap.group_base }}</span>{% endif %}, bind as <span class="mono">{{ ldap.bind_dn }}</span>{% else %}Set <span class="mono">auth.ldap</span> in the Helm values.{% endif %}</td></tr>
+      <tr><td><strong>Single sign-on</strong> (OpenID Connect)</td><td>{% if oidc_on %}<span class="badge b-done">On</span>{% else %}<span class="badge b-off">Not configured</span>{% endif %}</td>
+        <td class="small">{% if oidc_on %}Issuer <span class="mono">{{ oidc.issuer }}</span>, client <span class="mono">{{ oidc.client_id }}</span>, user name from <span class="mono">{{ oidc.username_claim }}</span>, groups from <span class="mono">{{ oidc.groups_claim }}</span>.{% else %}Set <span class="mono">auth.oidc</span> in the Helm values.{% endif %}
+          Redirect URI to register with the provider: <span class="mono">{{ redirect_uri }}</span></td></tr>
+    </tbody></table></div>
+  <p class="hint">Connection settings and secrets come from the deployment (Helm values and Kubernetes Secrets), not from this page.</p>
+</section>
+<section>
+  <h2>Group to role mappings</h2>
+  <p class="sub">LDAP and single sign-on users get the highest role mapped from their groups, checked at each sign-in. Users without a mapped group cannot sign in unless an admin gives them a fixed role on the Users page. Group names are matched without regard to case; for LDAP the group's CN is used.</p>
+  {% if maps %}
+  <div class="scroll"><table>
+    <thead><tr><th>Group</th><th>Role</th><th></th></tr></thead>
+    <tbody>{% for m in maps %}
+      <tr><td class="mono">{{ m.group }}</td><td><span class="badge b-role">{{ ROLE_LABEL[m.role] }}</span></td>
+        <td><form method="post" action="/admin/auth/mappings/{{ m.id }}/delete"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><button class="btn small danger">Remove</button></form></td></tr>
+    {% endfor %}</tbody></table></div>
+  {% else %}<p class="muted">No mappings yet.</p>{% endif %}
+  <form method="post" action="/admin/auth/mappings"><input type="hidden" name="csrf" value="{{ sess.csrf }}">
+    <div class="row" style="margin-top:12px">
+      <div><label for="mg">Group</label><input id="mg" type="text" name="group" placeholder="Securitas-Operators" required></div>
+      <div><label for="mr">Role</label><select id="mr" name="role">{% for r in ROLES %}<option value="{{ r }}">{{ ROLE_LABEL[r] }}</option>{% endfor %}</select></div>
+      <div><button class="btn primary">Add or change</button></div>
+    </div>
+  </form>
+</section>
+{% if ldap.enabled %}
+<section>
+  <h2>Test LDAP</h2>
+  <p class="sub">Binds with the service account and looks a user up. No password is checked.</p>
+  <form method="post" action="/admin/auth/ldap-test"><input type="hidden" name="csrf" value="{{ sess.csrf }}">
+    <div class="row"><div><label for="lu">User name</label><input id="lu" type="text" name="username" value="{{ test.username if test else '' }}" required></div><div><button class="btn">Look up</button></div></div>
+  </form>
+  {% if test %}
+    {% if test.error %}<div class="flash err" style="margin-top:12px">{{ test.error }}</div>
+    {% elif test.dn %}
+    <div class="scroll" style="margin-top:12px"><table><tbody>
+      <tr><th>DN</th><td class="mono">{{ test.dn }}</td></tr>
+      <tr><th>Name</th><td>{{ test.display_name }}</td></tr><tr><th>Email</th><td>{{ test.email }}</td></tr>
+      <tr><th>Groups</th><td class="small">{% for g in test.groups %}{{ g }}<br>{% endfor %}</td></tr>
+      <tr><th>Resulting role</th><td>{% if test.role %}<span class="badge b-role">{{ ROLE_LABEL[test.role] }}</span>{% else %}<span class="badge b-off">No role: cannot sign in</span>{% endif %}</td></tr>
+    </tbody></table></div>
+    {% endif %}
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

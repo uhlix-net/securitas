@@ -34,3 +34,19 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{- define "securitas.adminSecret" -}}
+{{- .Values.auth.admin.existingSecret | default (printf "%s-admin" (include "securitas.fullname" .)) }}
+{{- end }}
+
+{{- define "securitas.dbSecret" -}}
+{{- if .Values.database.bundled.enabled }}{{ printf "%s-db" (include "securitas.fullname" .) }}{{ else }}{{ .Values.database.external.passwordSecret.name }}{{ end }}
+{{- end }}
+
+{{- define "securitas.dbHost" -}}
+{{- if .Values.database.bundled.enabled }}{{ printf "%s-postgres" (include "securitas.fullname" .) }}{{ else }}{{ .Values.database.external.host }}{{ end }}
+{{- end }}
+
+{{- define "securitas.roleMap" -}}
+{{- $out := list }}{{ range $g, $r := .Values.auth.roleMappings }}{{ $out = append $out (printf "%s=%s" $g $r) }}{{ end }}{{ join "," $out }}
+{{- end }}
