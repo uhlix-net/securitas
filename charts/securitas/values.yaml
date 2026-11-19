@@ -1,5 +1,5 @@
-# Securitas reads Trivy Operator VulnerabilityReports. Install Trivy Operator first:
-# https://aquasecurity.github.io/trivy-operator/
+# Securitas: CVE reports for Kubernetes (Trivy Operator), Linux (SSH) and Windows (WinRM).
+# Kubernetes reports need Trivy Operator in the cluster: https://aquasecurity.github.io/trivy-operator/
 
 image:
   repository: docker.io/uhlix/securitas
@@ -14,24 +14,152 @@ config:
   # Shown in the page heading and the PDF
   title: Securitas
   clusterName: ""
-  # How often the report is rebuilt (seconds, minimum 60). The KEV catalog is re-downloaded at most hourly.
-  refreshSeconds: 3600
   # A CVE is a priority when it is in the CISA KEV catalog or its EPSS score is at least this value
   epssMin: 0.10
-  # Namespaces to report on. Empty = all namespaces (cluster-wide read access to VulnerabilityReports).
-  # When set, the chart grants read access in these namespaces only.
+  # Namespaces to read Trivy reports from. Empty = all namespaces (cluster-wide read access to VulnerabilityReports).
   namespaces: []
   # PDF page size: letter or A4
   paper: letter
+  # Time zone for schedules and the times shown on the pages (IANA name, e.g. America/New_York)
+  timezone: UTC
+  # Scans older than this are deleted (the newest result of each platform is always kept)
+  retentionDays: 365
   # Feed URLs. Point these at internal mirrors for air-gapped clusters.
   kevUrl: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
   epssUrl: https://epss.empiricalsecurity.com/epss_scores-current.csv.gz
+  msrcUrl: https://api.msrc.microsoft.com/cvrf/v3.0
+
+web:
+  # The URL people use to open Securitas, e.g. https://securitas.example.com. Required for single sign-on.
+  baseUrl: ""
+  # Send cookies over HTTPS only. Turn off only for a plain-HTTP trial.
+  secureCookies: true
+  sessionHours: 12
+  # Proxies (CIDRs) whose X-Forwarded-For header is trusted for the client address in the audit log,
+  # e.g. the pod network of your ingress controller: ["10.42.0.0/16"]
+  trustedProxies: []
+
+auth:
+  # Local accounts (stored in Securitas). Turning this off leaves the admin below as break-glass access.
+  localLogin: true
+  admin:
+    # Local admin created at start. Its password comes from a Secret; with no existingSecret the chart creates
+    # one with a random password (kept across upgrades). Read it with the command printed after install.
+    username: admin
+    existingSecret: ""
+    passwordKey: password
+  # Groups (LDAP group CN or the SSO groups claim) and the role they give. Seeded once; edit them in the UI later.
+  # Roles: viewer (read), operator (+ run scans, schedules), admin (+ targets, users, authentication, audit log)
+  roleMappings: {}
+  #  Securitas-Admins: admin
+  #  Securitas-Operators: operator
+  #  Securitas-Viewers: viewer
+  ldap:
+    enabled: false
+    # ldaps://dc.example.com:636 (or ldap:// with startTls: true)
+    url: ""
+    startTls: false
+    bindDn: ""
+    # Secret with the bind password
+    bindPasswordSecret:
+      name: ""
+      key: password
+    userBase: ""
+    userFilter: "(&(objectClass=user)(sAMAccountName={username}))"
+    # Active Directory: also find nested group memberships under this base
+    groupBase: ""
+    nestedGroups: true
+    usernameAttribute: sAMAccountName
+    displayNameAttribute: displayName
+    emailAttribute: mail
+  oidc:
+    enabled: false
+    # Issuer URL; the discovery document is read from <issuer>/.well-known/openid-configuration
+    issuer: ""
+    clientId: ""
+    # Secret with the client secret
+    clientSecretSecret:
+      name: ""
+      key: client-secret
+    scopes: "openid profile email"
+    usernameClaim: preferred_username
+    groupsClaim: groups
+    # Text of the sign-in button
+    label: Single sign-on
+
+# Extra CA certificates (PEM) for LDAPS, the SSO provider and WinRM over HTTPS, from a ConfigMap
+caBundle:
+  configMap: ""
+  key: ca.crt
+
+scanning:
+  # Cron (5 fields) per platform, in config.timezone. Seeded once; change them on the Schedules page later.
+  schedules:
+    kubernetes: "5 * * * *"
+    linux: "0 5 * * *"
+    windows: "30 5 * * *"
+  hostConcurrency: 4
+  hostTimeout: 600
+  # Targets seeded on first start ("linux:host[:label]" or "windows:host[:label]"); manage them on the Targets page later
+  targets: []
+  linux:
+    # SSH user on the hosts; it needs no root access (dnf updateinfo runs as that user)
+    user: ""
+    port: 22
+    # Secret with the SSH private key
+    sshKeySecret:
+      name: ""
+      key: id_ed25519
+    # Optional ConfigMap with a known_hosts file. Without it, each host's key is recorded on first contact
+    # and a changed key fails the scan until an admin resets it.
+    knownHosts:
+      configMap: ""
+      key: known_hosts
+    # Optional: compare against these repositories instead of the hosts' own ("name=url";
+    # {major} and {arch} are replaced with the host's release and architecture)
+    repos: []
+    #  - up-baseos=https://dl.rockylinux.org/pub/rocky/{major}/BaseOS/{arch}/os/
+    #  - up-appstream=https://dl.rockylinux.org/pub/rocky/{major}/AppStream/{arch}/os/
+  windows:
+    # Account for WinRM; it needs Remote Management Users membership, not admin. DOMAIN\user or user@domain.
+    user: ""
+    passwordSecret:
+      name: ""
+      key: password
+    port: 5986
+    ssl: true
+    # negotiate (Kerberos or NTLM), ntlm, kerberos, credssp, basic
+    authentication: negotiate
+
+database:
+  # Bundled PostgreSQL (one replica, on a PersistentVolume). Turn off to use an existing server below.
+  bundled:
+    enabled: true
+    image: docker.io/library/postgres:18.7-alpine3.24
+    storage:
+      size: 2Gi
+      storageClass: ""
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 512Mi
+  external:
+    host: ""
+    port: 5432
+    name: securitas
+    user: securitas
+    passwordSecret:
+      name: ""
+      key: password
+    # disable, require, verify-full ...
+    sslMode: ""
 
 # Extra environment variables, e.g. HTTPS_PROXY / NO_PROXY for the feed downloads
 extraEnv: []
 
-# Optional: add more platforms (e.g. hosts scanned elsewhere) from JSON files in a ConfigMap.
-# Each key in the ConfigMap must end in .json. See the README for the file format.
+# Optional: add platforms from JSON files in a ConfigMap (hosts scanned elsewhere). Keys must end in .json.
 extraPlatforms:
   configMap: ""
 
@@ -43,14 +171,10 @@ serviceAccount:
 rbac:
   create: true
 
-replicaCount: 1
-
 service:
   type: ClusterIP
   port: 80
 
-# WARNING: the report lists unpatched software in your cluster and has no login of its own.
-# Expose it only on a trusted network or behind an authenticating proxy.
 ingress:
   enabled: false
   className: ""
@@ -67,9 +191,9 @@ ingress:
 resources:
   requests:
     cpu: 50m
-    memory: 128Mi
+    memory: 192Mi
   limits:
-    memory: 512Mi
+    memory: 1Gi
 
 podSecurityContext:
   runAsNonRoot: true

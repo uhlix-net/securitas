@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en"{% if theme in ("light", "dark") %} data-theme="{{ theme }}"{% endif %}>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">{% if refresh %}<meta http-equiv="refresh" content="{{ refresh }}">{% endif %}
+<title>{{ title }} · {{ cfg.title }}</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='%231f4e79' d='M8 1l6 2v4c0 4-2.6 6.9-6 8-3.4-1.1-6-4-6-8V3z'/%3E%3C/svg%3E">
+<style>{{ css|safe }}</style></head>
+<body>
+{% if user %}
+<div class="top">
+  <div class="brand">{{ cfg.title }}<small>CVE report{% if cfg.cluster_name %}, {{ cfg.cluster_name }}{% endif %}</small></div>
+  <nav class="nav" aria-label="Main">
+    <a href="/"{% if path == "/" %} class="on"{% endif %}>Report</a>
+    <a href="/scans"{% if path.startswith("/scans") %} class="on"{% endif %}>Scans</a>
+    {% if can(user.role, "schedule.edit") %}<a href="/schedules"{% if path == "/schedules" %} class="on"{% endif %}>Schedules</a>{% endif %}
+    {% if can(user.role, "target.edit") %}<a href="/admin/targets"{% if path == "/admin/targets" %} class="on"{% endif %}>Targets</a>{% endif %}
+    {% if can(user.role, "user.manage") %}<a href="/admin/users"{% if path == "/admin/users" %} class="on"{% endif %}>Users</a>{% endif %}
+    {% if can(user.role, "auth.manage") %}<a href="/admin/auth"{% if path.startswith("/admin/auth") %} class="on"{% endif %}>Authentication</a>{% endif %}
+    {% if can(user.role, "audit.view") %}<a href="/admin/audit"{% if path == "/admin/audit" %} class="on"{% endif %}>Audit</a>{% endif %}
+  </nav>
+  <div class="right">
+    <form method="post" action="/account/theme" class="seg" aria-label="Theme">
+      <input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="next" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
+      {% for t, lab in (("system", "System"), ("light", "Light"), ("dark", "Dark")) %}
+      <button name="theme" value="{{ t }}"{% if theme == t %} class="on" aria-pressed="true"{% endif %} title="{{ lab }} theme">{{ lab }}</button>
+      {% endfor %}
+    </form>
+    <a class="who" href="/account"><strong>{{ user.display_name or user.username }}</strong> · {{ ROLE_LABEL[user.role] }}</a>
+    <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><button class="btn small">Sign out</button></form>
+  </div>
+</div>
+{% endif %}
+<main>
+{% if ok %}<div class="flash ok">{{ ok }}</div>{% endif %}
+{% if err %}<div class="flash err">{{ err }}</div>{% endif %}
+{% block content %}{% endblock %}
+</main>
+</body></html>

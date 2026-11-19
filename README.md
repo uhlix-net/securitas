@@ -1,61 +1,125 @@
 # Securitas
 
-A read-only CVE report for Kubernetes clusters. Securitas reads the vulnerability reports that
-[Trivy Operator](https://aquasecurity.github.io/trivy-operator/) keeps in your cluster, ranks the
-findings with the [CISA Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
-(KEV) catalog and [EPSS](https://www.first.org/epss/) scores, and serves the result as one web page.
-An **Export to PDF** button at the top downloads the same report for printing.
+CVE reports for Kubernetes, Linux and Windows. Securitas scans on a schedule or on demand, ranks
+the findings with the [CISA Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
+(KEV) catalog and [EPSS](https://www.first.org/epss/) scores, keeps every scan in its history, and
+serves the results as web pages with an **Export to PDF** button.
 
+- **Three platforms.**
+  - **Kubernetes:** reads the vulnerability reports that [Trivy Operator](https://aquasecurity.github.io/trivy-operator/) keeps in the cluster.
+  - **Linux (RHEL family):** connects over SSH and lists pending security advisories with `dnf updateinfo`.
+  - **Windows:** connects over WinRM, reads the OS build and compares it with Microsoft's monthly security release data.
+- **Read-only scans.** Nothing is installed or changed on the scanned systems, and the scan
+  accounts need no root or admin rights.
 - **Ranked, not just counted.** A CVE is a *priority* when it is in the KEV catalog (seen exploited
   in the wild) or its EPSS score is at or above a threshold (default 0.10). Known-exploited CVEs are
-  listed first, then by EPSS.
-- **Two tables per platform:** the affected images, and the priority CVEs with severity, KEV date,
-  ransomware use, EPSS, affected images, packages and the fixed version.
-- **Read-only.** Securitas only lists VulnerabilityReports. The web server answers GET and HEAD,
-  the page has no scripts, and the container runs as non-root with a read-only filesystem.
-- **PDF without a browser.** PDFs are made with [WeasyPrint](https://weasyprint.org/) from the same
-  HTML, so the page and the printout match.
-- **Refreshes on its own** (hourly by default). Feeds are cached; if a download fails, the last good
-  copy is used and the report says so.
+  listed first, then by EPSS. The current report is re-ranked when the KEV catalog changes, without a rescan.
+- **Scheduled and on-demand scans, with history.** Each platform has its own cron schedule.
+  Operators can start a scan at any time. Every past scan can be opened and exported as it was at the time.
+- **Sign-in and roles.**
+  - Sign-in: local accounts, LDAP (Active Directory) and OpenID Connect single sign-on.
+  - Three roles: Viewer, Operator and Admin. LDAP and SSO users get their role from their groups.
+  - Every sign-in and change goes to an audit log.
+- **Light and dark mode.** Each user picks System, Light or Dark at the top of every page.
+- **No scripts in the pages.** The Content Security Policy blocks all scripts and every form
+  carries a CSRF token. The container runs as non-root with a read-only filesystem.
+
+## Roles
+
+| Permission | Viewer | Operator | Admin |
+|---|---|---|---|
+| View the report and scan history, export PDF | Yes | Yes | Yes |
+| Run scans now | | Yes | Yes |
+| Change schedules | | Yes | Yes |
+| Change scan targets | | | Yes |
+| Manage users | | | Yes |
+| Authentication settings and group-to-role mappings | | | Yes |
+| Audit log | | | Yes |
 
 ## Install
 
-Requirements: Kubernetes 1.25 or later, Helm 3, and Trivy Operator already installed and scanning.
+Requirements: Kubernetes 1.25 or later and Helm 3. Trivy Operator must be installed for the Kubernetes report.
 
 ```bash
 helm repo add securitas https://uhlix-net.github.io/securitas
-helm install securitas securitas/securitas -n securitas --create-namespace
-kubectl -n securitas port-forward svc/securitas 8080:80
-# open http://127.0.0.1:8080/
+helm install securitas securitas/securitas -n securitas --create-namespace \
+  --set web.baseUrl=https://securitas.example.com --set ingress.enabled=true \
+  --set 'ingress.hosts[0].host=securitas.example.com' --set 'ingress.hosts[0].paths[0].path=/' \
+  --set 'ingress.hosts[0].paths[0].pathType=Prefix'
+kubectl -n securitas get secret securitas-admin -o jsonpath='{.data.password}' | base64 -d; echo
 ```
 
-The first report is ready a minute or two after the pod starts. Each release's chart is also
-attached to its [GitHub release](https://github.com/uhlix-net/securitas/releases).
-
-> **Security notice.** The report lists unpatched software in your cluster and has no login of its
-> own. Expose it only on a trusted network or behind an authenticating proxy (for example
-> oauth2-proxy, or your ingress controller's forward-auth).
+Sign in as `admin` with that password. The chart creates the admin password, and the bundled
+PostgreSQL password, in Secrets that keep their values across upgrades. Session cookies are
+HTTPS-only: for a plain-HTTP trial with `kubectl port-forward`, set `web.secureCookies=false`.
 
 ## Configuration
 
-| Value | Default | Description |
-|---|---|---|
-| `config.title` | `Securitas` | Page and PDF title |
-| `config.clusterName` | `""` | Shown in the heading, e.g. `prod-eu` |
-| `config.refreshSeconds` | `3600` | How often the report is rebuilt (minimum 60) |
-| `config.epssMin` | `0.10` | EPSS score at which a CVE becomes a priority |
-| `config.namespaces` | `[]` | Namespaces to report on. Empty = all; when set, read access is granted in those namespaces only |
-| `config.paper` | `letter` | PDF page size: `letter` or `A4` (always landscape) |
-| `config.kevUrl` / `config.epssUrl` | CISA / FIRST feeds | Point at internal mirrors for air-gapped clusters |
-| `extraEnv` | `[]` | Extra environment, e.g. `HTTPS_PROXY` and `NO_PROXY` for the feed downloads |
-| `extraPlatforms.configMap` | `""` | ConfigMap with extra platform JSON files (see below) |
-| `ingress.*` | disabled | Standard Ingress settings |
-| `resources` | 50m / 128Mi request, 512Mi limit | PDF generation of large reports needs the memory |
+The full list with comments is in [`charts/securitas/values.yaml`](charts/securitas/values.yaml).
+The main groups:
 
-Outbound access needed: the Kubernetes API, and HTTPS to `www.cisa.gov` and `epss.empiricalsecurity.com`
-(or your mirrors). The page links CVEs to `nvd.nist.gov`.
+| Values | What they set |
+|---|---|
+| `config.*` | Title, cluster name, EPSS threshold, Trivy namespaces, PDF paper size, time zone, history retention, feed URLs |
+| `web.*` | Public URL (needed for SSO), cookie security, session length, trusted proxies |
+| `auth.admin` | The local break-glass admin (password from a Secret) |
+| `auth.roleMappings` | Group to role pairs, seeded once and edited in the UI afterwards |
+| `auth.ldap.*` | LDAP URL, bind DN and password Secret, user base and filter, group base for nested groups |
+| `auth.oidc.*` | Issuer, client ID, client secret Secret, scopes, user name and groups claims, button label |
+| `caBundle.*` | ConfigMap with extra CA certificates for LDAPS, the SSO provider and WinRM over HTTPS |
+| `scanning.schedules` | Cron per platform, seeded once and edited on the Schedules page afterwards |
+| `scanning.linux.*` | SSH user, key Secret, optional known_hosts ConfigMap, optional repository override |
+| `scanning.windows.*` | WinRM user, password Secret, port, HTTPS, authentication method |
+| `database.*` | Bundled PostgreSQL (StatefulSet with a PersistentVolume) or an external server |
 
-The report data is also served as JSON at `/data.json`.
+Outbound access needed:
+- The Kubernetes API.
+- HTTPS to `www.cisa.gov`, `epss.empiricalsecurity.com` and `api.msrc.microsoft.com` (or your mirrors).
+- SSH (22) to Linux targets and WinRM (5986) to Windows targets.
+- Your LDAP server and SSO provider.
+
+### Single sign-on
+
+Register a confidential OpenID Connect client with the redirect URI
+`<web.baseUrl>/auth/oidc/callback`, and make the provider send a `groups` claim. Then:
+
+```bash
+kubectl -n securitas create secret generic securitas-oidc --from-literal=client-secret=...
+helm upgrade securitas securitas/securitas -n securitas --reuse-values \
+  --set auth.oidc.enabled=true --set auth.oidc.issuer=https://idp.example.com/application/o/securitas/ \
+  --set auth.oidc.clientId=... --set auth.oidc.clientSecretSecret.name=securitas-oidc \
+  --set auth.roleMappings.Securitas-Admins=admin --set auth.roleMappings.Securitas-Viewers=viewer
+```
+
+The sign-in uses the authorization code flow with PKCE, state and nonce, and the ID token signature
+is checked against the provider's keys. A user with no mapped group cannot sign in unless an admin
+gives them a fixed role. An SSO or LDAP sign-in never takes over a local account with the same name.
+
+### LDAP / Active Directory
+
+Users are looked up with a service account and then verified by binding as the user. Groups come
+from `memberOf`. With `groupBase` set, nested groups are found with the Active Directory
+in-chain matching rule. On the Authentication page, admins can look a user up to see their DN,
+groups and the resulting role.
+
+### Linux scans
+
+Create a user on each host that can log in with an SSH key. It needs no sudo. Store the private
+key in a Secret and set `scanning.linux.user` and `scanning.linux.sshKeySecret.name`. Add hosts on
+the Targets page. Without a `knownHosts` ConfigMap, each host's key is recorded on its first scan.
+After that, a changed key fails the scan until an admin resets it.
+
+By default the hosts' own repositories are used. If your hosts point at a mirror that lags behind
+upstream, set `scanning.linux.repos` to compare against upstream instead, for example
+`up-baseos=https://dl.rockylinux.org/pub/rocky/{major}/BaseOS/{arch}/os/`.
+
+### Windows scans
+
+Enable WinRM over HTTPS (port 5986) and add the scan account to *Remote Management Users*. It
+needs no admin rights. Set `scanning.windows.user` (`DOMAIN\user` or `user@domain`) and
+`scanning.windows.passwordSecret.name`, and add hosts on the Targets page. Securitas reads the OS
+build and update revision. It then lists every CVE whose fixed build, in Microsoft's monthly
+release data, is newer than the installed one. Third-party software is not checked.
 
 ## Extra platforms (optional)
 
@@ -65,20 +129,20 @@ priority CVEs.
 
 ```json
 {
-  "id": "linux",
-  "title": "Linux",
-  "subtitle": "Servers: installed packages compared with vendor advisories",
-  "totals": {"Servers scanned": 2},
-  "systems_caption": "Servers",
+  "id": "appliances",
+  "title": "Appliances",
+  "subtitle": "Network appliances, checked by hand",
+  "totals": {"Devices": 2},
+  "systems_caption": "Devices",
   "system_columns": [
-    {"key": "name", "label": "Server", "type": "mono"},
-    {"key": "pending", "label": "Pending updates", "type": "num"}
+    {"key": "name", "label": "Device", "type": "mono"},
+    {"key": "firmware", "label": "Firmware", "type": "text"}
   ],
-  "systems": [{"name": "web01", "pending": 12}, {"name": "db01", "pending": 3}],
-  "affected_label": "Servers",
+  "systems": [{"name": "fw01", "firmware": "7.2.1"}],
+  "affected_label": "Devices",
   "cves": [
-    {"cve": "CVE-2025-0001", "title": "Example flaw", "severity": "Important",
-     "systems": ["web01"], "component": "openssl", "fix": "Pending OS update", "status": "Open"}
+    {"cve": "CVE-2025-0001", "title": "Example flaw", "severity": "Critical",
+     "systems": ["fw01"], "component": "firmware", "fix": "Firmware 7.2.4", "status": "Open"}
   ]
 }
 ```
@@ -89,32 +153,43 @@ Column `type` is `text`, `mono`, `num`, `hot` (number, red when non-zero) or `da
 
 ```mermaid
 flowchart LR
-  trivy[Trivy Operator<br/>VulnerabilityReports] -->|list, read-only| sec[Securitas]
-  kev[CISA KEV catalog] --> sec
-  epss[EPSS scores] --> sec
-  sec --> page[Web page]
-  sec --> pdf[PDF via WeasyPrint]
+  sched[Schedules and<br/>Run scan button] --> q[(Scan queue<br/>PostgreSQL)]
+  q --> w[Scan worker]
+  trivy[Trivy Operator<br/>VulnerabilityReports] -->|list, read-only| w
+  linux[Linux hosts] -->|SSH: dnf updateinfo| w
+  win[Windows hosts] -->|WinRM: OS build| w
+  msrc[Microsoft security<br/>release data] --> w
+  kev[CISA KEV catalog] --> rank[Ranking]
+  epss[EPSS scores] --> rank
+  w -->|findings| hist[(Scan history)]
+  hist --> rank
+  rank --> page[Web pages]
+  rank --> pdf[PDF via WeasyPrint]
 ```
+
+The scheduler, the scan worker and the web server run in one process, so the chart runs one replica.
 
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests          # PDF test is skipped unless WeasyPrint is installed
-docker build -t securitas:dev .
-kubectl proxy --port=8001 &
-docker run --rm --network host -e SECURITAS_API_URL=http://127.0.0.1:8001 -e SECURITAS_DATA_DIR=/tmp securitas:dev
+pip install -r requirements.txt
+python3 -m unittest discover -s tests          # SQLite in memory; PDF test is skipped unless WeasyPrint is installed
+kubectl get vulnerabilityreports -A -o json > /tmp/reports.json
+SECURITAS_DATA_DIR=/tmp/securitas SECURITAS_REPORTS_FILE=/tmp/reports.json SECURITAS_SECURE_COOKIES=false \
+  SECURITAS_ADMIN_PASSWORD=change-me-please python3 -m securitas
+# open http://127.0.0.1:8080/
 ```
 
-Set `SECURITAS_REPORTS_FILE` to the output of `kubectl get vulnerabilityreports -A -o json` to run
-without a cluster.
+Without `SECURITAS_DATABASE_URL` or `SECURITAS_DB_HOST`, a SQLite file in the data directory is used.
 
 ## Releases
 
-Pushing a tag `vX.Y.Z` builds `docker.io/uhlix/securitas:X.Y.Z` (amd64 and arm64), attaches the
-chart to the GitHub release and updates the Helm repository on GitHub Pages.
+Pushing a tag `vX.Y.Z` builds `docker.io/uhlix/securitas:X.Y.Z` and `:latest` (amd64 and arm64),
+attaches the chart to the GitHub release and updates the Helm repository on GitHub Pages. A
+pre-release tag such as `v0.2.0-rc.1` publishes only that image tag and a pre-release on GitHub.
 
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
 
-Securitas is not affiliated with CISA, FIRST, Aqua Security or the WeasyPrint project.
+Securitas is not affiliated with CISA, FIRST, Microsoft, Aqua Security or the WeasyPrint project.

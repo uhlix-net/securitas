@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+  <h2>Schedules</h2>
+  <p class="sub">When each platform is scanned on its own. Cron format, five fields (minute hour day month weekday), in {{ cfg.timezone }}. Example: <span class="mono">0 5 * * *</span> is every day at 05:00. A scheduled run is skipped while a scan of the same platform is still queued or running.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Platform</th><th>Schedule</th><th>Enabled</th><th>Next run</th><th>Last run</th><th></th></tr></thead>
+    <tbody>
+    {% for p in PLATFORMS %}{% set r = rows.get(p) %}
+    <tr>
+      <td><strong>{{ PLATFORM_LABEL[p] }}</strong><form id="s-{{ p }}" method="post" action="/schedules/{{ p }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"></form></td>
+      <td><input form="s-{{ p }}" type="text" class="mono" name="cron" value="{{ r.cron if r else '0 5 * * *' }}" size="16" aria-label="{{ PLATFORM_LABEL[p] }} schedule"></td>
+      <td><label class="inline"><input form="s-{{ p }}" type="checkbox" name="enabled"{% if r and r.enabled %} checked{% endif %}> On</label></td>
+      <td class="date">{{ fmt(r.next_run) if r and r.enabled else "" }}</td>
+      <td class="date">{{ fmt(r.last_run) if r else "" }}</td>
+      <td><button form="s-{{ p }}" class="btn small">Save</button></td>
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+</section>
+{% endblock %}

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="login">
+  <div class="brand">{{ cfg.title }}</div>
+  <section>
+    <h2>Sign in</h2>
+    {% if password_form %}
+    <form method="post" action="/login">
+      <input type="hidden" name="pre" value="{{ pre }}"><input type="hidden" name="next" value="{{ next }}">
+      <label for="u">User name</label><input id="u" type="text" name="username" autocomplete="username" autocapitalize="none" required autofocus>
+      <label for="p">Password</label><input id="p" type="password" name="password" autocomplete="current-password" required>
+      <button class="btn primary">Sign in</button>
+    </form>
+    {% endif %}
+    {% if sso %}
+    {% if password_form %}<div class="or">or</div>{% endif %}
+    <a class="btn{% if not password_form %} primary{% endif %}" href="/login/oidc?next={{ next|urlencode }}">{{ sso_label }}</a>
+    {% endif %}
+    {% if not password_form and not sso %}<p class="muted">No sign-in method is configured.</p>{% endif %}
+  </section>
+  <p class="hint" style="text-align:center">Securitas {{ version }}</p>
+</div>
+{% endblock %}

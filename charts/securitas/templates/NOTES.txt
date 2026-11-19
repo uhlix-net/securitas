@@ -1,14 +1,18 @@
-Securitas is starting. The first report is built a minute or two after the pod starts.
-
+Securitas {{ .Chart.AppVersion }} is starting.
 {{- if .Values.ingress.enabled }}
 Open: {{ range .Values.ingress.hosts }}http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}/ {{ end }}
 {{- else }}
-To view it:
+To open it:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "securitas.fullname" . }} 8080:{{ .Values.service.port }}
-  then open http://127.0.0.1:8080/
+  then http://127.0.0.1:8080/ {{- if .Values.web.secureCookies }} (sign-in needs HTTPS: set web.secureCookies=false for a plain-HTTP trial){{ end }}
 {{- end }}
 
-Securitas needs Trivy Operator (https://aquasecurity.github.io/trivy-operator/) in the cluster.
+Sign in as "{{ .Values.auth.admin.username }}". The password is in Secret {{ include "securitas.adminSecret" . }}:
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "securitas.adminSecret" . }} -o jsonpath='{.data.{{ .Values.auth.admin.passwordKey }}}' | base64 -d; echo
+{{- if and .Values.auth.oidc.enabled (not .Values.web.baseUrl) }}
 
-WARNING: the report lists unpatched software and has no login of its own. Expose it only on a trusted
-network or behind an authenticating proxy.
+WARNING: single sign-on needs web.baseUrl.
+{{- end }}
+
+Register this redirect URI with your SSO provider: {{ .Values.web.baseUrl | default "<web.baseUrl>" }}/auth/oidc/callback
+Kubernetes reports need Trivy Operator (https://aquasecurity.github.io/trivy-operator/) in the cluster.

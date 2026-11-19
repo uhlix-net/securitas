@@ -1,18 +1,24 @@
+{{- $fn := include "securitas.fullname" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "securitas.fullname" . }}
+  name: {{ $fn }}
   labels:
     {{- include "securitas.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.replicaCount }}
+  # One replica: the scheduler and the scan worker run in the web process
+  replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "securitas.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: web
   template:
     metadata:
       labels:
         {{- include "securitas.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: web
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -37,12 +43,91 @@ spec:
           env:
             - {name: SECURITAS_TITLE, value: {{ .Values.config.title | quote }}}
             - {name: SECURITAS_CLUSTER_NAME, value: {{ .Values.config.clusterName | quote }}}
-            - {name: SECURITAS_REFRESH_SECONDS, value: {{ .Values.config.refreshSeconds | quote }}}
             - {name: SECURITAS_EPSS_MIN, value: {{ .Values.config.epssMin | quote }}}
             - {name: SECURITAS_NAMESPACES, value: {{ join "," .Values.config.namespaces | quote }}}
             - {name: SECURITAS_PAPER, value: {{ .Values.config.paper | quote }}}
+            - {name: SECURITAS_TIMEZONE, value: {{ .Values.config.timezone | quote }}}
+            - {name: SECURITAS_RETENTION_DAYS, value: {{ .Values.config.retentionDays | quote }}}
             - {name: SECURITAS_KEV_URL, value: {{ .Values.config.kevUrl | quote }}}
             - {name: SECURITAS_EPSS_URL, value: {{ .Values.config.epssUrl | quote }}}
+            - {name: SECURITAS_MSRC_URL, value: {{ .Values.config.msrcUrl | quote }}}
+            - {name: SECURITAS_BASE_URL, value: {{ .Values.web.baseUrl | quote }}}
+            - {name: SECURITAS_SECURE_COOKIES, value: {{ .Values.web.secureCookies | quote }}}
+            - {name: SECURITAS_SESSION_HOURS, value: {{ .Values.web.sessionHours | quote }}}
+            - {name: SECURITAS_TRUSTED_PROXIES, value: {{ join "," .Values.web.trustedProxies | quote }}}
+            # database
+            - {name: SECURITAS_DB_HOST, value: {{ include "securitas.dbHost" . | quote }}}
+            - {name: SECURITAS_DB_PORT, value: {{ ternary "5432" (toString .Values.database.external.port) .Values.database.bundled.enabled | quote }}}
+            - {name: SECURITAS_DB_NAME, value: {{ ternary "securitas" .Values.database.external.name .Values.database.bundled.enabled | quote }}}
+            - {name: SECURITAS_DB_USER, value: {{ ternary "securitas" .Values.database.external.user .Values.database.bundled.enabled | quote }}}
+            {{- if not .Values.database.bundled.enabled }}
+            - {name: SECURITAS_DB_SSLMODE, value: {{ .Values.database.external.sslMode | quote }}}
+            {{- end }}
+            - name: SECURITAS_DB_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ include "securitas.dbSecret" . }}, key: {{ ternary "password" .Values.database.external.passwordSecret.key .Values.database.bundled.enabled }}}}
+            # sign-in
+            - {name: SECURITAS_LOCAL_LOGIN, value: {{ .Values.auth.localLogin | quote }}}
+            - {name: SECURITAS_ADMIN_USERNAME, value: {{ .Values.auth.admin.username | quote }}}
+            - name: SECURITAS_ADMIN_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ include "securitas.adminSecret" . }}, key: {{ .Values.auth.admin.passwordKey }}}}
+            - {name: SECURITAS_ROLE_MAP, value: {{ include "securitas.roleMap" . | quote }}}
+            {{- with .Values.auth.ldap }}{{ if .enabled }}
+            - {name: SECURITAS_LDAP_URL, value: {{ .url | quote }}}
+            - {name: SECURITAS_LDAP_START_TLS, value: {{ .startTls | quote }}}
+            - {name: SECURITAS_LDAP_BIND_DN, value: {{ .bindDn | quote }}}
+            - name: SECURITAS_LDAP_BIND_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ required "auth.ldap.bindPasswordSecret.name is required" .bindPasswordSecret.name }}, key: {{ .bindPasswordSecret.key }}}}
+            - {name: SECURITAS_LDAP_USER_BASE, value: {{ required "auth.ldap.userBase is required" .userBase | quote }}}
+            - {name: SECURITAS_LDAP_USER_FILTER, value: {{ .userFilter | quote }}}
+            - {name: SECURITAS_LDAP_GROUP_BASE, value: {{ .groupBase | quote }}}
+            - {name: SECURITAS_LDAP_NESTED_GROUPS, value: {{ .nestedGroups | quote }}}
+            - {name: SECURITAS_LDAP_USERNAME_ATTR, value: {{ .usernameAttribute | quote }}}
+            - {name: SECURITAS_LDAP_DISPLAY_ATTR, value: {{ .displayNameAttribute | quote }}}
+            - {name: SECURITAS_LDAP_EMAIL_ATTR, value: {{ .emailAttribute | quote }}}
+            {{- end }}{{ end }}
+            {{- with .Values.auth.oidc }}{{ if .enabled }}
+            - {name: SECURITAS_OIDC_ISSUER, value: {{ required "auth.oidc.issuer is required" .issuer | quote }}}
+            - {name: SECURITAS_OIDC_CLIENT_ID, value: {{ required "auth.oidc.clientId is required" .clientId | quote }}}
+            {{- if .clientSecretSecret.name }}
+            - name: SECURITAS_OIDC_CLIENT_SECRET
+              valueFrom: {secretKeyRef: {name: {{ .clientSecretSecret.name }}, key: {{ .clientSecretSecret.key }}}}
+            {{- end }}
+            - {name: SECURITAS_OIDC_SCOPES, value: {{ .scopes | quote }}}
+            - {name: SECURITAS_OIDC_USERNAME_CLAIM, value: {{ .usernameClaim | quote }}}
+            - {name: SECURITAS_OIDC_GROUPS_CLAIM, value: {{ .groupsClaim | quote }}}
+            - {name: SECURITAS_OIDC_LABEL, value: {{ .label | quote }}}
+            {{- end }}{{ end }}
+            {{- if .Values.caBundle.configMap }}
+            - {name: SECURITAS_CA_FILE, value: /etc/securitas/ca/{{ .Values.caBundle.key }}}
+            {{- end }}
+            # scans
+            - {name: SECURITAS_SCHEDULE_KUBERNETES, value: {{ .Values.scanning.schedules.kubernetes | quote }}}
+            - {name: SECURITAS_SCHEDULE_LINUX, value: {{ .Values.scanning.schedules.linux | quote }}}
+            - {name: SECURITAS_SCHEDULE_WINDOWS, value: {{ .Values.scanning.schedules.windows | quote }}}
+            - {name: SECURITAS_HOST_CONCURRENCY, value: {{ .Values.scanning.hostConcurrency | quote }}}
+            - {name: SECURITAS_HOST_TIMEOUT, value: {{ .Values.scanning.hostTimeout | quote }}}
+            - {name: SECURITAS_TARGETS, value: {{ join "," .Values.scanning.targets | quote }}}
+            {{- with .Values.scanning.linux }}
+            - {name: SECURITAS_SSH_USER, value: {{ .user | quote }}}
+            - {name: SECURITAS_SSH_PORT, value: {{ .port | quote }}}
+            - {name: SECURITAS_LINUX_REPOS, value: {{ join "," .repos | quote }}}
+            {{- if .sshKeySecret.name }}
+            - {name: SECURITAS_SSH_KEY_FILE, value: /etc/securitas/ssh/{{ .sshKeySecret.key }}}
+            {{- end }}
+            {{- if .knownHosts.configMap }}
+            - {name: SECURITAS_SSH_KNOWN_HOSTS, value: /etc/securitas/known_hosts/{{ .knownHosts.key }}}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.scanning.windows }}
+            - {name: SECURITAS_WINRM_USER, value: {{ .user | quote }}}
+            - {name: SECURITAS_WINRM_PORT, value: {{ .port | quote }}}
+            - {name: SECURITAS_WINRM_SSL, value: {{ .ssl | quote }}}
+            - {name: SECURITAS_WINRM_AUTH, value: {{ .authentication | quote }}}
+            {{- if .passwordSecret.name }}
+            - name: SECURITAS_WINRM_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ .passwordSecret.name }}, key: {{ .passwordSecret.key }}}}
+            {{- end }}
+            {{- end }}
             {{- if .Values.extraPlatforms.configMap }}
             - {name: SECURITAS_EXTRA_DIR, value: /extra}
             {{- end }}
@@ -52,12 +137,17 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+            failureThreshold: 60
           readinessProbe:
             httpGet: {path: /healthz, port: http}
             periodSeconds: 10
           livenessProbe:
             httpGet: {path: /healthz, port: http}
             periodSeconds: 30
+            failureThreshold: 4
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
@@ -66,15 +156,36 @@ spec:
             {{- if .Values.extraPlatforms.configMap }}
             - {name: extra, mountPath: /extra, readOnly: true}
             {{- end }}
+            {{- if .Values.caBundle.configMap }}
+            - {name: ca, mountPath: /etc/securitas/ca, readOnly: true}
+            {{- end }}
+            {{- if .Values.scanning.linux.sshKeySecret.name }}
+            - {name: ssh, mountPath: /etc/securitas/ssh, readOnly: true}
+            {{- end }}
+            {{- if .Values.scanning.linux.knownHosts.configMap }}
+            - {name: knownhosts, mountPath: /etc/securitas/known_hosts, readOnly: true}
+            {{- end }}
       volumes:
-        # Feed cache only; rebuilt on the next refresh
+        # Feed cache (KEV, EPSS, Microsoft release data); downloaded again when lost
         - name: data
-          emptyDir: {sizeLimit: 64Mi}
+          emptyDir: {sizeLimit: 512Mi}
         - name: tmp
-          emptyDir: {sizeLimit: 64Mi}
+          emptyDir: {sizeLimit: 128Mi}
         {{- if .Values.extraPlatforms.configMap }}
         - name: extra
           configMap: {name: {{ .Values.extraPlatforms.configMap }}}
+        {{- end }}
+        {{- if .Values.caBundle.configMap }}
+        - name: ca
+          configMap: {name: {{ .Values.caBundle.configMap }}}
+        {{- end }}
+        {{- if .Values.scanning.linux.sshKeySecret.name }}
+        - name: ssh
+          secret: {secretName: {{ .Values.scanning.linux.sshKeySecret.name }}, defaultMode: 0400}
+        {{- end }}
+        {{- if .Values.scanning.linux.knownHosts.configMap }}
+        - name: knownhosts
+          configMap: {name: {{ .Values.scanning.linux.knownHosts.configMap }}}
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

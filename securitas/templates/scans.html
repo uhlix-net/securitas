@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+{% if can(user.role, "scan.run") %}
+<section>
+  <h2>Run a scan</h2>
+  <p class="sub">Starts now and is added to the history. Kubernetes reads the latest Trivy Operator reports; Linux and Windows connect to each enabled target.</p>
+  <form method="post" action="/scans">
+    <input type="hidden" name="csrf" value="{{ sess.csrf }}">
+    <div class="row" style="align-items:center">
+    {% for p in PLATFORMS %}
+      <label class="inline"><input type="checkbox" name="platform" value="{{ p }}"{% if p == "kubernetes" or ntargets.get(p) %} checked{% endif %}{% if p != "kubernetes" and not ntargets.get(p) %} disabled{% endif %}>
+        {{ PLATFORM_LABEL[p] }}{% if p != "kubernetes" %} <span class="muted">({{ ntargets.get(p, 0) }} target{{ "" if ntargets.get(p) == 1 else "s" }})</span>{% endif %}</label>
+    {% endfor %}
+      <button class="btn primary">Run scan</button>
+    </div>
+  </form>
+</section>
+{% endif %}
+<section>
+  <h2>History</h2>
+  <p class="sub">Every scheduled and manual scan. Open one to see its report as it was at the time.{% if busy %} This page refreshes while a scan is running.{% endif %}</p>
+  {% if not scans %}<p class="muted">No scans yet.</p>{% else %}
+  <div class="scroll"><table>
+    <thead><tr><th>Scan</th><th>Started</th><th>Platforms</th><th>Trigger</th><th>Status</th><th>Priority CVEs</th><th>Known exploited</th><th>Duration</th></tr></thead>
+    <tbody>
+    {% for s in scans %}
+    {% set c = counts.get(s.id, {}) %}
+    <tr>
+      <td class="mono"><a href="/scans/{{ s.id }}">#{{ s.id }}</a></td>
+      <td class="date">{{ fmt(s.started_at or s.created_at) }}</td>
+      <td>{% for p in s.platforms %}{{ PLATFORM_LABEL[p] }}{% if c.get(p) and c[p].status != "done" %} <span class="badge b-{{ c[p].status }}">{{ STATUS_LABEL[c[p].status] }}</span>{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+      <td>{{ "Scheduled" if s.trigger == "schedule" else "Manual" }}{% if s.requested_by %} <span class="muted">by {{ s.requested_by }}</span>{% endif %}</td>
+      <td><span class="badge b-{{ s.status }}">{{ STATUS_LABEL[s.status] }}</span></td>
+      <td class="n">{% if c %}{{ c.values()|sum(attribute="cves") }}{% endif %}</td>
+      <td class="n{% if c and c.values()|sum(attribute='kev') %} hot{% endif %}">{% if c %}{{ c.values()|sum(attribute="kev") }}{% endif %}</td>
+      <td class="n">{% if s.finished_at and s.started_at %}{{ ((s.finished_at - s.started_at).total_seconds())|round|int }} s{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+  {% if pages > 1 %}<div class="pager">{% if page > 1 %}<a class="btn small" href="?page={{ page - 1 }}">Newer</a>{% endif %}<span class="muted">Page {{ page }} of {{ pages }}</span>{% if page < pages %}<a class="btn small" href="?page={{ page + 1 }}">Older</a>{% endif %}</div>{% endif %}
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="subbar"><nav class="nav" aria-label="Platforms">{{ nav|safe }}</nav>
+{% if model.platforms %}<a class="export" href="{{ pdf }}" download="{{ pdf_name }}">Export to PDF</a>{% endif %}</div>
+{{ body|safe }}
+{% endblock %}

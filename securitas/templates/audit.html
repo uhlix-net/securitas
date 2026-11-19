@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+  <h2>Audit log</h2>
+  <p class="sub">Sign-ins, scans started by hand and every change made on the admin pages.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Time</th><th>User</th><th>Address</th><th>Action</th><th>Detail</th></tr></thead>
+    <tbody>{% for r in rows %}
+      <tr><td class="date">{{ fmt(r.at) }}</td><td class="mono">{{ r.username }}</td><td class="mono small">{{ r.ip }}</td>
+        <td class="mono small">{{ r.action }}</td><td class="small">{{ r.detail }}</td></tr>
+    {% endfor %}</tbody></table></div>
+  {% if pages > 1 %}<div class="pager">{% if page > 1 %}<a class="btn small" href="?page={{ page - 1 }}">Newer</a>{% endif %}<span class="muted">Page {{ page }} of {{ pages }}</span>{% if page < pages %}<a class="btn small" href="?page={{ page + 1 }}">Older</a>{% endif %}</div>{% endif %}
+</section>
+{% endblock %}
