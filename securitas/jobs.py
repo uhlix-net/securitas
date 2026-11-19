@@ -10,7 +10,7 @@ from sqlalchemy import delete, select, update
 
 from . import feeds, k8s, report, scan_linux, scan_windows
 from .config import PLATFORMS
-from .db import PlatformResult, Scan, Schedule, Target, utcnow
+from .db import PlatformResult, ResultStats, Scan, Schedule, Target, utcnow
 from .settings import Settings
 
 log = logging.getLogger("securitas.jobs")
@@ -93,6 +93,36 @@ class Jobs:
             # scans that were running when the process stopped will not finish
             s.execute(update(Scan).where(Scan.status.in_(("running",))).values(
                 status="failed", error="interrupted: Securitas restarted while the scan was running", finished_at=utcnow()))
+
+    def backfill_stats(self):
+        """ResultStats for results saved before 0.4.0, one result at a time (raw results can be large)."""
+        with self.db.Session() as s:
+            ids = s.scalars(select(PlatformResult.id).outerjoin(ResultStats, ResultStats.result_id == PlatformResult.id)
+                            .where(ResultStats.result_id.is_(None)).order_by(PlatformResult.id)).all()
+        for rid in ids:
+            try:
+                with self.db.Session() as s, s.begin():
+                    r = s.get(PlatformResult, rid)
+                    if r is not None:
+                        s.add(ResultStats(result_id=r.id, platform=r.platform, status=r.status, scanned_at=r.scanned_at,
+                                          **report.result_stats(r.raw, r.report)))
+            except Exception:
+                log.exception("backfilling statistics of result %d", rid)
+        if ids:
+            log.info("history: statistics computed for %d earlier results", len(ids))
+
+    def history(self, rng):
+        """Summary page graph: distinct CVEs per platform over the range ('day', 'week' or 'month')."""
+        try:
+            z = zoneinfo.ZoneInfo(self.cfg.timezone)
+        except Exception:
+            z = datetime.timezone.utc
+        with self.db.Session() as s:
+            rows = s.execute(select(ResultStats.platform, ResultStats.scanned_at, ResultStats.total)
+                             .where(ResultStats.status.in_(("done", "partial")))
+                             .order_by(ResultStats.scanned_at, ResultStats.result_id)).all()
+        stats = [(p, at.astimezone(z).date(), total) for p, at, total in rows]
+        return report.history(stats, rng, datetime.datetime.now(z).date(), PLATFORMS)
 
     def start(self):
         for i in range(self.cfg.workers):
@@ -226,7 +256,11 @@ class Jobs:
             else:
                 sec = {}
             with self.db.Session() as s, s.begin():
-                s.add(PlatformResult(scan_id=sid, platform=p, status=status, raw=raw or {}, report=sec, sources=src, error=err))
+                pr = PlatformResult(scan_id=sid, platform=p, status=status, raw=raw or {}, report=sec, sources=src, error=err)
+                s.add(pr)
+                s.flush()
+                s.add(ResultStats(result_id=pr.id, platform=p, status=status, scanned_at=pr.scanned_at,
+                                  **report.result_stats(raw, sec)))
             statuses.append(status)
             say("%s: %s in %.0fs%s" % (p, status, time.time() - t0, (": " + err[:300]) if err else ""))
         final = "done" if all(x == "done" for x in statuses) else "failed" if all(x == "failed" for x in statuses) else "partial"

@@ -138,6 +138,20 @@ class PlatformResult(Base):
     scan: Mapped[Scan] = relationship(back_populates="results")
 
 
+class ResultStats(Base):
+    """Distinct CVE counts of one platform result, by severity level. Kept so the Summary page's history graph
+    does not have to load every stored scan. Filled when a result is saved; older results are backfilled at startup."""
+    __tablename__ = "result_stats"
+    result_id: Mapped[int] = mapped_column(ForeignKey("platform_results.id", ondelete="CASCADE"), primary_key=True)
+    platform: Mapped[str] = mapped_column(String(16), index=True)
+    status: Mapped[str] = mapped_column(String(16))
+    scanned_at: Mapped[datetime.datetime] = mapped_column(TZDateTime(), index=True)
+    total: Mapped[int] = mapped_column(default=0)
+    levels: Mapped[dict] = mapped_column(JSONType, default=dict)    # {"critical": n, "high": n, "medium": n, "low": n, "unknown": n}
+    priority: Mapped[int] = mapped_column(default=0)                # priority CVEs in the report as of the scan
+    kev: Mapped[int] = mapped_column(default=0)                     # of those, in the CISA KEV catalog
+
+
 class AuditEvent(Base):
     __tablename__ = "audit"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -214,4 +228,4 @@ def audit(s, user, ip, action, detail=""):
 
 
 __all__ = ["Database", "User", "Session", "LoginState", "RoleMapping", "Target", "Schedule", "Scan", "PlatformResult",
-           "AuditEvent", "Setting", "get_setting", "set_setting", "audit", "utcnow", "select", "func"]
+           "ResultStats", "AuditEvent", "Setting", "get_setting", "set_setting", "audit", "utcnow", "select", "func"]
