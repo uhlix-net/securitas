@@ -2,8 +2,10 @@
 
 CVE reports for Kubernetes ([Trivy Operator](https://aquasecurity.github.io/trivy-operator/)), Linux (SSH) and
 Windows (WinRM), ranked with the CISA Known Exploited Vulnerabilities (KEV) catalog and EPSS scores.
-Scheduled and on-demand scans with history, sign-in with local accounts, LDAP or OpenID Connect,
-Viewer / Operator / Admin roles, light and dark mode, and **Export to PDF** (WeasyPrint, no browser in the image).
+A summary landing page with per-platform status and counts (each platform links to its section of the report),
+failed or partial scans flagged with their error, scheduled and on-demand scans with history, sign-in with local
+accounts, LDAP or OpenID Connect, Viewer / Operator / Admin roles, light and dark mode, and **Export to PDF**
+(WeasyPrint, no browser in the image).
 
 - Source, documentation and Helm chart: https://github.com/uhlix-net/securitas
 - License: Apache-2.0

@@ -14,6 +14,12 @@ serves the results as web pages with an **Export to PDF** button.
 - **Ranked, not just counted.** A CVE is a *priority* when it is in the KEV catalog (seen exploited
   in the wild) or its EPSS score is at or above a threshold (default 0.10). Known-exploited CVEs are
   listed first, then by EPSS. The current report is re-ranked when the KEV catalog changes, without a rescan.
+- **Summary first.** After sign-in, a summary page lists each platform with its scan status, when it was
+  last scanned, and its counts: systems, priority CVEs, known exploited, critical and high. Each platform
+  name links to its section of the full report at `/report`.
+- **Failed scans are flagged, not hidden.** If a platform's latest scan failed or was only partly
+  successful, the summary, the report and the PDF say so and show the error. Older results stay
+  visible but are marked as older; a platform that has never been scanned successfully still gets a section saying so.
 - **Scheduled and on-demand scans, with history.** Each platform has its own cron schedule.
   Operators can start a scan at any time. Every past scan can be opened and exported as it was at the time.
 - **Sign-in and roles.**
@@ -28,7 +34,7 @@ serves the results as web pages with an **Export to PDF** button.
 
 | Permission | Viewer | Operator | Admin |
 |---|---|---|---|
-| View the report and scan history, export PDF | Yes | Yes | Yes |
+| View the summary, report and scan history, export PDF | Yes | Yes | Yes |
 | Run scans now | | Yes | Yes |
 | Change schedules | | Yes | Yes |
 | Change scan targets | | | Yes |
@@ -163,7 +169,7 @@ flowchart LR
   epss[EPSS scores] --> rank
   w -->|findings| hist[(Scan history)]
   hist --> rank
-  rank --> page[Web pages]
+  rank --> page[Summary and<br/>report pages]
   rank --> pdf[PDF via WeasyPrint]
 ```
 
@@ -177,7 +183,7 @@ python3 -m unittest discover -s tests          # SQLite in memory; PDF test is s
 kubectl get vulnerabilityreports -A -o json > /tmp/reports.json
 SECURITAS_DATA_DIR=/tmp/securitas SECURITAS_REPORTS_FILE=/tmp/reports.json SECURITAS_SECURE_COOKIES=false \
   SECURITAS_ADMIN_PASSWORD=change-me-please python3 -m securitas
-# open http://127.0.0.1:8080/
+# open http://127.0.0.1:8080/ (summary; the full report is at /report)
 ```
 
 Without `SECURITAS_DATABASE_URL` or `SECURITAS_DB_HOST`, a SQLite file in the data directory is used.
