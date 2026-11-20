@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.5.0 (unreleased)
+
+The first part of compliance: a library of CIS benchmarks. Checking hosts against them comes next.
+
+### New
+
+- **Settings → Compliance.** Upload an [Ansible-Lockdown](https://github.com/ansible-lockdown) CIS role as the
+  zip GitHub offers on its release page (for example `RHEL9-CIS-2.4.2.zip`, one folder `<role>-<version>`).
+  Securitas reads it without running anything and stores:
+  - the benchmark under its role name and version (`RHEL9-CIS-2.4.2`), shown as
+    `RHEL9-CIS 2.4.2 · uploaded 2026-11-20`, with who uploaded it, the file name, size and SHA-256;
+  - the CIS document version (`v2.0.0`), the operating system it is for (RHEL 9 family) and the role's metadata;
+  - every rule: ID, title, automated (PATCH) or manual (AUDIT), profile level tags, NIST 800-53 mappings, the
+    role's on/off variable and its default;
+  - the original zip, which admins can download again.
+- **Several versions side by side.** Loading the same role/version twice is refused; a different version is
+  added next to the old one. One benchmark per operating system is *active* (the first one loaded becomes it);
+  admins can switch.
+- **Which rules are checked.** Each benchmark has a profile: Level 1 or Level 2, Server or Workstation (Level 1
+  Server by default; Level 2 includes Level 1). Single rules can be switched on or off; those choices are marked
+  *Set here* and can be cleared. The rule list can be searched and filtered by section, level, type and state.
+- **Remove a benchmark** (with a confirmation): its rules, choices and stored zip go with it.
+- Viewers and operators can browse benchmarks and rules; only admins change them. Every upload, change,
+  download and removal is in the audit log.
+- Linux and Windows CIS roles are read (Windows roles such as `Windows-2022-CIS`); STIG roles are refused for
+  now. Kubernetes compliance will come from Trivy Operator's CIS report, so it needs no upload.
+
+### Upgrading from 0.4.0
+
+- Three new tables (`benchmarks`, `benchmark_rules`, `benchmark_files`) are created at startup. No change to
+  existing data.
+- New dependency: PyYAML.
+- Uploads are up to 25 MB; if an ingress in front of Securitas limits request bodies, allow at least that.
+
 ## 0.4.0 (2026-11-19)
 
 The report shows every CVE, not only priority ones, and the Summary page shows how the counts change.

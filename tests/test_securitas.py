@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from securitas import auth, feeds, render, report, scan_linux, scan_windows  # noqa: E402
 from securitas.config import Config, LdapConfig, OidcConfig  # noqa: E402
-from securitas.db import PlatformResult, ResultStats, Scan, select  # noqa: E402
+from securitas.db import PlatformResult, ResultStats, Scan, func, select  # noqa: E402
 
 
 def pri(sec):
@@ -972,3 +972,232 @@ ED25519_KEY = _ed25519_key()
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ------------------------------------------------------------------ 0.5.0: compliance benchmark library
+
+def role_zip(top="TEST9-CIS-1.2.3", extra=None, defaults=None, platform="EL"):
+    """A small Ansible-Lockdown-shaped role: three task styles (plain, multi-rule literal block, nested block)."""
+    import io
+    import zipfile
+    tasks = '''---
+- name: "1.1.1 | PATCH | Ensure cramfs is not available"
+  when: test9cis_rule_1_1_1
+  tags: [level1-server, level1-workstation, patch, rule_1.1.1, NIST800-53R5_CM-7]
+  block:
+    - name: "1.1.1 | PATCH | Ensure cramfs is not available | Edit modprobe config"
+      ansible.builtin.lineinfile: {path: /etc/x, line: y}
+- name: |
+    "1.1.2 | PATCH | Ensure 'audit log' mode is configured"
+    "1.1.3 | AUDIT | Ensure audit log owner is configured"
+  when: [test9cis_rule_1_1_2 or test9cis_rule_1_1_3]
+  tags: [level2-server, level2-workstation, rule_1.1.2, rule_1.1.3]
+  ansible.builtin.file: {path: /x}
+- name: Outer block
+  block:
+    - name: "2.10.1 | PATCH | Ensure ssh is configured"
+      when: test9cis_rule_2_10_1
+      tags: [level1-server, rule_2.10.1, NIST800-53R5_AC-17]
+      ansible.builtin.debug: {msg: !unsafe "{{ x }}"}
+'''
+    files = {
+        "meta/main.yml": "galaxy_info:\n  author: Tester\n  description: Apply the TEST 9 CIS\n  license: MIT\n"
+                         "  role_name: test9_cis\n  namespace: ansible-lockdown\n  platforms:\n    - name: %s\n"
+                         "      versions: ['9']\n" % platform,
+        "defaults/main/main.yml": defaults if defaults is not None else
+            "benchmark_version: 'v3.1.0'\ntest9cis_rule_1_1_1: true\ntest9cis_rule_1_1_2: true\n"
+            "test9cis_rule_1_1_3: false\ntest9cis_rule_2_10_1: true\n",
+        "tasks/section_1/cis_1.1.x.yml": tasks,
+        "tasks/main.yml": "- name: not a rule\n  ansible.builtin.debug: {}\n",
+        "Changelog.md": "# Changes\n",
+    }
+    files.update(extra or {})
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for k, v in files.items():
+            z.writestr(top + "/" + k, v)
+    return buf.getvalue()
+
+
+REAL_ZIP = os.environ.get("SECURITAS_TEST_RHEL9_CIS", "/mnt/c/Users/huhl/Downloads/RHEL9-CIS-2.4.2.zip")
+
+
+class ComplianceImport(unittest.TestCase):
+    def test_parse(self):
+        from securitas import compliance
+        b = compliance.parse_zip(role_zip(), "upload.zip")
+        self.assertEqual((b["key"], b["name"], b["version"], b["benchmark_version"], b["platform"], b["os_key"]),
+                         ("TEST9-CIS-1.2.3", "TEST9-CIS", "1.2.3", "v3.1.0", "linux", "test9"))
+        self.assertEqual([r["rule_id"] for r in b["rules"]], ["1.1.1", "1.1.2", "1.1.3", "2.10.1"])
+        r = {x["rule_id"]: x for x in b["rules"]}
+        self.assertEqual(r["1.1.1"]["title"], "Ensure cramfs is not available")
+        self.assertEqual(r["1.1.2"]["title"], "Ensure 'audit log' mode is configured")    # inner quotes kept
+        self.assertEqual((r["1.1.3"]["kind"], r["1.1.3"]["default_on"], r["1.1.3"]["toggle"]),
+                         ("AUDIT", False, "test9cis_rule_1_1_3"))
+        self.assertEqual(r["1.1.1"]["refs"], ["NIST800-53R5_CM-7"])
+        self.assertEqual(r["2.10.1"]["section"], "2")
+        self.assertEqual(b["meta"]["toggle_prefix"], "test9cis")
+        self.assertEqual(len(b["sha256"]), 64)
+
+    def test_profiles(self):
+        from securitas.compliance import in_profile
+        self.assertTrue(in_profile(["level1-server", "level1-workstation"], "level1-server"))
+        self.assertFalse(in_profile(["level2-server"], "level1-server"))
+        self.assertTrue(in_profile(["level2-server"], "level2-server"))
+        self.assertTrue(in_profile(["level1-server"], "level2-server"))
+        self.assertFalse(in_profile(["level1-workstation"], "level2-server"))
+
+    def test_rejects(self):
+        import io
+        import zipfile
+        from securitas.compliance import BenchmarkError, parse_zip
+        with self.assertRaisesRegex(BenchmarkError, "not a zip"):
+            parse_zip(b"hello")
+        with self.assertRaisesRegex(BenchmarkError, "Download a release"):
+            parse_zip(role_zip(top="TEST9-CIS-devel"))
+        with self.assertRaisesRegex(BenchmarkError, "STIG"):
+            parse_zip(role_zip(top="TEST9-STIG-1.0.0"))
+        with self.assertRaisesRegex(BenchmarkError, "not valid YAML"):
+            parse_zip(role_zip(extra={"tasks/section_9/bad.yml": "- name: [unclosed"}))
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("A-CIS-1.0.0/meta/main.yml", "x: 1")
+            z.writestr("B-CIS-1.0.0/meta/main.yml", "x: 1")
+        with self.assertRaisesRegex(BenchmarkError, "one folder"):
+            parse_zip(buf.getvalue())
+        with self.assertRaisesRegex(BenchmarkError, "No CIS rules"):
+            parse_zip(role_zip(extra={"tasks/section_1/cis_1.1.x.yml": "- name: nothing\n  debug: {}\n"}))
+
+    def test_windows_platform(self):
+        from securitas import compliance
+        b = compliance.parse_zip(role_zip(top="Windows-2022-CIS-3.0.0", platform="Windows"))
+        self.assertEqual((b["platform"], b["os_key"], b["os_label"]), ("windows", "windows2022", "Windows Server 2022"))
+
+    @unittest.skipUnless(os.path.exists(REAL_ZIP), "real RHEL9-CIS-2.4.2.zip not available")
+    def test_real_rhel9_cis(self):
+        import yaml
+        import zipfile
+        from securitas import compliance
+        data = open(REAL_ZIP, "rb").read()
+        b = compliance.parse_zip(data)
+        self.assertEqual((b["key"], b["benchmark_version"], b["os_key"]), ("RHEL9-CIS-2.4.2", "v2.0.0", "rhel9"))
+        d = yaml.safe_load(zipfile.ZipFile(REAL_ZIP).read("RHEL9-CIS-2.4.2/defaults/main/main.yml"))
+        toggles = {k for k in d if k.startswith("rhel9cis_rule_")}
+        self.assertEqual({r["toggle"] for r in b["rules"]}, toggles)      # every switch in the role has its rule
+        self.assertTrue(all(r["levels"] for r in b["rules"]))
+
+
+class ComplianceUI(unittest.TestCase):
+    def setUp(self):
+        self.app, self.db, self.jobs, self.cfg = make_app()
+        self.c = client(self.app)
+        login(self.c, "admin", ADMIN_PW)
+
+    def upload(self, data, name="TEST9-CIS-1.2.3.zip", c=None):
+        c = c or self.c
+        return c.post("/settings/compliance", data={"csrf": csrf(c, "/settings/compliance")},
+                      files={"file": (name, data, "application/zip")}, follow_redirects=False)
+
+    def act(self, bid, **data):
+        return self.c.post("/settings/compliance/%d" % bid, data={"csrf": csrf(self.c, "/settings/compliance/%d" % bid), **data},
+                           follow_redirects=False)
+
+    def bench(self, key):
+        from securitas.db import Benchmark
+        with self.db.Session() as s:
+            b = s.scalar(select(Benchmark).where(Benchmark.key == key))
+            return b and (b.id, b.active, b.profile, {r.rule_id: r.override for r in b.rules})
+
+    def test_upload_list_and_details(self):
+        r = self.upload(role_zip())
+        self.assertEqual(r.status_code, 303, r.text[:500])
+        bid, active, profile, _ = self.bench("TEST9-CIS-1.2.3")
+        self.assertEqual(r.headers["location"], "/settings/compliance/%d?ok=imported" % bid)
+        self.assertTrue(active)                          # first one for its OS
+        self.assertEqual(profile, "level1-server")
+        page = self.c.get("/settings/compliance").text
+        self.assertIn("TEST9-CIS-1.2.3", page)
+        self.assertIn("TEST9-CIS 1.2.3 · uploaded ", page)  # name, version and upload date
+        self.assertIn("2 of 4", page)                    # level 1 server: 1.1.1 and 2.10.1
+        detail = self.c.get("/settings/compliance/%d" % bid).text
+        self.assertIn("Ensure &#39;audit log&#39; mode is configured", detail)
+        self.assertIn("v3.1.0", detail)
+        self.assertIn("off in role", detail)             # 1.1.3 is off in the role's defaults
+        self.assertEqual(self.c.get("/settings/compliance/%d/download" % bid).content, role_zip())
+        from securitas.db import AuditEvent
+        with self.db.Session() as s:
+            self.assertIn("benchmark.uploaded", s.scalars(select(AuditEvent.action)).all())
+
+    def test_duplicate_and_bad_upload(self):
+        self.upload(role_zip())
+        r = self.upload(role_zip())
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("already loaded", r.text)
+        r = self.upload(b"not a zip", "x.zip")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("not a zip file", r.text)
+
+    def test_versions_side_by_side_and_activate(self):
+        self.upload(role_zip())
+        self.upload(role_zip(top="TEST9-CIS-1.3.0"))
+        old, new = self.bench("TEST9-CIS-1.2.3"), self.bench("TEST9-CIS-1.3.0")
+        self.assertTrue(old[1])
+        self.assertFalse(new[1])                         # the first one stays active
+        r = self.act(new[0], action="activate")
+        self.assertIn("ok=activated", r.headers["location"])
+        self.assertFalse(self.bench("TEST9-CIS-1.2.3")[1])
+        self.assertTrue(self.bench("TEST9-CIS-1.3.0")[1])
+
+    def test_profile_rules_and_reset(self):
+        self.upload(role_zip())
+        bid = self.bench("TEST9-CIS-1.2.3")[0]
+        self.act(bid, action="profile", profile="level2-server")
+        self.assertEqual(self.bench("TEST9-CIS-1.2.3")[2], "level2-server")
+        # filtered page: only section 1 shown; turn 1.1.1 off and 1.1.3 on (off in the role)
+        r = self.c.post("/settings/compliance/%d" % bid, data={
+            "csrf": csrf(self.c, "/settings/compliance/%d" % bid), "action": "rules", "query": "section=1",
+            "shown": ["1.1.1", "1.1.2", "1.1.3"], "rule": ["1.1.2", "1.1.3"]}, follow_redirects=False)
+        self.assertEqual(r.headers["location"], "/settings/compliance/%d?section=1&ok=saved" % bid)
+        ov = self.bench("TEST9-CIS-1.2.3")[3]
+        self.assertEqual(ov, {"1.1.1": False, "1.1.2": None, "1.1.3": True, "2.10.1": None})   # 2.10.1 not shown: untouched
+        self.assertIn("Set here", self.c.get("/settings/compliance/%d?state=override" % bid).text)
+        self.act(bid, action="reset")
+        self.assertEqual(set(self.bench("TEST9-CIS-1.2.3")[3].values()), {None})
+
+    def test_delete(self):
+        self.upload(role_zip())
+        bid = self.bench("TEST9-CIS-1.2.3")[0]
+        self.assertIn("err=csrf", self.act(bid, action="delete").headers["location"])     # needs the confirm box
+        r = self.act(bid, action="delete", confirm="on")
+        self.assertEqual(r.headers["location"], "/settings/compliance?ok=deleted")
+        self.assertIsNone(self.bench("TEST9-CIS-1.2.3"))
+        from securitas.db import BenchmarkFile, BenchmarkRule
+        with self.db.Session() as s:
+            self.assertEqual(s.scalar(select(func.count(BenchmarkRule.id))), 0)
+            self.assertEqual(s.scalar(select(func.count(BenchmarkFile.id))), 0)
+        self.assertEqual(self.c.get("/settings/compliance/%d" % bid).status_code, 404)
+
+    def test_viewer_can_browse_not_change(self):
+        self.upload(role_zip())
+        bid = self.bench("TEST9-CIS-1.2.3")[0]
+        tok = csrf(self.c)
+        self.c.post("/settings/users", data={"csrf": tok, "username": "vic", "password": "a-long-password-1", "role": "viewer"})
+        v = client(self.app)
+        login(v, "vic", "a-long-password-1")
+        page = v.get("/settings/compliance/%d" % bid)
+        self.assertEqual(page.status_code, 200)
+        self.assertNotIn("Remove benchmark", page.text)
+        self.assertNotIn('type="file"', v.get("/settings/compliance").text)
+        self.assertEqual(self.upload(role_zip(top="TEST9-CIS-9.9.9"), c=v).status_code, 403)
+        r = v.post("/settings/compliance/%d" % bid, data={"csrf": csrf(v, "/settings/compliance/%d" % bid), "action": "delete",
+                                                          "confirm": "on"}, follow_redirects=False)
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(v.get("/settings/compliance/%d/download" % bid).status_code, 403)
+
+    @unittest.skipUnless(os.path.exists(REAL_ZIP), "real RHEL9-CIS-2.4.2.zip not available")
+    def test_real_upload(self):
+        r = self.upload(open(REAL_ZIP, "rb").read(), "RHEL9-CIS-2.4.2.zip")
+        self.assertEqual(r.status_code, 303, r.text[:800])
+        page = self.c.get("/settings/compliance").text
+        self.assertIn("RHEL9-CIS-2.4.2", page)
+        self.assertIn("237 of 297", page)

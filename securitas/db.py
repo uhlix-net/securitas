@@ -1,12 +1,13 @@
-"""Database: users, sessions, role mappings, scan targets, schedules, scans and their results, audit log.
+"""Database: users, sessions, role mappings, scan targets, schedules, scans and their results, audit log, and the
+compliance benchmark library.
 
 PostgreSQL in production (SECURITAS_DATABASE_URL=postgresql+psycopg://...). SQLite works for tests and trials.
 """
 import datetime
 import threading
 
-from sqlalchemy import (JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, create_engine, event, func,
-                        select, text)
+from sqlalchemy import (JSON, Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint,
+                        create_engine, event, func, select, text)
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
@@ -168,6 +169,67 @@ class Setting(Base):
     value: Mapped[dict] = mapped_column(JSONType, default=dict)
 
 
+class Benchmark(Base):
+    """One uploaded compliance benchmark: an Ansible-Lockdown role zip, named after the role and its version
+    (key 'RHEL9-CIS-2.4.2'). Removing it removes its rules and the stored zip."""
+    __tablename__ = "benchmarks"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(128), unique=True, index=True)    # <name>-<version>
+    name: Mapped[str] = mapped_column(String(96))                   # role name, e.g. RHEL9-CIS
+    version: Mapped[str] = mapped_column(String(32))                # role (zip) version, e.g. 2.4.2
+    kind: Mapped[str] = mapped_column(String(16), default="CIS")
+    benchmark_version: Mapped[str] = mapped_column(String(32), default="")   # CIS document version, e.g. v2.0.0
+    source: Mapped[str] = mapped_column(String(32), default="ansible-lockdown")
+    platform: Mapped[str] = mapped_column(String(16), index=True)  # linux | windows | kubernetes
+    os_key: Mapped[str] = mapped_column(String(64), index=True)    # rhel9, windows2022, ...
+    os_label: Mapped[str] = mapped_column(String(128), default="")
+    profile: Mapped[str] = mapped_column(String(32), default="level1-server")
+    active: Mapped[bool] = mapped_column(Boolean, default=False)    # at most one active benchmark per os_key
+    rule_count: Mapped[int] = mapped_column(Integer, default=0)
+    filename: Mapped[str] = mapped_column(String(255), default="")
+    sha256: Mapped[str] = mapped_column(String(64))
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    meta: Mapped[dict] = mapped_column(JSONType, default=dict)
+    uploaded_at: Mapped[datetime.datetime] = mapped_column(TZDateTime(), default=utcnow)
+    uploaded_by: Mapped[str] = mapped_column(String(255), default="")
+    rules: Mapped[list["BenchmarkRule"]] = relationship(back_populates="benchmark", cascade="all, delete-orphan",
+                                                        passive_deletes=True, order_by="BenchmarkRule.sort_key")
+    files: Mapped[list["BenchmarkFile"]] = relationship(cascade="all, delete-orphan", passive_deletes=True)
+
+
+class BenchmarkRule(Base):
+    __tablename__ = "benchmark_rules"
+    __table_args__ = (UniqueConstraint("benchmark_id", "rule_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    benchmark_id: Mapped[int] = mapped_column(ForeignKey("benchmarks.id", ondelete="CASCADE"), index=True)
+    rule_id: Mapped[str] = mapped_column(String(32))                # 1.1.1.1
+    sort_key: Mapped[str] = mapped_column(String(64))               # 0001.0001.0001.0001
+    section: Mapped[str] = mapped_column(String(8))
+    title: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(String(8))                    # PATCH (automated) | AUDIT (manual check)
+    levels: Mapped[list] = mapped_column(JSONType, default=list)    # level1-server, level2-workstation, ...
+    refs: Mapped[list] = mapped_column(JSONType, default=list)      # NIST800-53R5_CM-7, ...
+    toggle: Mapped[str] = mapped_column(String(128), default="")    # the role variable that turns the rule on
+    default_on: Mapped[bool] = mapped_column(Boolean, default=True)  # the role's own default
+    override: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # set here: on/off regardless of profile
+    source: Mapped[str] = mapped_column(String(255), default="")    # task file in the role
+    benchmark: Mapped[Benchmark] = relationship(back_populates="rules")
+
+
+class BenchmarkFile(Base):
+    """A file kept with a benchmark: the uploaded role zip (later also its audit content)."""
+    __tablename__ = "benchmark_files"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    benchmark_id: Mapped[int] = mapped_column(ForeignKey("benchmarks.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(16), default="role")
+    filename: Mapped[str] = mapped_column(String(255))
+    sha256: Mapped[str] = mapped_column(String(64))
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+    uploaded_at: Mapped[datetime.datetime] = mapped_column(TZDateTime(), default=utcnow)
+    uploaded_by: Mapped[str] = mapped_column(String(255), default="")
+
+
 class Database:
     def __init__(self, url):
         kw = {"pool_pre_ping": True, "future": True}
@@ -228,4 +290,4 @@ def audit(s, user, ip, action, detail=""):
 
 
 __all__ = ["Database", "User", "Session", "LoginState", "RoleMapping", "Target", "Schedule", "Scan", "PlatformResult",
-           "ResultStats", "AuditEvent", "Setting", "get_setting", "set_setting", "audit", "utcnow", "select", "func"]
+           "ResultStats", "AuditEvent", "Setting", "Benchmark", "BenchmarkRule", "BenchmarkFile", "get_setting", "set_setting", "audit", "utcnow", "select", "func"]

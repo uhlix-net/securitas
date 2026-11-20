@@ -33,6 +33,7 @@ PERMISSIONS = {
     "settings.view": "viewer",     # the Settings menu; each page has its own permission (viewers see Sources)
     "credentials.edit": "admin",
     "sources.edit": "admin",
+    "compliance.edit": "admin",    # upload, activate, configure and remove benchmarks (viewers can browse them)
 }
 _ph = PasswordHasher()
 _DUMMY = _ph.hash(secrets.token_urlsafe(16))   # verified on unknown users so timing does not reveal them

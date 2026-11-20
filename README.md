@@ -37,6 +37,13 @@ serves the results as web pages with an **Export to PDF** button.
   advisories, Microsoft release data), when it was last fetched, what turning it off changes, and shows
   the exact script each scanner runs on a host. KEV and EPSS can be turned off; each platform can be
   turned off.
+- **Compliance benchmark library.** Admins upload [Ansible-Lockdown](https://github.com/ansible-lockdown)
+  CIS roles (the release zip, for example `RHEL9-CIS-2.4.2.zip`) on Settings → Compliance. Each upload is stored
+  under its role name and version with the upload date, the uploader and the file's SHA-256, and its rules
+  are read from the role: rule ID, title, profile levels, NIST 800-53 mappings and the role's on/off default.
+  Several versions can be loaded side by side; one per operating system is active. Pick a profile (Level 1
+  Server by default), switch single rules on or off, download the original zip, or remove a benchmark.
+  Nothing in an uploaded zip is run. Checking hosts against the active benchmark comes in a later release.
 - **Sign-in and roles.**
   - Sign-in: local accounts, LDAP (Active Directory) and OpenID Connect single sign-on.
   - Three roles: Viewer, Operator and Admin. LDAP and SSO users get their role from their groups.
@@ -55,6 +62,8 @@ What's new in each version: [CHANGELOG.md](CHANGELOG.md). Upgrading? See the upg
 | Run scans now | | Yes | Yes |
 | Change schedules | | Yes | Yes |
 | See the Sources page (data sources and how each platform is scanned) | Yes | Yes | Yes |
+| Browse compliance benchmarks and their rules | Yes | Yes | Yes |
+| Upload, activate, configure, download and remove compliance benchmarks | | | Yes |
 | Change scan targets | | | Yes |
 | Scan credentials (SSH key, WinRM account) and connection tests | | | Yes |
 | Turn sources on or off, EPSS threshold | | | Yes |

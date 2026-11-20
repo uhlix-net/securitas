@@ -18,11 +18,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlalchemy import String, cast, delete, func, select
 
-from . import __version__, auth, charts, render, report, scan_linux, scan_windows, sources
+from . import __version__, auth, charts, compliance, render, report, scan_linux, scan_windows, sources
 from .config import PLATFORMS
 from .settings import FIELDS, SettingsError
-from .db import (AuditEvent, LoginState, PlatformResult, ResultStats, RoleMapping, Scan, Schedule, Session, Target, User, audit,
-                 get_setting, set_setting, utcnow)
+from .db import (AuditEvent, Benchmark, BenchmarkFile, LoginState, PlatformResult, ResultStats, RoleMapping,
+                 Scan, Schedule, Session, Target, User, audit, get_setting, set_setting, utcnow)
 from .jobs import STATUS_LABEL, fmt_time, next_run, valid_cron
 
 log = logging.getLogger("securitas.web")
@@ -36,6 +36,7 @@ MESSAGES = {
     "saved": "Saved.", "nochange": "Nothing changed.", "queued": "Scan queued.", "deleted": "Deleted.", "added": "Added.", "pw": "Password changed.",
     "hostkey": "Host key cleared; the next scan records the key the host presents.",
     "loggedout": "You are signed out.",
+    "imported": "Benchmark imported.", "activated": "Active benchmark changed.",
 }
 ERRORS = {
     "csrf": "The form expired. Please try again.", "noplat": "Pick at least one platform.",
@@ -868,6 +869,7 @@ def create_app(cfg, db, jobs):
         ("credentials", "Scan credentials", "credentials.edit", "The SSH account and key for Linux scans and the WinRM account for Windows scans, with a connection test."),
         ("targets", "Targets", "target.edit", "The Linux and Windows hosts to scan."),
         ("schedules", "Schedules", "schedule.edit", "When each platform is scanned."),
+        ("compliance", "Compliance", "view", "The compliance benchmark library: upload Ansible-Lockdown benchmarks, choose the active one per operating system and which rules are checked, and remove old versions."),
         ("sources", "Sources", "view", "Where vulnerability data comes from, which sources are on, and how each platform is scanned."),
         ("audit", "Audit log", "audit.view", "Every sign-in, scan and change."),
     ]
@@ -1009,6 +1011,173 @@ def create_app(cfg, db, jobs):
         resp = await save_settings(request, user, "sources", "/settings/sources", ("sources.html", sources_ctx))
         jobs.clear_cache()
         return resp
+
+    # ------------------------------------------------------------ settings: compliance benchmark library
+
+    CE = a.need("compliance.edit")
+
+    def bench_or_404(s, bid):
+        b = s.get(Benchmark, bid)
+        if b is None:
+            raise HTTPException(404, "There is no benchmark #%d." % bid)
+        return b
+
+    def compliance_ctx(s, request, user, **extra):
+        from sqlalchemy.orm import selectinload
+        rows = s.scalars(select(Benchmark).options(selectinload(Benchmark.rules))
+                         .order_by(Benchmark.platform, Benchmark.os_key, Benchmark.name, Benchmark.uploaded_at.desc())).all()
+        return {"user": user, "sess": request.state.sess, "title": "Compliance", "rows": rows,
+                "counts": {b.id: compliance.counts(b) for b in rows}, "platforms": compliance.PLATFORMS,
+                "profiles": compliance.PROFILES, "name": lambda b: compliance.display_name(b, cfg.timezone),
+                "max_mb": compliance.MAX_ZIP // (1024 * 1024), **extra}
+
+    @api.get("/settings/compliance")
+    def compliance_page(request: Request, user=Depends(V)):
+        with db.Session() as s:
+            return a.page(request, "compliance.html", compliance_ctx(s, request, user))
+
+    @api.post("/settings/compliance")
+    async def compliance_upload(request: Request, user=Depends(CE)):
+        # parse the multipart body once with a size limit that fits a role zip; a.csrf reuses the parsed form
+        await request.form(max_files=1, max_fields=10, max_part_size=compliance.MAX_ZIP + 1)
+        form = await a.csrf(request)
+        up = form.get("file")
+        err, data, fname = "", b"", ""
+        if up is None or not hasattr(up, "read"):
+            err = "Choose a zip file to upload."
+        else:
+            fname = os.path.basename(str(up.filename or ""))[:255]
+            try:
+                data = await up.read(compliance.MAX_ZIP + 1)
+            finally:
+                await up.close()
+            if not data:
+                err = "The file is empty."
+        from starlette.concurrency import run_in_threadpool
+        parsed = None
+        if not err:
+            try:
+                parsed = await run_in_threadpool(compliance.parse_zip, data, fname)
+            except compliance.BenchmarkError as e:
+                err = str(e)
+        with db.Session() as s, s.begin():
+            if parsed is not None:
+                try:
+                    b = compliance.store(s, parsed, data, user.username, cfg.timezone)
+                    a.audit(s, request, "benchmark.uploaded", "%s (%s, %d rules, sha256 %s)%s"
+                            % (b.key, b.filename, b.rule_count, b.sha256[:16], ", active for " + b.os_label if b.active else ""))
+                    bid = b.id
+                except compliance.BenchmarkError as e:
+                    err = str(e)
+            if err:
+                a.audit(s, request, "benchmark.upload_failed", "%s: %s" % (fname or "no file", err[:300]))
+        if err:
+            with db.Session() as s:
+                return a.page(request, "compliance.html", compliance_ctx(s, request, user, error=err), status=400)
+        return go("/settings/compliance/%d" % bid, ok="imported")
+
+    RULE_STATES = ("on", "off", "override")
+
+    @api.get("/settings/compliance/{bid}")
+    def benchmark_page(request: Request, bid: int, user=Depends(V)):
+        q = request.query_params
+        f = {"q": q.get("q", "").strip()[:100], "section": q.get("section", ""), "level": q.get("level", ""),
+             "kind": q.get("kind", ""), "state": q.get("state", "")}
+        with db.Session() as s:
+            b = bench_or_404(s, bid)
+            sections = sorted({r.section for r in b.rules}, key=lambda x: int(x) if x.isdigit() else 0)
+            shown = []
+            for r in b.rules:
+                on = compliance.rule_on(r, b.profile)
+                if f["q"] and f["q"].lower() not in (r.rule_id + " " + r.title).lower():
+                    continue
+                if f["section"] and r.section != f["section"]:
+                    continue
+                if f["level"] in compliance.LEVEL_TAGS and f["level"] not in (r.levels or []):
+                    continue
+                if f["kind"] in ("PATCH", "AUDIT") and r.kind != f["kind"]:
+                    continue
+                if f["state"] == "on" and not on or f["state"] == "off" and on or f["state"] == "override" and r.override is None:
+                    continue
+                shown.append((r, on))
+            others = s.scalars(select(Benchmark).where(Benchmark.os_key == b.os_key, Benchmark.id != b.id)
+                               .order_by(Benchmark.uploaded_at.desc())).all()
+            ctx = {"user": user, "sess": request.state.sess, "title": b.key, "b": b, "c": compliance.counts(b),
+                   "shown": shown, "f": f, "sections": sections, "profiles": compliance.PROFILES,
+                   "level_tags": compliance.LEVEL_TAGS, "states": RULE_STATES, "others": others,
+                   "name": lambda b: compliance.display_name(b, cfg.timezone),
+                   "day": lambda b: compliance.upload_date(b, cfg.timezone), "filtered": any(f.values()),
+                   "query": urllib.parse.urlencode({k: v for k, v in f.items() if v})}
+            return a.page(request, "benchmark.html", ctx)
+
+    @api.post("/settings/compliance/{bid}")
+    async def benchmark_edit(request: Request, bid: int, user=Depends(CE)):
+        form = await a.csrf(request)
+        action = str(form.get("action", ""))
+        back = "/settings/compliance/%d" % bid
+        nxt = str(form.get("query", ""))
+        with db.Session() as s, s.begin():
+            b = bench_or_404(s, bid)
+            if action == "activate":
+                compliance.activate(s, b)
+                a.audit(s, request, "benchmark.activated", "%s for %s" % (b.key, b.os_label))
+                msg = "activated"
+            elif action == "deactivate":
+                b.active = False
+                a.audit(s, request, "benchmark.deactivated", "%s; %s has no active benchmark" % (b.key, b.os_label))
+                msg = "saved"
+            elif action == "profile":
+                p = str(form.get("profile", ""))
+                if p not in compliance.PROFILES:
+                    raise HTTPException(400, "Unknown profile.")
+                if p == b.profile:
+                    msg = "nochange"
+                else:
+                    a.audit(s, request, "benchmark.profile", "%s: %s -> %s" % (b.key, b.profile, p))
+                    b.profile = p
+                    msg = "saved"
+            elif action == "rules":
+                shown = set(form.getlist("shown"))
+                checked = set(form.getlist("rule"))
+                n = compliance.set_rules(b, shown, checked)
+                if n:
+                    a.audit(s, request, "benchmark.rules", "%s: %d rule(s) changed, %d now on"
+                            % (b.key, n, compliance.counts(b)["on"]))
+                msg = "saved" if n else "nochange"
+            elif action == "reset":
+                n = sum(1 for r in b.rules if r.override is not None)
+                for r in b.rules:
+                    r.override = None
+                if n:
+                    a.audit(s, request, "benchmark.rules_reset", "%s: %d override(s) removed" % (b.key, n))
+                msg = "saved" if n else "nochange"
+            elif action == "delete":
+                if form.get("confirm") != "on":
+                    return go(back, err="csrf")
+                a.audit(s, request, "benchmark.deleted", "%s (%s, uploaded %s by %s, sha256 %s)%s"
+                        % (b.key, b.filename, compliance.upload_date(b, cfg.timezone), b.uploaded_by, b.sha256[:16],
+                           "; it was the active benchmark for " + b.os_label if b.active else ""))
+                s.delete(b)
+                return go("/settings/compliance", ok="deleted")
+            else:
+                raise HTTPException(400, "Unknown action.")
+        q = urllib.parse.parse_qs(nxt)
+        safe = urllib.parse.urlencode({k: v[0] for k, v in q.items() if k in ("q", "section", "level", "kind", "state")})
+        return go(back + ("?" + safe if safe else ""), ok=msg)
+
+    @api.get("/settings/compliance/{bid}/download")
+    def benchmark_download(request: Request, bid: int, user=Depends(CE)):
+        with db.Session() as s:
+            b = bench_or_404(s, bid)
+            f = s.scalar(select(BenchmarkFile).where(BenchmarkFile.benchmark_id == b.id, BenchmarkFile.kind == "role"))
+            if f is None:
+                raise HTTPException(404, "The original file of this benchmark is not stored.")
+            data, fname = f.data, f.filename or (b.key + ".zip")
+            a.audit(s, request, "benchmark.downloaded", b.key)
+            s.commit()
+        safe = "".join(ch for ch in fname if ch.isalnum() or ch in "._-") or "benchmark.zip"
+        return Response(data, media_type="application/zip",
+                        headers={**HEADERS, "Content-Disposition": 'attachment; filename="%s"' % safe})
 
     # ------------------------------------------------------------ admin: audit
 

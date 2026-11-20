@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block content %}
+{% set editable = can(user.role, "compliance.edit") %}
+<section>
+  <p class="small"><a href="/settings/compliance">← All benchmarks</a></p>
+  <h2>{{ b.key }} {% if b.active %}<span class="badge b-done">Active for {{ b.os_label }}</span>{% else %}<span class="badge b-off">Inactive</span>{% endif %}</h2>
+  <p class="sub">{{ name(b) }}. {{ c.on }} of {{ c.total }} rules are checked{% if c.overrides %}, {{ c.overrides }} of them set here{% endif %}.</p>
+  <div class="scroll"><table>
+    <tbody>
+      <tr><th style="width:190px">Role</th><td><span class="mono">{{ b.name }}</span> version <span class="mono">{{ b.version }}</span>{% if b.meta.namespace %} ({{ b.meta.namespace }}{% if b.meta.role_name %}.{{ b.meta.role_name }}{% endif %}){% endif %}</td></tr>
+      <tr><th>Benchmark</th><td>{{ b.kind }}{% if b.benchmark_version %} <span class="mono">{{ b.benchmark_version }}</span>{% endif %}{% if b.meta.description %} · {{ b.meta.description }}{% endif %}</td></tr>
+      <tr><th>Operating system</th><td>{{ b.os_label }} <span class="small muted mono">({{ b.os_key }}{% for p in b.meta.platforms or [] %}; {{ p.name }} {{ p.versions|join(", ") }}{% endfor %})</span></td></tr>
+      <tr><th>Rules</th><td>{{ c.total }}: {{ c.patch }} automated (PATCH), {{ c.audit }} manual (AUDIT)</td></tr>
+      <tr><th>Uploaded</th><td>{{ fmt(b.uploaded_at) }} by {{ b.uploaded_by or "unknown" }}</td></tr>
+      <tr><th>File</th><td class="small"><span class="mono">{{ b.filename }}</span>, {{ (b.size / 1024)|round(1) }} KB, {{ b.meta.files or "?" }} files<br>SHA-256 <span class="mono">{{ b.sha256 }}</span>{% if editable %}<br><a href="/settings/compliance/{{ b.id }}/download">Download the original zip</a>{% endif %}</td></tr>
+      {% if b.meta.author or b.meta.company %}<tr><th>Author</th><td class="small">{{ b.meta.author }}{% if b.meta.company %}, {{ b.meta.company }}{% endif %}{% if b.meta.license %} · licence {{ b.meta.license }}{% endif %}</td></tr>{% endif %}
+      {% if others %}<tr><th>Other versions for this OS</th><td class="small">{% for o in others %}<a href="/settings/compliance/{{ o.id }}" class="mono">{{ o.key }}</a> (uploaded {{ day(o) }}{% if o.active %}, active{% endif %}){% if not loop.last %}, {% endif %}{% endfor %}</td></tr>{% endif %}
+    </tbody></table></div>
+</section>
+{% if editable %}
+<section>
+  <h2>Manage</h2>
+  <div class="row">
+    <form method="post" action="/settings/compliance/{{ b.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}">
+      {% if b.active %}<input type="hidden" name="action" value="deactivate"><button class="btn">Make inactive</button>
+      {% else %}<input type="hidden" name="action" value="activate"><button class="btn primary">Make active for {{ b.os_label }}</button>{% endif %}
+    </form>
+    <form method="post" action="/settings/compliance/{{ b.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="profile">
+      <div class="row"><label for="pf">Profile</label><select id="pf" name="profile">{% for k, lab in profiles.items() %}<option value="{{ k }}"{% if k == b.profile %} selected{% endif %}>{{ lab }}</option>{% endfor %}</select><button class="btn">Save profile</button></div>
+    </form>
+  </div>
+  <p class="hint">The profile decides which rules are checked: a rule is in a Level 1 profile when it is tagged Level 1 for servers or workstations; Level 2 adds the Level 2 rules. Rules switched on or off below override the profile.</p>
+</section>
+{% endif %}
+<section>
+  <h2>Rules</h2>
+  <form method="get" action="/settings/compliance/{{ b.id }}" class="filters">
+    <div class="row">
+      <div><label for="fq">Search</label><input id="fq" type="text" name="q" value="{{ f.q }}" placeholder="1.1.1 or ssh"></div>
+      <div><label for="fs">Section</label><select id="fs" name="section"><option value="">All</option>{% for x in sections %}<option value="{{ x }}"{% if f.section == x %} selected{% endif %}>{{ x }}</option>{% endfor %}</select></div>
+      <div><label for="fl">Level tag</label><select id="fl" name="level"><option value="">Any</option>{% for x in level_tags %}<option value="{{ x }}"{% if f.level == x %} selected{% endif %}>{{ x }}</option>{% endfor %}</select></div>
+      <div><label for="fk">Type</label><select id="fk" name="kind"><option value="">Both</option><option value="PATCH"{% if f.kind == "PATCH" %} selected{% endif %}>Automated (PATCH)</option><option value="AUDIT"{% if f.kind == "AUDIT" %} selected{% endif %}>Manual (AUDIT)</option></select></div>
+      <div><label for="ft">Checked</label><select id="ft" name="state"><option value="">All</option><option value="on"{% if f.state == "on" %} selected{% endif %}>Checked</option><option value="off"{% if f.state == "off" %} selected{% endif %}>Not checked</option><option value="override"{% if f.state == "override" %} selected{% endif %}>Set here</option></select></div>
+      <div><button class="btn">Filter</button>{% if filtered %} <a href="/settings/compliance/{{ b.id }}">Clear</a>{% endif %}</div>
+    </div>
+  </form>
+  <p class="small muted">{{ shown|length }} of {{ c.total }} rules shown.</p>
+  {% if shown %}
+  <form method="post" action="/settings/compliance/{{ b.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="rules"><input type="hidden" name="query" value="{{ query }}">
+  <div class="scroll"><table>
+    <thead><tr><th>Checked</th><th>Rule</th><th>Title</th><th>Type</th><th>Levels</th><th>NIST 800-53</th></tr></thead>
+    <tbody>
+    {% for r, on in shown %}
+    <tr>
+      <td class="nowrap"><input type="hidden" name="shown" value="{{ r.rule_id }}">{% if editable %}<label class="inline"><input type="checkbox" name="rule" value="{{ r.rule_id }}"{% if on %} checked{% endif %} aria-label="Check rule {{ r.rule_id }}"> {{ "On" if on else "Off" }}</label>{% else %}{{ "On" if on else "Off" }}{% endif %}{% if r.override is not none %} <span class="src ui">Set here</span>{% endif %}{% if not r.default_on %} <span class="small muted">off in role</span>{% endif %}</td>
+      <td class="mono nowrap">{{ r.rule_id }}</td>
+      <td>{{ r.title }}<br><span class="small muted mono">{{ r.toggle }}</span></td>
+      <td class="small">{{ "Automated" if r.kind == "PATCH" else "Manual" }}</td>
+      <td class="small">{{ r.levels|join(", ") }}</td>
+      <td class="small mono">{{ r.refs|map("replace", "NIST800-53R5_", "")|join(", ") }}</td>
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+  {% if editable %}<div class="row"><button class="btn primary">Save rules</button><span class="hint">Only the {{ shown|length }} rules shown are changed.</span></div>{% endif %}
+  </form>
+  {% if editable and c.overrides %}
+  <form method="post" action="/settings/compliance/{{ b.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="reset"><input type="hidden" name="query" value="{{ query }}">
+    <button class="btn small">Clear all {{ c.overrides }} rule(s) set here</button></form>
+  {% endif %}
+  {% endif %}
+</section>
+{% if editable %}
+<section>
+  <h2>Remove this benchmark</h2>
+  <p class="sub">Removes <span class="mono">{{ b.key }}</span>, its {{ c.total }} rules, the rule choices made here and the stored zip. This cannot be undone; upload the zip again to get it back (with the profile and rule choices reset).{% if b.active %} It is the active benchmark for {{ b.os_label }}: after removal that operating system has none until another one is made active.{% endif %}</p>
+  <form method="post" action="/settings/compliance/{{ b.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="delete">
+    <div class="row"><label class="inline"><input type="checkbox" name="confirm" required> Yes, remove {{ b.key }}</label><button class="btn danger">Remove benchmark</button></div></form>
+</section>
+{% endif %}
+{% endblock %}
