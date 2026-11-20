@@ -134,7 +134,7 @@ class Config:
     host_timeout: int = 600
     targets: list = field(default_factory=list)  # bootstrap "platform:host[:label]" entries
 
-    # Sources (Settings > Sources)
+    # Sources (Vulnerabilities > Sources)
     kev_enabled: bool = True
     epss_enabled: bool = True
     platforms_enabled: dict = field(default_factory=lambda: {p: True for p in PLATFORMS})

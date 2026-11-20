@@ -855,7 +855,7 @@ class SettingsUI(unittest.TestCase):
         self.assertNotIn("/login/oidc", client(self.app).get("/login").text)
 
     def test_platform_switch(self):
-        self.post("/settings/sources", "/settings/sources", kev_enabled="on", epss_enabled="on", epss_min="0.10",
+        self.post("/vulnerabilities/sources", "/vulnerabilities/sources", kev_enabled="on", epss_enabled="on", epss_min="0.10",
                   platform_kubernetes="on", platform_linux="on")      # windows off
         self.assertFalse(self.jobs.settings.effective().platform_on("windows"))
         page = self.c.get("/scans").text
@@ -876,7 +876,7 @@ class SettingsUI(unittest.TestCase):
         with self.db.Session() as s, s.begin():
             self.jobs.enqueue(s, ["windows"], "manual", "admin")
         self.jobs.run_scan(self.jobs._claim())
-        self.post("/settings/sources", "/settings/sources", kev_enabled="on", epss_enabled="on", epss_min="0.10",
+        self.post("/vulnerabilities/sources", "/vulnerabilities/sources", kev_enabled="on", epss_enabled="on", epss_min="0.10",
                   platform_kubernetes="on", platform_linux="on")
         page = self.c.get("/report").text
         self.assertIn("Turned off", page)
@@ -890,15 +890,15 @@ class SettingsUI(unittest.TestCase):
         self.jobs.run_scan(self.jobs._claim())
         cves = lambda: pri(self.jobs.current_model()["platforms"][0])
         self.assertIn("CVE-2099-0002", cves())                    # KEV
-        self.post("/settings/sources", "/settings/sources", epss_enabled="on", epss_min="0.10", platform_kubernetes="on",
+        self.post("/vulnerabilities/sources", "/vulnerabilities/sources", epss_enabled="on", epss_min="0.10", platform_kubernetes="on",
                   platform_linux="on", platform_windows="on")      # KEV off
         self.assertNotIn("CVE-2099-0002", cves())
         self.assertIn("The CISA KEV catalog is turned off", self.c.get("/report").text)
-        self.post("/settings/sources", "/settings/sources", epss_min="0.10", platform_kubernetes="on", platform_linux="on",
+        self.post("/vulnerabilities/sources", "/vulnerabilities/sources", epss_min="0.10", platform_kubernetes="on", platform_linux="on",
                   platform_windows="on")                           # both off: everything listed
         self.assertEqual(sorted(cves()), ["CVE-2099-0001", "CVE-2099-0002", "CVE-2099-0003", "CVE-2099-0004"])
         self.assertIn("every CVE is listed, unranked", self.c.get("/report").text)
-        r = self.post("/settings/sources", "/settings/sources", kev_enabled="on", epss_enabled="on", epss_min="1.5",
+        r = self.post("/vulnerabilities/sources", "/vulnerabilities/sources", kev_enabled="on", epss_enabled="on", epss_min="1.5",
                       platform_kubernetes="on", platform_linux="on", platform_windows="on")
         self.assertEqual(r.status_code, 400)
 
@@ -912,7 +912,7 @@ class SettingsUI(unittest.TestCase):
             f = jobsmod.Feeds(self.jobs.settings)
             f.get()
             self.assertEqual(calls, ["kev", "epss"])
-            self.post("/settings/sources", "/settings/sources", epss_enabled="on", epss_min="0.10",
+            self.post("/vulnerabilities/sources", "/vulnerabilities/sources", epss_enabled="on", epss_min="0.10",
                       platform_kubernetes="on", platform_linux="on", platform_windows="on")
             calls.clear()
             _, _, src, _ = f.get()
@@ -922,7 +922,7 @@ class SettingsUI(unittest.TestCase):
             feeds.kev, feeds.epss = old
 
     def test_sources_page_documents_scanners(self):
-        page = self.c.get("/settings/sources").text
+        page = self.c.get("/vulnerabilities/sources").text
         for s in ("CISA Known Exploited", "EPSS", "Trivy Operator", "dnf", "MSRC", "updateinfo list --security",
                   "Win32_OperatingSystem", "How Windows is scanned"):
             self.assertIn(s, page)
@@ -940,8 +940,9 @@ class SettingsUI(unittest.TestCase):
 
     def test_menu_redirects_and_permissions(self):
         page = self.c.get("/settings").text
-        for label in ("Users", "Authentication", "Scan credentials", "Targets", "Schedules", "Sources", "Audit log"):
+        for label in ("Users", "Authentication", "Scan credentials", "Targets", "Schedules", "Audit log"):
             self.assertIn(label, page)
+        self.assertNotIn('href="/vulnerabilities/sources"><h3>', page)        # 0.5.0: Sources moved to Vulnerabilities
         for old, new in (("/admin/users", "/settings/users"), ("/admin/auth", "/settings/authentication"),
                          ("/schedules", "/settings/schedules")):
             r = self.c.get(old, follow_redirects=False)
@@ -951,12 +952,13 @@ class SettingsUI(unittest.TestCase):
         self.c.post("/settings/users", data={"csrf": tok, "username": "vic", "password": "a-long-password-1", "role": "viewer"})
         v = client(self.app)
         login(v, "vic", "a-long-password-1")
-        page = v.get("/settings").text
-        self.assertIn("Sources", page)
-        self.assertNotIn("Scan credentials", page)
-        self.assertEqual(v.get("/settings/sources").status_code, 200)
+        page = v.get("/vulnerabilities/sources").text
+        self.assertIn('href="/vulnerabilities/sources" class="on">Sources', page)
+        self.assertNotIn('href="/settings"', page)          # a viewer has no settings pages, so no Settings menu
+        self.assertNotIn("Scan credentials", v.get("/settings").text)
+        self.assertEqual(v.get("/vulnerabilities/sources").status_code, 200)
         self.assertEqual(v.get("/settings/credentials").status_code, 403)
-        r = v.post("/settings/sources", data={"csrf": csrf(v, "/settings/sources")}, follow_redirects=False)
+        r = v.post("/vulnerabilities/sources", data={"csrf": csrf(v, "/vulnerabilities/sources")}, follow_redirects=False)
         self.assertEqual(r.status_code, 403)
 
 
@@ -1095,11 +1097,11 @@ class ComplianceUI(unittest.TestCase):
 
     def upload(self, data, name="TEST9-CIS-1.2.3.zip", c=None):
         c = c or self.c
-        return c.post("/settings/compliance", data={"csrf": csrf(c, "/settings/compliance")},
+        return c.post("/compliance/benchmarks", data={"csrf": csrf(c, "/compliance/benchmarks")},
                       files={"file": (name, data, "application/zip")}, follow_redirects=False)
 
     def act(self, bid, **data):
-        return self.c.post("/settings/compliance/%d" % bid, data={"csrf": csrf(self.c, "/settings/compliance/%d" % bid), **data},
+        return self.c.post("/compliance/benchmarks/%d" % bid, data={"csrf": csrf(self.c, "/compliance/benchmarks/%d" % bid), **data},
                            follow_redirects=False)
 
     def bench(self, key):
@@ -1112,18 +1114,18 @@ class ComplianceUI(unittest.TestCase):
         r = self.upload(role_zip())
         self.assertEqual(r.status_code, 303, r.text[:500])
         bid, active, profile, _ = self.bench("TEST9-CIS-1.2.3")
-        self.assertEqual(r.headers["location"], "/settings/compliance/%d?ok=imported" % bid)
+        self.assertEqual(r.headers["location"], "/compliance/benchmarks/%d?ok=imported" % bid)
         self.assertTrue(active)                          # first one for its OS
         self.assertEqual(profile, "level1-server")
-        page = self.c.get("/settings/compliance").text
+        page = self.c.get("/compliance/benchmarks").text
         self.assertIn("TEST9-CIS-1.2.3", page)
         self.assertIn("TEST9-CIS 1.2.3 · uploaded ", page)  # name, version and upload date
         self.assertIn("2 of 4", page)                    # level 1 server: 1.1.1 and 2.10.1
-        detail = self.c.get("/settings/compliance/%d" % bid).text
+        detail = self.c.get("/compliance/benchmarks/%d" % bid).text
         self.assertIn("Ensure &#39;audit log&#39; mode is configured", detail)
         self.assertIn("v3.1.0", detail)
         self.assertIn("off in role", detail)             # 1.1.3 is off in the role's defaults
-        self.assertEqual(self.c.get("/settings/compliance/%d/download" % bid).content, role_zip())
+        self.assertEqual(self.c.get("/compliance/benchmarks/%d/download" % bid).content, role_zip())
         from securitas.db import AuditEvent
         with self.db.Session() as s:
             self.assertIn("benchmark.uploaded", s.scalars(select(AuditEvent.action)).all())
@@ -1154,13 +1156,13 @@ class ComplianceUI(unittest.TestCase):
         self.act(bid, action="profile", profile="level2-server")
         self.assertEqual(self.bench("TEST9-CIS-1.2.3")[2], "level2-server")
         # filtered page: only section 1 shown; turn 1.1.1 off and 1.1.3 on (off in the role)
-        r = self.c.post("/settings/compliance/%d" % bid, data={
-            "csrf": csrf(self.c, "/settings/compliance/%d" % bid), "action": "rules", "query": "section=1",
+        r = self.c.post("/compliance/benchmarks/%d" % bid, data={
+            "csrf": csrf(self.c, "/compliance/benchmarks/%d" % bid), "action": "rules", "query": "section=1",
             "shown": ["1.1.1", "1.1.2", "1.1.3"], "rule": ["1.1.2", "1.1.3"]}, follow_redirects=False)
-        self.assertEqual(r.headers["location"], "/settings/compliance/%d?section=1&ok=saved" % bid)
+        self.assertEqual(r.headers["location"], "/compliance/benchmarks/%d?section=1&ok=saved" % bid)
         ov = self.bench("TEST9-CIS-1.2.3")[3]
         self.assertEqual(ov, {"1.1.1": False, "1.1.2": None, "1.1.3": True, "2.10.1": None})   # 2.10.1 not shown: untouched
-        self.assertIn("Set here", self.c.get("/settings/compliance/%d?state=override" % bid).text)
+        self.assertIn("Set here", self.c.get("/compliance/benchmarks/%d?state=override" % bid).text)
         self.act(bid, action="reset")
         self.assertEqual(set(self.bench("TEST9-CIS-1.2.3")[3].values()), {None})
 
@@ -1169,13 +1171,13 @@ class ComplianceUI(unittest.TestCase):
         bid = self.bench("TEST9-CIS-1.2.3")[0]
         self.assertIn("err=csrf", self.act(bid, action="delete").headers["location"])     # needs the confirm box
         r = self.act(bid, action="delete", confirm="on")
-        self.assertEqual(r.headers["location"], "/settings/compliance?ok=deleted")
+        self.assertEqual(r.headers["location"], "/compliance/benchmarks?ok=deleted")
         self.assertIsNone(self.bench("TEST9-CIS-1.2.3"))
         from securitas.db import BenchmarkFile, BenchmarkRule
         with self.db.Session() as s:
             self.assertEqual(s.scalar(select(func.count(BenchmarkRule.id))), 0)
             self.assertEqual(s.scalar(select(func.count(BenchmarkFile.id))), 0)
-        self.assertEqual(self.c.get("/settings/compliance/%d" % bid).status_code, 404)
+        self.assertEqual(self.c.get("/compliance/benchmarks/%d" % bid).status_code, 404)
 
     def test_viewer_can_browse_not_change(self):
         self.upload(role_zip())
@@ -1184,20 +1186,77 @@ class ComplianceUI(unittest.TestCase):
         self.c.post("/settings/users", data={"csrf": tok, "username": "vic", "password": "a-long-password-1", "role": "viewer"})
         v = client(self.app)
         login(v, "vic", "a-long-password-1")
-        page = v.get("/settings/compliance/%d" % bid)
+        page = v.get("/compliance/benchmarks/%d" % bid)
         self.assertEqual(page.status_code, 200)
         self.assertNotIn("Remove benchmark", page.text)
-        self.assertNotIn('type="file"', v.get("/settings/compliance").text)
+        self.assertNotIn('type="file"', v.get("/compliance/benchmarks").text)
         self.assertEqual(self.upload(role_zip(top="TEST9-CIS-9.9.9"), c=v).status_code, 403)
-        r = v.post("/settings/compliance/%d" % bid, data={"csrf": csrf(v, "/settings/compliance/%d" % bid), "action": "delete",
+        r = v.post("/compliance/benchmarks/%d" % bid, data={"csrf": csrf(v, "/compliance/benchmarks/%d" % bid), "action": "delete",
                                                           "confirm": "on"}, follow_redirects=False)
         self.assertEqual(r.status_code, 403)
-        self.assertEqual(v.get("/settings/compliance/%d/download" % bid).status_code, 403)
+        self.assertEqual(v.get("/compliance/benchmarks/%d/download" % bid).status_code, 403)
 
     @unittest.skipUnless(os.path.exists(REAL_ZIP), "real RHEL9-CIS-2.4.2.zip not available")
     def test_real_upload(self):
         r = self.upload(open(REAL_ZIP, "rb").read(), "RHEL9-CIS-2.4.2.zip")
         self.assertEqual(r.status_code, 303, r.text[:800])
-        page = self.c.get("/settings/compliance").text
+        page = self.c.get("/compliance/benchmarks").text
         self.assertIn("RHEL9-CIS-2.4.2", page)
         self.assertIn("237 of 297", page)
+
+
+class Menus(unittest.TestCase):
+    """0.5.0: Vulnerabilities and Compliance are top-level menus; Sources and Benchmarks moved under them."""
+
+    def setUp(self):
+        self.app, self.db, self.jobs, self.cfg = make_app()
+        self.c = client(self.app)
+        login(self.c, "admin", ADMIN_PW)
+
+    def test_top_and_sub_menus(self):
+        page = self.c.get("/report").text
+        self.assertIn('<a href="/" class="on">Vulnerabilities</a>', page)
+        self.assertIn('<a href="/compliance">Compliance</a>', page)
+        self.assertIn('<a href="/report" class="on">Report</a>', page)
+        for href in ("/scans", "/vulnerabilities/sources"):
+            self.assertIn('href="%s"' % href, page)
+        page = self.c.get("/compliance/scans").text
+        self.assertIn('<a href="/compliance" class="on">Compliance</a>', page)
+        self.assertIn('<a href="/compliance/scans" class="on">Scans</a>', page)
+        self.assertIn('<a href="/compliance">Report</a>', page)              # the Report tab is not on for /compliance/scans
+        self.assertIn('href="/compliance/benchmarks"', page)
+        self.assertNotIn('aria-label="Vulnerabilities"', self.c.get("/account").text)
+
+    def test_old_addresses_redirect(self):
+        for old, new in (("/settings/sources", "/vulnerabilities/sources"), ("/settings/compliance", "/compliance/benchmarks"),
+                         ("/settings/compliance/7", "/compliance/benchmarks/7"), ("/vulnerabilities", "/")):
+            r = self.c.get(old, follow_redirects=False)
+            self.assertEqual((r.status_code, r.headers["location"]), (301, new), old)
+
+    def test_compliance_report_matches_hosts_to_benchmarks(self):
+        from securitas.db import PlatformResult, Scan, Target
+        with self.db.Session() as s, s.begin():
+            s.add_all([Target(platform="linux", host="rocky1"), Target(platform="linux", host="ubu1"),
+                       Target(platform="linux", host="new1"), Target(platform="windows", host="win1")])
+            sc = Scan(trigger="manual", platforms=["linux"], status="done")
+            s.add(sc)
+            s.flush()
+            s.add(PlatformResult(scan_id=sc.id, platform="linux", status="done",
+                                 raw={"systems": [{"name": "rocky1", "os": "Rocky Linux 9.6"},
+                                                  {"name": "ubu1", "os": "Ubuntu 22.04.4 LTS"}]}))
+        page = self.c.get("/compliance").text
+        self.assertIn("No benchmark is active", page)
+        self.c.post("/compliance/benchmarks", data={"csrf": csrf(self.c, "/compliance/benchmarks")},
+                    files={"file": ("r.zip", role_zip(top="RHEL9-CIS-1.0.0"), "application/zip")})
+        page = self.c.get("/compliance").text
+        row = lambda host: re.search(r'<td class="mono">%s</td>(.*?)</tr>' % host, page, re.S).group(1)
+        self.assertIn("RHEL9-CIS-1.0.0", row("rocky1"))
+        self.assertIn("no active benchmark for this OS (ubuntu22)", row("ubu1"))
+        self.assertIn("run a vulnerability scan", row("new1"))
+        self.assertIn("Not checked", row("win1"))
+        self.assertIn("cannot run yet", self.c.get("/compliance/scans").text)
+
+    def test_os_keys(self):
+        from securitas.compliance import os_key_for
+        self.assertEqual([os_key_for(x) for x in ("Rocky Linux 9.6", "AlmaLinux 8.10", "Windows Server 2022 Standard", "")],
+                         ["rhel9", "rhel8", "windows2022", ""])

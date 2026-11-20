@@ -6,7 +6,7 @@ The first part of compliance: a library of CIS benchmarks. Checking hosts agains
 
 ### New
 
-- **Settings → Compliance.** Upload an [Ansible-Lockdown](https://github.com/ansible-lockdown) CIS role as the
+- **Compliance → Benchmarks.** Upload an [Ansible-Lockdown](https://github.com/ansible-lockdown) CIS role as the
   zip GitHub offers on its release page (for example `RHEL9-CIS-2.4.2.zip`, one folder `<role>-<version>`).
   Securitas reads it without running anything and stores:
   - the benchmark under its role name and version (`RHEL9-CIS-2.4.2`), shown as
@@ -26,6 +26,19 @@ The first part of compliance: a library of CIS benchmarks. Checking hosts agains
   download and removal is in the audit log.
 - Linux and Windows CIS roles are read (Windows roles such as `Windows-2022-CIS`); STIG roles are refused for
   now. Kubernetes compliance will come from Trivy Operator's CIS report, so it needs no upload.
+
+- **Compliance report and scans.** *Compliance → Report* lists the active benchmark per operating system and
+  every enabled target with the OS its latest vulnerability scan saw and the benchmark it will be checked
+  against. *Compliance → Scans* is where compliance scans will run; no platform has a checker yet, so both pages
+  say so.
+
+### Changed
+
+- **New menus.** The top menu is *Vulnerabilities*, *Compliance* and *Settings*. *Vulnerabilities* holds
+  Summary, Report, Scans and **Sources** (moved from Settings to `/vulnerabilities/sources`). *Compliance* holds
+  Report, Scans and Benchmarks. The Summary, Report and Scans addresses (`/`, `/report`, `/scans`) are
+  unchanged; `/settings/sources` and `/settings/compliance` redirect to their new places. Users whose role has
+  no settings pages (viewers) no longer see the Settings menu.
 
 ### Upgrading from 0.4.0
 

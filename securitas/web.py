@@ -869,11 +869,22 @@ def create_app(cfg, db, jobs):
         ("credentials", "Scan credentials", "credentials.edit", "The SSH account and key for Linux scans and the WinRM account for Windows scans, with a connection test."),
         ("targets", "Targets", "target.edit", "The Linux and Windows hosts to scan."),
         ("schedules", "Schedules", "schedule.edit", "When each platform is scanned."),
-        ("compliance", "Compliance", "view", "The compliance benchmark library: upload Ansible-Lockdown benchmarks, choose the active one per operating system and which rules are checked, and remove old versions."),
-        ("sources", "Sources", "view", "Where vulnerability data comes from, which sources are on, and how each platform is scanned."),
         ("audit", "Audit log", "audit.view", "Every sign-in, scan and change."),
     ]
     a.env.globals["SETTINGS_PAGES"] = SETTINGS_PAGES
+    a.env.globals["settings_for"] = lambda role: [p for p in SETTINGS_PAGES if auth.can(role, p[2])]
+    # Top-level sections and their pages: (path, label, permission). Vulnerability scans and reports keep their
+    # old addresses (/, /report, /scans) so bookmarks and PDF links still work.
+    a.env.globals["SECTIONS"] = {
+        "vulnerabilities": [("/", "Summary", "view"), ("/report", "Report", "view"), ("/scans", "Scans", "view"),
+                            ("/vulnerabilities/sources", "Sources", "view")],
+        "compliance": [("/compliance", "Report", "view"), ("/compliance/scans", "Scans", "view"),
+                       ("/compliance/benchmarks", "Benchmarks", "view")],
+    }
+
+    @api.get("/settings/compliance/{bid}")
+    def old_benchmark(bid: int):
+        return RedirectResponse("/compliance/benchmarks/%d" % bid, status_code=301, headers=HEADERS)
 
     @api.get("/settings")
     def settings_index(request: Request, user=Depends(a.need("settings.view"))):
@@ -881,7 +892,8 @@ def create_app(cfg, db, jobs):
 
     for old, new_path in (("/admin/users", "/settings/users"), ("/admin/auth", "/settings/authentication"),
                           ("/admin/targets", "/settings/targets"), ("/admin/audit", "/settings/audit"),
-                          ("/schedules", "/settings/schedules")):
+                          ("/schedules", "/settings/schedules"), ("/settings/sources", "/vulnerabilities/sources"),
+                          ("/settings/compliance", "/compliance/benchmarks"), ("/vulnerabilities", "/")):
         api.add_api_route(old, (lambda target: (lambda: RedirectResponse(target, status_code=301, headers=HEADERS)))(new_path),
                           methods=["GET"], include_in_schema=False)
 
@@ -1001,14 +1013,14 @@ def create_app(cfg, db, jobs):
                 "f": a.settings.describe("sources"), "eff": eff, "repos": eff.linux_repos,
                 "namespaces": eff.namespaces, **extra}
 
-    @api.get("/settings/sources")
+    @api.get("/vulnerabilities/sources")
     def sources_page(request: Request, user=Depends(V)):
         with db.Session() as s:
             return a.page(request, "sources.html", sources_ctx(s, request, user))
 
-    @api.post("/settings/sources")
+    @api.post("/vulnerabilities/sources")
     async def sources_save(request: Request, user=Depends(a.need("sources.edit"))):
-        resp = await save_settings(request, user, "sources", "/settings/sources", ("sources.html", sources_ctx))
+        resp = await save_settings(request, user, "sources", "/vulnerabilities/sources", ("sources.html", sources_ctx))
         jobs.clear_cache()
         return resp
 
@@ -1031,12 +1043,12 @@ def create_app(cfg, db, jobs):
                 "profiles": compliance.PROFILES, "name": lambda b: compliance.display_name(b, cfg.timezone),
                 "max_mb": compliance.MAX_ZIP // (1024 * 1024), **extra}
 
-    @api.get("/settings/compliance")
+    @api.get("/compliance/benchmarks")
     def compliance_page(request: Request, user=Depends(V)):
         with db.Session() as s:
             return a.page(request, "compliance.html", compliance_ctx(s, request, user))
 
-    @api.post("/settings/compliance")
+    @api.post("/compliance/benchmarks")
     async def compliance_upload(request: Request, user=Depends(CE)):
         # parse the multipart body once with a size limit that fits a role zip; a.csrf reuses the parsed form
         await request.form(max_files=1, max_fields=10, max_part_size=compliance.MAX_ZIP + 1)
@@ -1074,11 +1086,11 @@ def create_app(cfg, db, jobs):
         if err:
             with db.Session() as s:
                 return a.page(request, "compliance.html", compliance_ctx(s, request, user, error=err), status=400)
-        return go("/settings/compliance/%d" % bid, ok="imported")
+        return go("/compliance/benchmarks/%d" % bid, ok="imported")
 
     RULE_STATES = ("on", "off", "override")
 
-    @api.get("/settings/compliance/{bid}")
+    @api.get("/compliance/benchmarks/{bid}")
     def benchmark_page(request: Request, bid: int, user=Depends(V)):
         q = request.query_params
         f = {"q": q.get("q", "").strip()[:100], "section": q.get("section", ""), "level": q.get("level", ""),
@@ -1110,11 +1122,11 @@ def create_app(cfg, db, jobs):
                    "query": urllib.parse.urlencode({k: v for k, v in f.items() if v})}
             return a.page(request, "benchmark.html", ctx)
 
-    @api.post("/settings/compliance/{bid}")
+    @api.post("/compliance/benchmarks/{bid}")
     async def benchmark_edit(request: Request, bid: int, user=Depends(CE)):
         form = await a.csrf(request)
         action = str(form.get("action", ""))
-        back = "/settings/compliance/%d" % bid
+        back = "/compliance/benchmarks/%d" % bid
         nxt = str(form.get("query", ""))
         with db.Session() as s, s.begin():
             b = bench_or_404(s, bid)
@@ -1158,14 +1170,14 @@ def create_app(cfg, db, jobs):
                         % (b.key, b.filename, compliance.upload_date(b, cfg.timezone), b.uploaded_by, b.sha256[:16],
                            "; it was the active benchmark for " + b.os_label if b.active else ""))
                 s.delete(b)
-                return go("/settings/compliance", ok="deleted")
+                return go("/compliance/benchmarks", ok="deleted")
             else:
                 raise HTTPException(400, "Unknown action.")
         q = urllib.parse.parse_qs(nxt)
         safe = urllib.parse.urlencode({k: v[0] for k, v in q.items() if k in ("q", "section", "level", "kind", "state")})
         return go(back + ("?" + safe if safe else ""), ok=msg)
 
-    @api.get("/settings/compliance/{bid}/download")
+    @api.get("/compliance/benchmarks/{bid}/download")
     def benchmark_download(request: Request, bid: int, user=Depends(CE)):
         with db.Session() as s:
             b = bench_or_404(s, bid)
@@ -1178,6 +1190,55 @@ def create_app(cfg, db, jobs):
         safe = "".join(ch for ch in fname if ch.isalnum() or ch in "._-") or "benchmark.zip"
         return Response(data, media_type="application/zip",
                         headers={**HEADERS, "Content-Disposition": 'attachment; filename="%s"' % safe})
+
+    # ------------------------------------------------------------ compliance: report and scans
+
+    COMPLIANCE_CHECKER = {
+        "linux": "Linux hosts are not checked yet: the checker (Goss with the benchmark's audit content) comes in a later release.",
+        "windows": "Windows hosts are not checked yet: the checker comes in a later release.",
+        "kubernetes": "The cluster is not checked yet: results will come from Trivy Operator's CIS report (k8s-cis), "
+                      "which needs compliance reports turned on in the operator.",
+    }
+
+    def compliance_systems(s):
+        """Each enabled target with the OS its latest vulnerability scan saw and the active benchmark for that OS."""
+        from sqlalchemy.orm import selectinload
+        active = {b.os_key: b for b in s.scalars(select(Benchmark).options(selectinload(Benchmark.rules))
+                                                .where(Benchmark.active.is_(True))).all()}
+        seen = {}
+        for p in ("linux", "windows"):
+            r = jobs._latest(s, p)
+            for row in ((r.raw or {}).get("systems") or []) if r else []:
+                if row.get("os"):
+                    seen[(p, row.get("name", ""))] = (row["os"], r.scanned_at)
+        out = {"linux": [], "windows": []}
+        for t in s.scalars(select(Target).where(Target.enabled.is_(True)).order_by(Target.host)).all():
+            os_name, when = seen.get((t.platform, t.host), ("", None))
+            key = compliance.os_key_for(os_name)
+            b = active.get(key)
+            out.setdefault(t.platform, []).append({
+                "host": t.host, "label": t.label, "os": os_name, "seen": when, "key": key, "bench": b,
+                "rules": compliance.counts(b)["on"] if b else 0})
+        return out, active
+
+    @api.get("/compliance")
+    def compliance_report(request: Request, user=Depends(V)):
+        with db.Session() as s:
+            systems, active = compliance_systems(s)
+            ctx = {"user": user, "sess": request.state.sess, "title": "Compliance report", "systems": systems,
+                   "active": sorted(active.values(), key=lambda b: (b.platform, b.os_key)),
+                   "counts": {b.id: compliance.counts(b) for b in active.values()}, "checker": COMPLIANCE_CHECKER,
+                   "profiles": compliance.PROFILES, "name": lambda b: compliance.display_name(b, cfg.timezone)}
+            return a.page(request, "compliance_report.html", ctx)
+
+    @api.get("/compliance/scans")
+    def compliance_scans(request: Request, user=Depends(V)):
+        with db.Session() as s:
+            systems, active = compliance_systems(s)
+            ntargets = {p: len(v) for p, v in systems.items()}
+            matched = {p: sum(1 for x in v if x["bench"]) for p, v in systems.items()}
+        return a.page(request, "compliance_scans.html", {"user": user, "sess": request.state.sess, "title": "Compliance scans",
+                                                         "ntargets": ntargets, "matched": matched, "checker": COMPLIANCE_CHECKER})
 
     # ------------------------------------------------------------ admin: audit
 

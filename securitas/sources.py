@@ -1,4 +1,4 @@
-"""What Securitas gets its data from, and how each platform is scanned (Settings > Sources).
+"""What Securitas gets its data from, and how each platform is scanned (Vulnerabilities > Sources).
 
 Kept next to the code so the descriptions match what actually runs: the Linux and Windows sections show the
 exact command and script the scanners send.

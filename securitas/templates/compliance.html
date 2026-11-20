@@ -5,7 +5,7 @@
   <h2>Compliance benchmarks</h2>
   <p class="sub">The benchmarks hosts will be checked against. Each one is an <a href="https://github.com/ansible-lockdown" rel="noopener noreferrer">Ansible-Lockdown</a> role, stored under its name and version (for example <span class="mono">RHEL9-CIS-2.4.2</span>) with the date it was uploaded. Several versions can be loaded side by side; one per operating system is <strong>active</strong> and is the one used for checks. The first benchmark loaded for an operating system becomes its active one. Removing a benchmark removes its rules and the stored zip.{% if not editable %} Only admins can upload, change or remove benchmarks.{% endif %}</p>
   {% if editable %}
-  <form method="post" action="/settings/compliance" enctype="multipart/form-data"><input type="hidden" name="csrf" value="{{ sess.csrf }}">
+  <form method="post" action="/compliance/benchmarks" enctype="multipart/form-data"><input type="hidden" name="csrf" value="{{ sess.csrf }}">
     <div class="row">
       <div><label for="bf">Benchmark zip</label><input id="bf" type="file" name="file" accept=".zip,application/zip" required></div>
       <div><button class="btn primary">Upload and import</button></div>
@@ -27,7 +27,7 @@
     <tbody>
     {% for b in list %}{% set c = counts[b.id] %}
     <tr>
-      <td><a href="/settings/compliance/{{ b.id }}"><strong class="mono">{{ b.key }}</strong></a><br><span class="small muted">{{ name(b) }}</span></td>
+      <td><a href="/compliance/benchmarks/{{ b.id }}"><strong class="mono">{{ b.key }}</strong></a><br><span class="small muted">{{ name(b) }}</span></td>
       <td>{{ b.os_label }}</td>
       <td class="mono">{{ b.benchmark_version or "—" }}</td>
       <td>{{ c.on }} of {{ c.total }}{% if c.overrides %} <span class="small muted">({{ c.overrides }} set here)</span>{% endif %}</td>

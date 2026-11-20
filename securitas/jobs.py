@@ -29,7 +29,7 @@ def valid_cron(cron):
 
 class Feeds:
     """KEV and EPSS, loaded at most every few minutes (the files themselves are re-downloaded hourly / daily).
-    A source turned off in Settings > Sources is not downloaded at all."""
+    A source turned off in Vulnerabilities > Sources is not downloaded at all."""
 
     def __init__(self, settings):
         self.settings, self.lock, self.at, self.value, self.key = settings, threading.Lock(), 0, None, None
@@ -53,7 +53,7 @@ class Feeds:
                 else:
                     epss, epss_src = {}, "EPSS scores turned off"
                 if not cfg.kev_enabled and not cfg.epss_enabled:
-                    w.append("CISA KEV and EPSS are both turned off (Settings > Sources), so every CVE is listed, unranked.")
+                    w.append("CISA KEV and EPSS are both turned off (Vulnerabilities > Sources), so every CVE is listed, unranked.")
                 self.value, self.at, self.key = (kev, epss, {"kev": kev_src, "epss": epss_src}, w), time.time(), key
             return self.value
 
@@ -165,7 +165,7 @@ class Jobs:
                 queued = [x for x in s.scalars(select(Scan).where(Scan.status.in_(("queued", "running")))).all()
                           if sc.platform in (x.platforms or [])]
                 if not self.settings.effective().platform_on(sc.platform):
-                    log.info("schedule %s: scanning of this platform is turned off (Settings > Sources), skipped", sc.platform)
+                    log.info("schedule %s: scanning of this platform is turned off (Vulnerabilities > Sources), skipped", sc.platform)
                 elif queued:
                     log.info("schedule %s: a scan of this platform is already queued or running, skipped", sc.platform)
                 else:
@@ -239,7 +239,7 @@ class Jobs:
             status, raw, err = "done", None, ""
             try:
                 if not self.settings.effective().platform_on(p):
-                    raise RuntimeError("scanning of this platform is turned off (Settings > Sources)")
+                    raise RuntimeError("scanning of this platform is turned off (Vulnerabilities > Sources)")
                 raw = self.scanners[p](say)
                 if raw is None:
                     status, err = "failed", "nothing to scan"
@@ -345,7 +345,7 @@ class Jobs:
             for good, newest in pairs:
                 plat = newest.platform
                 if not eff.platform_on(plat):
-                    off = "Scanning of %s is turned off (Settings > Sources)." % report.PLATFORM_TITLE.get(plat, plat)
+                    off = "Scanning of %s is turned off (Vulnerabilities > Sources)." % report.PLATFORM_TITLE.get(plat, plat)
                     if good is None:
                         sec = report.failed_platform(plat, off)
                     else:

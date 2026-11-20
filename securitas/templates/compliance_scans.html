@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+{% if can(user.role, "scan.run") %}
+<section>
+  <h2>Run a compliance scan</h2>
+  <p class="sub">Checks each enabled target against the active benchmark for its operating system and adds the result to the history. Compliance scans are separate from vulnerability scans.</p>
+  <form>
+    <div class="row" style="align-items:center">
+    {% for p in PLATFORMS %}
+      <label class="inline"><input type="checkbox" name="platform" value="{{ p }}" disabled>
+        {{ PLATFORM_LABEL[p] }}{% if p != "kubernetes" %} <span class="muted">({{ matched.get(p, 0) }} of {{ ntargets.get(p, 0) }} target{{ "" if ntargets.get(p) == 1 else "s" }} matched to a benchmark)</span>{% endif %}</label>
+    {% endfor %}
+      <button class="btn primary" type="button" disabled>Run compliance scan</button>
+    </div>
+  </form>
+  <div class="warn"><p>Compliance scans cannot run yet: no platform has a checker.</p>
+    <ul>{% for p in PLATFORMS %}<li>{{ checker[p] }}</li>{% endfor %}</ul></div>
+</section>
+{% endif %}
+<section>
+  <h2>History</h2>
+  <p class="sub">Every scheduled and manual compliance scan. Open one to see its report as it was at the time.</p>
+  <p class="muted">No compliance scans yet.</p>
+</section>
+{% endblock %}

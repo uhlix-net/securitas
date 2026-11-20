@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+  <h2>Compliance report</h2>
+  <p class="sub">How each system measures up against the active benchmark for its operating system. A system is matched to a benchmark by the OS its latest vulnerability scan saw. Benchmarks, profiles and which rules count are set under <a href="/compliance/benchmarks">Benchmarks</a>.</p>
+  <div class="warn"><p>No system has been checked yet. This page shows which benchmark each system will be checked against; results appear here once checks run (see <a href="/compliance/scans">Scans</a>).</p></div>
+</section>
+<section>
+  <h2>Active benchmarks</h2>
+  {% if not active %}<p class="muted">No benchmark is active. Upload one and make it active under <a href="/compliance/benchmarks">Benchmarks</a>.</p>{% else %}
+  <div class="scroll"><table>
+    <thead><tr><th>Benchmark</th><th>Platform</th><th>Operating system</th><th>Profile</th><th>Rules checked</th></tr></thead>
+    <tbody>
+    {% for b in active %}{% set c = counts[b.id] %}
+    <tr>
+      <td><a href="/compliance/benchmarks/{{ b.id }}" class="mono"><strong>{{ b.key }}</strong></a><br><span class="small muted">{{ name(b) }}{% if b.benchmark_version %} · CIS {{ b.benchmark_version }}{% endif %}</span></td>
+      <td>{{ PLATFORM_LABEL[b.platform] }}</td>
+      <td>{{ b.os_label }}</td>
+      <td class="small">{{ profiles[b.profile] }}</td>
+      <td>{{ c.on }} of {{ c.total }}</td>
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+  {% endif %}
+</section>
+{% for plat in ("linux", "windows") %}
+<section id="{{ plat }}">
+  <h2>{{ PLATFORM_LABEL[plat] }}</h2>
+  <p class="sub">{{ checker[plat] }}</p>
+  {% set list = systems.get(plat, []) %}
+  {% if not list %}<p class="muted">No enabled {{ PLATFORM_LABEL[plat] }} targets. Add them in <a href="/settings/targets">Settings → Targets</a>.</p>{% else %}
+  <div class="scroll"><table>
+    <thead><tr><th>System</th><th>Role</th><th>Operating system</th><th>Benchmark</th><th>Rules</th><th>Passed</th><th>Failed</th><th>Score</th><th>Status</th></tr></thead>
+    <tbody>
+    {% for x in list %}
+    <tr>
+      <td class="mono">{{ x.host }}</td>
+      <td>{{ x.label }}</td>
+      <td class="small">{% if x.os %}{{ x.os }}{% else %}<span class="muted">not known yet: run a vulnerability scan</span>{% endif %}</td>
+      <td class="small">{% if x.bench %}<a href="/compliance/benchmarks/{{ x.bench.id }}" class="mono">{{ x.bench.key }}</a>{% elif x.os %}<span class="muted">no active benchmark for this OS{% if x.key %} ({{ x.key }}){% endif %}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+      <td class="n">{% if x.bench %}{{ x.rules }}{% endif %}</td>
+      <td class="n"></td><td class="n"></td><td class="n"></td>
+      <td><span class="badge b-off">Not checked</span></td>
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+  {% endif %}
+</section>
+{% endfor %}
+<section id="kubernetes">
+  <h2>Kubernetes</h2>
+  <p class="sub">{{ checker.kubernetes }}</p>
+</section>
+{% endblock %}

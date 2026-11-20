@@ -290,3 +290,22 @@ def set_rules(b, shown, checked):
             r.override = new
             changed += 1
     return changed
+
+
+# Operating system names as the vulnerability scans record them, mapped to a benchmark's os_key.
+HOST_OS = [
+    (re.compile(r"\b(?:Red Hat Enterprise Linux|Rocky Linux|AlmaLinux|Oracle Linux|CentOS Stream)\D*?(\d+)", re.I), "rhel{0}"),
+    (re.compile(r"\bAmazon Linux\D*?(\d+)", re.I), "amazon{0}"),
+    (re.compile(r"\bUbuntu\D*?(\d\d)\.\d\d", re.I), "ubuntu{0}"),
+    (re.compile(r"\bDebian\D*?(\d+)", re.I), "debian{0}"),
+    (re.compile(r"\bWindows Server\D*?(\d{4})", re.I), "windows{0}"),
+]
+
+
+def os_key_for(os_name):
+    """'Rocky Linux 9.6' -> 'rhel9'; 'Windows Server 2022 Standard' -> 'windows2022'; '' when not known."""
+    for rx, key in HOST_OS:
+        m = rx.search(os_name or "")
+        if m:
+            return key.format(*m.groups())
+    return ""

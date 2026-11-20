@@ -33,12 +33,14 @@ serves the results as web pages with an **Export to PDF** button.
   WinRM password), targets, schedules, users and vulnerability sources on the Settings pages. Changes
   apply immediately; secrets are encrypted in the database and never shown again. Anything not set
   there comes from the Helm values, so a plain Helm install still works unchanged.
-- **Transparent sources.** The Sources page explains every data source (CISA KEV, EPSS, Trivy, dnf
+- **Two sections.** The top menu has *Vulnerabilities* (summary, report, scans, sources) and *Compliance*
+  (report, scans, benchmarks), plus *Settings* for administration.
+- **Transparent sources.** The Sources page (Vulnerabilities → Sources) explains every data source (CISA KEV, EPSS, Trivy, dnf
   advisories, Microsoft release data), when it was last fetched, what turning it off changes, and shows
   the exact script each scanner runs on a host. KEV and EPSS can be turned off; each platform can be
   turned off.
 - **Compliance benchmark library.** Admins upload [Ansible-Lockdown](https://github.com/ansible-lockdown)
-  CIS roles (the release zip, for example `RHEL9-CIS-2.4.2.zip`) on Settings → Compliance. Each upload is stored
+  CIS roles (the release zip, for example `RHEL9-CIS-2.4.2.zip`) on Compliance → Benchmarks. Each upload is stored
   under its role name and version with the upload date, the uploader and the file's SHA-256, and its rules
   are read from the role: rule ID, title, profile levels, NIST 800-53 mappings and the role's on/off default.
   Several versions can be loaded side by side; one per operating system is active. Pick a profile (Level 1
@@ -71,7 +73,8 @@ What's new in each version: [CHANGELOG.md](CHANGELOG.md). Upgrading? See the upg
 | Authentication settings (LDAP, single sign-on) and group-to-role mappings | | | Yes |
 | Audit log | | | Yes |
 
-Everything administrative is under **Settings**; each user sees only the pages their role allows.
+Everything administrative is under **Settings**; each user sees only the pages their role allows. Sources is
+under **Vulnerabilities** and the benchmark library under **Compliance**.
 
 ## Install
 

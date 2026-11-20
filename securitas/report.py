@@ -53,7 +53,7 @@ def worse(a, b):
 
 
 class Ranker:
-    """kev_on / epss_on: the source switches in Settings > Sources. With both off every CVE is a priority,
+    """kev_on / epss_on: the source switches in Vulnerabilities > Sources. With both off every CVE is a priority,
     because there is nothing left to rank by."""
 
     def __init__(self, kev, epss, epss_min, kev_on=True, epss_on=True):
