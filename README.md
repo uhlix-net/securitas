@@ -33,8 +33,8 @@ serves the results as web pages with an **Export to PDF** button.
   WinRM password), targets, schedules, users and vulnerability sources on the Settings pages. Changes
   apply immediately; secrets are encrypted in the database and never shown again. Anything not set
   there comes from the Helm values, so a plain Helm install still works unchanged.
-- **Two sections.** The top menu has *Vulnerabilities* (summary, report, scans, sources) and *Compliance*
-  (report, scans, benchmarks), plus *Settings* for administration.
+- **Two sections.** The top menu has *Vulnerabilities* (summary, report, scans, schedules, sources) and
+  *Compliance* (summary, report, scans, schedules, benchmarks), then *Targets*, *Audit log* and *Settings*.
 - **Transparent sources.** The Sources page (Vulnerabilities → Sources) explains every data source (CISA KEV, EPSS, Trivy, dnf
   advisories, Microsoft release data), when it was last fetched, what turning it off changes, and shows
   the exact script each scanner runs on a host. KEV and EPSS can be turned off; each platform can be
@@ -73,8 +73,9 @@ What's new in each version: [CHANGELOG.md](CHANGELOG.md). Upgrading? See the upg
 | Authentication settings (LDAP, single sign-on) and group-to-role mappings | | | Yes |
 | Audit log | | | Yes |
 
-Everything administrative is under **Settings**; each user sees only the pages their role allows. Sources is
-under **Vulnerabilities** and the benchmark library under **Compliance**.
+Users, authentication and scan credentials are under **Settings**; **Targets** and **Audit log** have their own
+menus; schedules and sources are under **Vulnerabilities**, and compliance schedules and the benchmark library
+under **Compliance**. Each user sees only the pages their role allows.
 
 ## Install
 

@@ -21,7 +21,7 @@ from sqlalchemy import String, cast, delete, func, select
 from . import __version__, auth, charts, compliance, render, report, scan_linux, scan_windows, sources
 from .config import PLATFORMS
 from .settings import FIELDS, SettingsError
-from .db import (AuditEvent, Benchmark, BenchmarkFile, LoginState, PlatformResult, ResultStats, RoleMapping,
+from .db import (AuditEvent, Benchmark, BenchmarkFile, ComplianceSchedule, LoginState, PlatformResult, ResultStats, RoleMapping,
                  Scan, Schedule, Session, Target, User, audit, get_setting, set_setting, utcnow)
 from .jobs import STATUS_LABEL, fmt_time, next_run, valid_cron
 
@@ -571,13 +571,14 @@ def create_app(cfg, db, jobs):
 
     # ------------------------------------------------------------ schedules
 
-    @api.get("/settings/schedules")
+    @api.get("/vulnerabilities/schedules")
     def schedules(request: Request, user=Depends(a.need("schedule.edit"))):
         with db.Session() as s:
             rows = {x.platform: x for x in s.scalars(select(Schedule)).all()}
-        return a.page(request, "schedules.html", {"user": user, "sess": request.state.sess, "title": "Schedules", "rows": rows})
+        return a.page(request, "schedules.html", {"user": user, "sess": request.state.sess, "title": "Vulnerability schedules",
+                                                  "rows": rows, "base": "/vulnerabilities/schedules", "kind": "vulnerability"})
 
-    @api.post("/settings/schedules/{platform}")
+    @api.post("/vulnerabilities/schedules/{platform}")
     async def schedule_save(request: Request, platform: str, user=Depends(a.need("schedule.edit"))):
         form = await a.csrf(request)
         if platform not in PLATFORMS:
@@ -585,7 +586,7 @@ def create_app(cfg, db, jobs):
         cron = " ".join(str(form.get("cron", "")).split())
         enabled = form.get("enabled") == "on"
         if not valid_cron(cron):
-            return go("/settings/schedules", err="cron")
+            return go("/vulnerabilities/schedules", err="cron")
         with db.Session() as s, s.begin():
             sc = s.scalar(select(Schedule).where(Schedule.platform == platform))
             if sc is None:
@@ -594,13 +595,13 @@ def create_app(cfg, db, jobs):
             sc.cron, sc.enabled = cron, enabled
             sc.next_run = next_run(cron, cfg.timezone)
             a.audit(s, request, "schedule.saved", "%s: %s, %s" % (platform, cron, "on" if enabled else "off"))
-        return go("/settings/schedules", ok="saved")
+        return go("/vulnerabilities/schedules", ok="saved")
 
     # ------------------------------------------------------------ admin: targets
 
     T = a.need("target.edit")
 
-    @api.get("/settings/targets")
+    @api.get("/targets")
     def targets(request: Request, user=Depends(T)):
         with db.Session() as s:
             rows = s.scalars(select(Target).order_by(Target.platform, Target.host)).all()
@@ -608,7 +609,7 @@ def create_app(cfg, db, jobs):
                                                 "ssh_ready": bool(a.eff().ssh_user and (a.eff().ssh_key or a.eff().ssh_key_file)),
                                                 "winrm_ready": bool(a.eff().winrm_user and a.eff().winrm_password)})
 
-    @api.post("/settings/targets")
+    @api.post("/targets")
     async def target_add(request: Request, user=Depends(T)):
         form = await a.csrf(request)
         platform, host = str(form.get("platform", "")), str(form.get("host", "")).strip().lower()
@@ -616,15 +617,15 @@ def create_app(cfg, db, jobs):
         if platform not in ("linux", "windows"):
             raise HTTPException(400, "Unknown platform.")
         if not host or len(host) > 255 or not all(c.isalnum() or c in ".-_:" for c in host):
-            return go("/settings/targets", err="host")
+            return go("/targets", err="host")
         with db.Session() as s, s.begin():
             if s.scalar(select(Target).where(Target.platform == platform, Target.host == host)):
-                return go("/settings/targets", err="exists")
+                return go("/targets", err="exists")
             s.add(Target(platform=platform, host=host, label=label))
             a.audit(s, request, "target.added", "%s %s" % (platform, host))
-        return go("/settings/targets", ok="added")
+        return go("/targets", ok="added")
 
-    @api.post("/settings/targets/{tid}")
+    @api.post("/targets/{tid}")
     async def target_edit(request: Request, tid: int, user=Depends(T)):
         form = await a.csrf(request)
         action = str(form.get("action", ""))
@@ -643,13 +644,13 @@ def create_app(cfg, db, jobs):
                 msg = "hostkey"
             elif action == "delete":
                 if form.get("confirm") != "on":
-                    return go("/settings/targets", err="csrf")
+                    return go("/targets", err="csrf")
                 a.audit(s, request, "target.deleted", "%s %s" % (t.platform, t.host))
                 s.delete(t)
                 msg = "deleted"
             else:
                 raise HTTPException(400, "Unknown action.")
-        return go("/settings/targets", ok=msg)
+        return go("/targets", ok=msg)
 
     # ------------------------------------------------------------ admin: users
 
@@ -867,9 +868,6 @@ def create_app(cfg, db, jobs):
         ("users", "Users", "user.manage", "Local accounts (add, reset passwords, disable), and LDAP and SSO users with their roles."),
         ("authentication", "Authentication", "auth.manage", "Local sign-in, LDAP and single sign-on settings, group to role mappings."),
         ("credentials", "Scan credentials", "credentials.edit", "The SSH account and key for Linux scans and the WinRM account for Windows scans, with a connection test."),
-        ("targets", "Targets", "target.edit", "The Linux and Windows hosts to scan."),
-        ("schedules", "Schedules", "schedule.edit", "When each platform is scanned."),
-        ("audit", "Audit log", "audit.view", "Every sign-in, scan and change."),
     ]
     a.env.globals["SETTINGS_PAGES"] = SETTINGS_PAGES
     a.env.globals["settings_for"] = lambda role: [p for p in SETTINGS_PAGES if auth.can(role, p[2])]
@@ -877,10 +875,14 @@ def create_app(cfg, db, jobs):
     # old addresses (/, /report, /scans) so bookmarks and PDF links still work.
     a.env.globals["SECTIONS"] = {
         "vulnerabilities": [("/", "Summary", "view"), ("/report", "Report", "view"), ("/scans", "Scans", "view"),
+                            ("/vulnerabilities/schedules", "Schedules", "schedule.edit"),
                             ("/vulnerabilities/sources", "Sources", "view")],
-        "compliance": [("/compliance", "Report", "view"), ("/compliance/scans", "Scans", "view"),
+        "compliance": [("/compliance", "Summary", "view"), ("/compliance/report", "Report", "view"),
+                       ("/compliance/scans", "Scans", "view"), ("/compliance/schedules", "Schedules", "schedule.edit"),
                        ("/compliance/benchmarks", "Benchmarks", "view")],
     }
+    # Top menu after Vulnerabilities and Compliance: (path, label, permission); Settings comes last.
+    a.env.globals["TOP_PAGES"] = [("/targets", "Targets", "target.edit"), ("/audit", "Audit log", "audit.view")]
 
     @api.get("/settings/compliance/{bid}")
     def old_benchmark(bid: int):
@@ -891,8 +893,9 @@ def create_app(cfg, db, jobs):
         return a.page(request, "settings.html", {"user": user, "sess": request.state.sess, "title": "Settings"})
 
     for old, new_path in (("/admin/users", "/settings/users"), ("/admin/auth", "/settings/authentication"),
-                          ("/admin/targets", "/settings/targets"), ("/admin/audit", "/settings/audit"),
-                          ("/schedules", "/settings/schedules"), ("/settings/sources", "/vulnerabilities/sources"),
+                          ("/admin/targets", "/targets"), ("/admin/audit", "/audit"),
+                          ("/schedules", "/vulnerabilities/schedules"), ("/settings/schedules", "/vulnerabilities/schedules"),
+                          ("/settings/targets", "/targets"), ("/settings/audit", "/audit"), ("/settings/sources", "/vulnerabilities/sources"),
                           ("/settings/compliance", "/compliance/benchmarks"), ("/vulnerabilities", "/")):
         api.add_api_route(old, (lambda target: (lambda: RedirectResponse(target, status_code=301, headers=HEADERS)))(new_path),
                           methods=["GET"], include_in_schema=False)
@@ -1222,6 +1225,25 @@ def create_app(cfg, db, jobs):
         return out, active
 
     @api.get("/compliance")
+    def compliance_summary(request: Request, user=Depends(V)):
+        with db.Session() as s:
+            systems, active = compliance_systems(s)
+            rows = []
+            for p in ("linux", "windows", "kubernetes"):
+                lst = systems.get(p, [])
+                rows.append({"id": p, "title": PLATFORM_LABEL[p], "systems": len(lst) if p != "kubernetes" else None,
+                             "matched": sum(1 for x in lst if x["bench"]),
+                             "benchmarks": sorted({x["bench"].key for x in lst if x["bench"]}) if p != "kubernetes" else [],
+                             "note": COMPLIANCE_CHECKER[p]})
+            sched = {x.platform: x for x in s.scalars(select(ComplianceSchedule)).all()}
+            ctx = {"user": user, "sess": request.state.sess, "title": "Compliance summary", "rows": rows,
+                   "active": sorted(active.values(), key=lambda b: (b.platform, b.os_key)),
+                   "counts": {b.id: compliance.counts(b) for b in active.values()}, "sched": sched,
+                   "nbench": s.scalar(select(func.count(Benchmark.id))), "profiles": compliance.PROFILES,
+                   "name": lambda b: compliance.display_name(b, cfg.timezone)}
+            return a.page(request, "compliance_summary.html", ctx)
+
+    @api.get("/compliance/report")
     def compliance_report(request: Request, user=Depends(V)):
         with db.Session() as s:
             systems, active = compliance_systems(s)
@@ -1240,9 +1262,36 @@ def create_app(cfg, db, jobs):
         return a.page(request, "compliance_scans.html", {"user": user, "sess": request.state.sess, "title": "Compliance scans",
                                                          "ntargets": ntargets, "matched": matched, "checker": COMPLIANCE_CHECKER})
 
+    @api.get("/compliance/schedules")
+    def compliance_schedules(request: Request, user=Depends(a.need("schedule.edit"))):
+        with db.Session() as s:
+            rows = {x.platform: x for x in s.scalars(select(ComplianceSchedule)).all()}
+        return a.page(request, "schedules.html", {"user": user, "sess": request.state.sess, "title": "Compliance schedules",
+                                                  "rows": rows, "base": "/compliance/schedules", "kind": "compliance",
+                                                  "checker": COMPLIANCE_CHECKER})
+
+    @api.post("/compliance/schedules/{platform}")
+    async def compliance_schedule_save(request: Request, platform: str, user=Depends(a.need("schedule.edit"))):
+        form = await a.csrf(request)
+        if platform not in PLATFORMS:
+            raise HTTPException(404, "Unknown platform.")
+        cron = " ".join(str(form.get("cron", "")).split())
+        enabled = form.get("enabled") == "on"
+        if not valid_cron(cron):
+            return go("/compliance/schedules", err="cron")
+        with db.Session() as s, s.begin():
+            sc = s.scalar(select(ComplianceSchedule).where(ComplianceSchedule.platform == platform))
+            if sc is None:
+                sc = ComplianceSchedule(platform=platform, cron=cron)
+                s.add(sc)
+            sc.cron, sc.enabled = cron, enabled
+            sc.next_run = next_run(cron, cfg.timezone)
+            a.audit(s, request, "compliance_schedule.saved", "%s: %s, %s" % (platform, cron, "on" if enabled else "off"))
+        return go("/compliance/schedules", ok="saved")
+
     # ------------------------------------------------------------ admin: audit
 
-    @api.get("/settings/audit")
+    @api.get("/audit")
     def audit_page(request: Request, page: int = 1, user=Depends(a.need("audit.view"))):
         page = max(1, page)
         with db.Session() as s:

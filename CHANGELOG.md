@@ -27,22 +27,32 @@ The first part of compliance: a library of CIS benchmarks. Checking hosts agains
 - Linux and Windows CIS roles are read (Windows roles such as `Windows-2022-CIS`); STIG roles are refused for
   now. Kubernetes compliance will come from Trivy Operator's CIS report, so it needs no upload.
 
-- **Compliance report and scans.** *Compliance → Report* lists the active benchmark per operating system and
+- **Compliance summary.** *Compliance → Summary* (`/compliance`) has one row per platform: systems, how many
+  are matched to an active benchmark, which benchmark, the check results (empty until a checker exists) and the
+  schedule, plus the active benchmarks.
+- **Compliance schedules.** *Compliance → Schedules* sets a cron schedule per platform for compliance scans,
+  stored apart from the vulnerability scan schedules. They are saved but start nothing until a checker exists.
+- **Compliance report and scans.** *Compliance → Report* (`/compliance/report`) lists the active benchmark per operating system and
   every enabled target with the OS its latest vulnerability scan saw and the benchmark it will be checked
   against. *Compliance → Scans* is where compliance scans will run; no platform has a checker yet, so both pages
   say so.
 
 ### Changed
 
-- **New menus.** The top menu is *Vulnerabilities*, *Compliance* and *Settings*. *Vulnerabilities* holds
-  Summary, Report, Scans and **Sources** (moved from Settings to `/vulnerabilities/sources`). *Compliance* holds
-  Report, Scans and Benchmarks. The Summary, Report and Scans addresses (`/`, `/report`, `/scans`) are
-  unchanged; `/settings/sources` and `/settings/compliance` redirect to their new places. Users whose role has
-  no settings pages (viewers) no longer see the Settings menu.
+- **New menus.** The top menu is *Vulnerabilities*, *Compliance*, *Targets*, *Audit log* and *Settings*.
+  - *Vulnerabilities*: Summary, Report, Scans, **Schedules** (moved from Settings to `/vulnerabilities/schedules`;
+    they are vulnerability scan schedules) and **Sources** (moved to `/vulnerabilities/sources`).
+  - *Compliance*: Summary, Report, Scans, Schedules and Benchmarks.
+  - **Targets** (`/targets`) and **Audit log** (`/audit`) moved out of Settings to the top menu (admins only).
+  - Settings keeps Users, Authentication and Scan credentials. Users whose role has no settings pages
+    (viewers, operators) no longer see the Settings menu.
+  - The Summary, Report and Scans addresses (`/`, `/report`, `/scans`) are unchanged. The old addresses
+    (`/settings/sources`, `/settings/schedules`, `/settings/targets`, `/settings/audit`, `/settings/compliance`)
+    redirect to the new ones.
 
 ### Upgrading from 0.4.0
 
-- Three new tables (`benchmarks`, `benchmark_rules`, `benchmark_files`) are created at startup. No change to
+- Four new tables (`benchmarks`, `benchmark_rules`, `benchmark_files`, `compliance_schedules`) are created at startup. No change to
   existing data.
 - New dependency: PyYAML.
 - Uploads are up to 25 MB; if an ingress in front of Securitas limits request bodies, allow at least that.

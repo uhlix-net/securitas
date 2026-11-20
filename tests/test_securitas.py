@@ -443,28 +443,28 @@ class Web(unittest.TestCase):
         self.assertEqual(v.get("/scans").status_code, 200)
         self.assertNotIn("Run scan", v.get("/scans").text)
         self.assertEqual(v.post("/scans", data={"csrf": csrf(v), "platform": "kubernetes"}).status_code, 403)
-        for p in ("/settings/schedules", "/settings/targets", "/settings/users", "/settings/authentication", "/settings/audit"):
+        for p in ("/vulnerabilities/schedules", "/targets", "/settings/users", "/settings/authentication", "/audit"):
             self.assertEqual(v.get(p).status_code, 403, p)
         o = client(self.app)
         login(o, "otto", "a-long-password-1")
         self.assertEqual(o.post("/scans", data={"csrf": csrf(o), "platform": "kubernetes"}, follow_redirects=False).status_code, 303)
-        self.assertEqual(o.get("/settings/schedules").status_code, 200)
-        r = o.post("/settings/schedules/linux", data={"csrf": csrf(o), "cron": "15 3 * * 1", "enabled": "on"}, follow_redirects=False)
+        self.assertEqual(o.get("/vulnerabilities/schedules").status_code, 200)
+        r = o.post("/vulnerabilities/schedules/linux", data={"csrf": csrf(o), "cron": "15 3 * * 1", "enabled": "on"}, follow_redirects=False)
         self.assertIn("ok=saved", r.headers["location"])
-        self.assertIn("err=cron", o.post("/settings/schedules/linux", data={"csrf": csrf(o), "cron": "bad"}, follow_redirects=False).headers["location"])
-        for p in ("/settings/targets", "/settings/users", "/settings/authentication", "/settings/audit"):
+        self.assertIn("err=cron", o.post("/vulnerabilities/schedules/linux", data={"csrf": csrf(o), "cron": "bad"}, follow_redirects=False).headers["location"])
+        for p in ("/targets", "/settings/users", "/settings/authentication", "/audit"):
             self.assertEqual(o.get(p).status_code, 403, p)
-        audit = self.c.get("/settings/audit").text
+        audit = self.c.get("/audit").text
         self.assertIn("scan.run", audit)
         self.assertIn("schedule.saved", audit)
 
     def test_targets(self):
         login(self.c, "admin", ADMIN_PW)
         tok = csrf(self.c)
-        self.c.post("/settings/targets", data={"csrf": tok, "platform": "linux", "host": "web1.example.com", "label": "Web"})
-        self.assertIn("err=host", self.c.post("/settings/targets", data={"csrf": tok, "platform": "linux", "host": "bad host;rm"},
+        self.c.post("/targets", data={"csrf": tok, "platform": "linux", "host": "web1.example.com", "label": "Web"})
+        self.assertIn("err=host", self.c.post("/targets", data={"csrf": tok, "platform": "linux", "host": "bad host;rm"},
                                               follow_redirects=False).headers["location"])
-        self.assertIn("web1.example.com", self.c.get("/settings/targets").text)
+        self.assertIn("web1.example.com", self.c.get("/targets").text)
         self.assertIn("1 target)", self.c.get("/scans").text)
 
     def test_last_admin_and_self(self):
@@ -940,11 +940,13 @@ class SettingsUI(unittest.TestCase):
 
     def test_menu_redirects_and_permissions(self):
         page = self.c.get("/settings").text
-        for label in ("Users", "Authentication", "Scan credentials", "Targets", "Schedules", "Audit log"):
+        for label in ("Users", "Authentication", "Scan credentials"):
             self.assertIn(label, page)
+        for moved in ('href="/targets"><h3>', 'href="/audit"><h3>', 'href="/vulnerabilities/schedules"><h3>'):
+            self.assertNotIn(moved, page)                                    # 0.5.0: own menus now
         self.assertNotIn('href="/vulnerabilities/sources"><h3>', page)        # 0.5.0: Sources moved to Vulnerabilities
         for old, new in (("/admin/users", "/settings/users"), ("/admin/auth", "/settings/authentication"),
-                         ("/schedules", "/settings/schedules")):
+                         ("/schedules", "/vulnerabilities/schedules")):
             r = self.c.get(old, follow_redirects=False)
             self.assertEqual((r.status_code, r.headers["location"]), (301, new))
         self.assertIn("Add a local user", self.c.get("/settings/users").text)
@@ -1223,13 +1225,23 @@ class Menus(unittest.TestCase):
         page = self.c.get("/compliance/scans").text
         self.assertIn('<a href="/compliance" class="on">Compliance</a>', page)
         self.assertIn('<a href="/compliance/scans" class="on">Scans</a>', page)
-        self.assertIn('<a href="/compliance">Report</a>', page)              # the Report tab is not on for /compliance/scans
-        self.assertIn('href="/compliance/benchmarks"', page)
+        self.assertIn('<a href="/compliance">Summary</a>', page)             # the Summary tab is not on for /compliance/scans
+        self.assertIn('<a href="/compliance/report">Report</a>', page)
+        self.assertIn('<a href="/compliance/schedules">Schedules</a>', page)
+        page = self.c.get("/").text
+        self.assertIn('<a href="/vulnerabilities/schedules">Schedules</a>', page)
+        self.assertIn('<a href="/targets">Targets</a>', page)                # top level for admins
+        self.assertIn('<a href="/audit">Audit log</a>', page)
+        self.assertIn('<a href="/targets" class="on">Targets</a>', self.c.get("/targets").text)
+        self.assertNotIn('class="subnav"', self.c.get("/audit").text)
+        self.assertIn('href="/compliance/benchmarks"', self.c.get("/compliance/scans").text)
         self.assertNotIn('aria-label="Vulnerabilities"', self.c.get("/account").text)
 
     def test_old_addresses_redirect(self):
         for old, new in (("/settings/sources", "/vulnerabilities/sources"), ("/settings/compliance", "/compliance/benchmarks"),
-                         ("/settings/compliance/7", "/compliance/benchmarks/7"), ("/vulnerabilities", "/")):
+                         ("/settings/compliance/7", "/compliance/benchmarks/7"), ("/vulnerabilities", "/"),
+                         ("/settings/schedules", "/vulnerabilities/schedules"), ("/settings/targets", "/targets"),
+                         ("/settings/audit", "/audit"), ("/admin/targets", "/targets")):
             r = self.c.get(old, follow_redirects=False)
             self.assertEqual((r.status_code, r.headers["location"]), (301, new), old)
 
@@ -1244,17 +1256,46 @@ class Menus(unittest.TestCase):
             s.add(PlatformResult(scan_id=sc.id, platform="linux", status="done",
                                  raw={"systems": [{"name": "rocky1", "os": "Rocky Linux 9.6"},
                                                   {"name": "ubu1", "os": "Ubuntu 22.04.4 LTS"}]}))
-        page = self.c.get("/compliance").text
+        page = self.c.get("/compliance/report").text
         self.assertIn("No benchmark is active", page)
         self.c.post("/compliance/benchmarks", data={"csrf": csrf(self.c, "/compliance/benchmarks")},
                     files={"file": ("r.zip", role_zip(top="RHEL9-CIS-1.0.0"), "application/zip")})
-        page = self.c.get("/compliance").text
+        page = self.c.get("/compliance/report").text
         row = lambda host: re.search(r'<td class="mono">%s</td>(.*?)</tr>' % host, page, re.S).group(1)
         self.assertIn("RHEL9-CIS-1.0.0", row("rocky1"))
         self.assertIn("no active benchmark for this OS (ubuntu22)", row("ubu1"))
         self.assertIn("run a vulnerability scan", row("new1"))
         self.assertIn("Not checked", row("win1"))
         self.assertIn("cannot run yet", self.c.get("/compliance/scans").text)
+        summary = self.c.get("/compliance").text
+        linux = re.search(r'compliance/report#linux"><strong>Linux</strong></a></td>(.*?)</tr>', summary, re.S).group(1)
+        self.assertEqual(re.findall(r'<td class="n">(\d+)</td>', linux), ["3", "1"])     # 3 Linux systems, 1 matched
+        self.assertIn("RHEL9-CIS-1.0.0", linux)
+
+    def test_compliance_schedules_are_separate(self):
+        from securitas.db import ComplianceSchedule, Schedule
+        r = self.c.post("/compliance/schedules/linux", data={"csrf": csrf(self.c, "/compliance/schedules"), "cron": "0 6 * * 0",
+                                                             "enabled": "on"}, follow_redirects=False)
+        self.assertEqual(r.headers["location"], "/compliance/schedules?ok=saved")
+        self.assertIn("err=cron", self.c.post("/compliance/schedules/linux", data={"csrf": csrf(self.c, "/compliance/schedules"),
+                                                                                    "cron": "bad"}, follow_redirects=False).headers["location"])
+        with self.db.Session() as s:
+            self.assertEqual(s.scalar(select(ComplianceSchedule.cron).where(ComplianceSchedule.platform == "linux")), "0 6 * * 0")
+            self.assertEqual(s.scalar(select(Schedule.cron).where(Schedule.platform == "linux")), "0 5 * * *")   # untouched
+        page = self.c.get("/compliance/schedules").text
+        self.assertIn("do not start scans yet", page)
+        self.assertIn("0 6 * * 0", self.c.get("/compliance").text)
+        self.assertIn('action="/vulnerabilities/schedules/linux"', self.c.get("/vulnerabilities/schedules").text)
+
+    def test_viewer_menus(self):
+        self.c.post("/settings/users", data={"csrf": csrf(self.c), "username": "vic", "password": "a-long-password-1", "role": "viewer"})
+        v = client(self.app)
+        login(v, "vic", "a-long-password-1")
+        page = v.get("/compliance").text
+        for hidden in ('href="/targets"', 'href="/audit"', 'href="/compliance/schedules"', 'href="/settings"'):
+            self.assertNotIn(hidden, page)
+        self.assertEqual(v.get("/compliance/schedules").status_code, 403)
+        self.assertEqual(v.get("/targets").status_code, 403)
 
     def test_os_keys(self):
         from securitas.compliance import os_key_for

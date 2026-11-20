@@ -109,6 +109,17 @@ class Schedule(Base):
     last_run: Mapped[datetime.datetime | None] = mapped_column(TZDateTime(), nullable=True)
 
 
+class ComplianceSchedule(Base):
+    """When each platform gets a compliance scan; separate from the vulnerability scan schedules."""
+    __tablename__ = "compliance_schedules"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    platform: Mapped[str] = mapped_column(String(16), unique=True)
+    cron: Mapped[str] = mapped_column(String(64))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    next_run: Mapped[datetime.datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    last_run: Mapped[datetime.datetime | None] = mapped_column(TZDateTime(), nullable=True)
+
+
 class Scan(Base):
     __tablename__ = "scans"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -290,4 +301,4 @@ def audit(s, user, ip, action, detail=""):
 
 
 __all__ = ["Database", "User", "Session", "LoginState", "RoleMapping", "Target", "Schedule", "Scan", "PlatformResult",
-           "ResultStats", "AuditEvent", "Setting", "Benchmark", "BenchmarkRule", "BenchmarkFile", "get_setting", "set_setting", "audit", "utcnow", "select", "func"]
+           "ResultStats", "AuditEvent", "Setting", "Benchmark", "BenchmarkRule", "BenchmarkFile", "ComplianceSchedule", "get_setting", "set_setting", "audit", "utcnow", "select", "func"]

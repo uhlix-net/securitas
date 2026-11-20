@@ -28,7 +28,7 @@
   <h2>{{ PLATFORM_LABEL[plat] }}</h2>
   <p class="sub">{{ checker[plat] }}</p>
   {% set list = systems.get(plat, []) %}
-  {% if not list %}<p class="muted">No enabled {{ PLATFORM_LABEL[plat] }} targets. Add them in <a href="/settings/targets">Settings → Targets</a>.</p>{% else %}
+  {% if not list %}<p class="muted">No enabled {{ PLATFORM_LABEL[plat] }} targets. Add them in <a href="/targets">Targets</a>.</p>{% else %}
   <div class="scroll"><table>
     <thead><tr><th>System</th><th>Role</th><th>Operating system</th><th>Benchmark</th><th>Rules</th><th>Passed</th><th>Failed</th><th>Score</th><th>Status</th></tr></thead>
     <tbody>

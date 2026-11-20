@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+  <h2>Summary</h2>
+  <p class="sub">Compliance per platform: how many systems are matched to an active benchmark and how they score. Select a platform to open its section of the <a href="/compliance/report">report</a>.</p>
+  <div class="warn"><p>No system has been checked yet: no platform has a checker. Matching systems to benchmarks already works, so the counts below show what will be checked.</p></div>
+  <div class="scroll"><table class="summary">
+    <thead><tr><th>Platform</th><th>Status</th><th>Last checked</th><th class="n">Systems</th><th class="n">Matched to a benchmark</th><th>Benchmark</th><th class="n">Passed</th><th class="n">Failed</th><th class="n">Score</th><th>Schedule</th></tr></thead>
+    <tbody>
+    {% for r in rows %}{% set sc = sched.get(r.id) %}
+    <tr>
+      <td><a href="/compliance/report#{{ r.id }}"><strong>{{ r.title }}</strong></a></td>
+      <td><span class="badge b-off">Not checked</span></td>
+      <td class="muted">Never</td>
+      <td class="n">{% if r.systems is none %}<span class="muted">cluster</span>{% else %}{{ r.systems }}{% endif %}</td>
+      <td class="n">{% if r.systems is not none %}{{ r.matched }}{% endif %}</td>
+      <td class="small mono">{{ r.benchmarks|join(", ") or "" }}{% if r.systems is none %}<span class="muted">Trivy k8s-cis</span>{% elif not r.benchmarks %}<span class="muted">none</span>{% endif %}</td>
+      <td class="n"></td><td class="n"></td><td class="n"></td>
+      <td class="small">{% if sc and sc.enabled %}<span class="mono">{{ sc.cron }}</span>{% else %}<span class="muted">off</span>{% endif %}</td>
+    </tr>
+    <tr><td colspan="10" class="small muted">{{ r.note }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+<section>
+  <h2>Active benchmarks</h2>
+  <p class="sub">{{ active|length }} active of {{ nbench }} loaded. Manage them under <a href="/compliance/benchmarks">Benchmarks</a>.</p>
+  {% if not active %}<p class="muted">No benchmark is active.</p>{% else %}
+  <div class="scroll"><table>
+    <thead><tr><th>Benchmark</th><th>Operating system</th><th>Profile</th><th>Rules checked</th></tr></thead>
+    <tbody>
+    {% for b in active %}{% set c = counts[b.id] %}
+    <tr><td><a href="/compliance/benchmarks/{{ b.id }}" class="mono"><strong>{{ b.key }}</strong></a><br><span class="small muted">{{ name(b) }}</span></td>
+      <td>{{ b.os_label }}</td><td class="small">{{ profiles[b.profile] }}</td><td>{{ c.on }} of {{ c.total }}</td></tr>
+    {% endfor %}
+    </tbody></table></div>
+  {% endif %}
+</section>
+{% endblock %}
