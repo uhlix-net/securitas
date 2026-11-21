@@ -160,7 +160,7 @@ def score_bars(hosts):
     if not hosts:
         return '<p class="muted">No host has been checked yet.</p>'
     hosts = sorted(hosts, key=lambda h: (h["score"] if h["score"] is not None else 101, h["host"]))
-    w, lab, row, bar = 760, 230, 26, 16
+    w, lab, row, bar = 1100, 250, 20, 12        # drawn at the page width: a wide viewBox keeps bars and text modest
     width = w - lab - 70
     out = ['<svg class="chart bars" viewBox="0 0 %d %d" role="img" aria-label="Compliance score per host">' % (w, row * len(hosts) + 6)]
     for i, h in enumerate(hosts):
@@ -170,12 +170,12 @@ def score_bars(hosts):
         out.append('<g class="pt"><title>%s: %s passed, %s failed, score %s</title>' % (
             e(h["host"]), n(h["pass"]), n(h["fail"]), "%s%%" % h["score"] if h["score"] is not None else "-"))
         out.append('<a href="%s"><text class="ax" x="%d" y="%d" text-anchor="end">%s</text></a>' % (
-            e(h["href"]), lab - 8, y + bar - 3, e(h["host"] if len(h["host"]) <= 32 else h["host"][:31] + "…")))
+            e(h["href"]), lab - 8, y + bar - 2, e(h["host"] if len(h["host"]) <= 36 else h["host"][:35] + "…")))
         out.append('<rect x="%d" y="%d" width="%.1f" height="%d" rx="2" style="fill:var(--cr-pass)"/>' % (lab, y, pw, bar))
         out.append('<rect x="%.1f" y="%d" width="%.1f" height="%d" rx="2" style="fill:var(--cr-fail)"/>' % (lab + pw, y, width - pw if tot else 0, bar))
         if not tot:
             out.append('<rect x="%d" y="%d" width="%d" height="%d" rx="2" class="empty"/>' % (lab, y, width, bar))
-        out.append('<text class="end" x="%d" y="%d">%s</text></g>' % (lab + width + 8, y + bar - 3,
+        out.append('<text class="end" x="%d" y="%d">%s</text></g>' % (lab + width + 8, y + bar - 2,
                                                                        "%s%%" % h["score"] if h["score"] is not None else "–"))
     out.append("</svg>")
     legend = ('<ul class="legend"><li><span class="sw" style="background:var(--cr-pass)"></span>Passed</li>'
@@ -201,7 +201,8 @@ CSS = """
 .seglinks a{display:inline-block;border-right:1px solid var(--line);background:var(--card);color:var(--ink);padding:5px 10px;font-size:12.5px;text-decoration:none}
 .seglinks a:last-child{border-right:0}.seglinks a span{color:var(--muted)}.seglinks a.on{background:var(--accent);color:var(--accent-ink);font-weight:600}
 .seglinks a.on span{color:inherit;opacity:.8}
-svg.chart{width:100%;height:auto;display:block;font:12px system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+svg.chart{width:100%;height:auto;display:block;font:10.5px system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+svg.chart.bars{font-size:11px}
 svg.chart .grid{stroke:var(--line);stroke-width:1}svg.chart .ax{fill:var(--muted)}
 svg.chart .area{fill-opacity:.14;stroke:none}svg.chart .line{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
 svg.chart .dot{stroke:var(--card);stroke-width:2}svg.chart .hit{fill:transparent}svg.chart .pt:hover .dot{r:6}

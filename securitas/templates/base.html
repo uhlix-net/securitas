@@ -10,7 +10,7 @@
 {% set settings_any = user and settings_for(user.role) %}
 {% if user %}
 <div class="top">
-  <div class="brand">{{ cfg.title }}<small>Vulnerabilities and compliance{% if cfg.cluster_name %}, {{ cfg.cluster_name }}{% endif %}</small></div>
+  <div class="brand">{{ cfg.title }}<small>Vulnerabilities and Compliance</small></div>
   <nav class="nav" aria-label="Main">
     <a href="/"{% if section == "home" %} class="on"{% endif %}>Home</a>
     <a href="/vulnerabilities"{% if section == "vulnerabilities" %} class="on"{% endif %}>Vulnerabilities</a>

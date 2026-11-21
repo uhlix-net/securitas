@@ -21,12 +21,14 @@ Compliance: a library of CIS benchmarks, and Linux hosts checked against them.
 - **Which rules are checked.** Each benchmark has a profile: Level 1 or Level 2, Server or Workstation (Level 1
   Server by default; Level 2 includes Level 1). Single rules can be switched on or off; those choices are marked
   *Set here* and can be cleared. The rule list can be searched and filtered by section, level, type and state.
-- **Remove a benchmark** (with a confirmation): its rules, choices and stored zip go with it.
+- **Remove a benchmark** from the benchmark list (tick *Confirm*, then *Remove*, as on the Targets page) or from
+  its own page: its rules, choices and stored zip go with it.
 - Viewers and operators can browse benchmarks and rules; only admins change them. Every upload, change,
   download and removal is in the audit log.
 - Linux and Windows CIS roles are read (Windows roles such as `Windows-2022-CIS`, with member-server and
   domain-controller levels); STIG roles are refused for now. Kubernetes compliance will come from Trivy Operator's CIS report, so it needs no upload.
 
+- Chart text is a little smaller, and the compliance score bars are thinner (charts are drawn at the page width).
 - **Home page** (`/`): vulnerabilities and compliance at a glance: headline numbers (priority CVEs, known
   exploited, critical, systems, compliance score, systems checked, rules failed), both platform tables, the CVE
   history graph and severity pies, a compliance score bar per host (passed and failed rules, lowest score
@@ -88,6 +90,7 @@ Compliance: a library of CIS benchmarks, and Linux hosts checked against them.
     they are vulnerability scan schedules) and **Sources** (moved to `/vulnerabilities/sources`).
   - *Compliance*: Summary, Report, Scans, Schedules and Benchmarks.
   - **Targets** (`/targets`) and **Audit log** (`/audit`) moved out of Settings to the top menu (admins only).
+  - The menu bar's subtitle reads *Vulnerabilities and Compliance*; the cluster name moved to the About page.
   - Settings keeps Users, Authentication and Scan credentials. Users whose role has no settings pages
     (viewers, operators) no longer see the Settings menu.
   - The vulnerability Report and Scans addresses (`/report`, `/scans`) are unchanged. The old addresses

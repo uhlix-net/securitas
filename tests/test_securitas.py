@@ -1183,6 +1183,25 @@ class ComplianceUI(unittest.TestCase):
             self.assertEqual(s.scalar(select(func.count(BenchmarkFile.id))), 0)
         self.assertEqual(self.c.get("/compliance/benchmarks/%d" % bid).status_code, 404)
 
+    def test_remove_from_list(self):
+        self.upload(role_zip())
+        bid = self.bench("TEST9-CIS-1.2.3")[0]
+        page = self.c.get("/compliance/benchmarks").text
+        self.assertIn('<form method="post" action="/compliance/benchmarks/%d">' % bid, page)
+        self.assertIn('name="confirm" required', page)
+        tok = csrf(self.c, "/compliance/benchmarks")
+        r = self.c.post("/compliance/benchmarks/%d" % bid, data={"csrf": tok, "action": "delete"}, follow_redirects=False)
+        self.assertIn("err=csrf", r.headers["location"])                      # unticked: nothing removed
+        self.assertIsNotNone(self.bench("TEST9-CIS-1.2.3"))
+        r = self.c.post("/compliance/benchmarks/%d" % bid, data={"csrf": tok, "action": "delete", "confirm": "on"},
+                        follow_redirects=False)
+        self.assertEqual(r.headers["location"], "/compliance/benchmarks?ok=deleted")
+        self.assertIsNone(self.bench("TEST9-CIS-1.2.3"))
+
+    def test_menu_bar_subtitle(self):
+        page = self.c.get("/compliance/benchmarks").text
+        self.assertIn("<small>Vulnerabilities and Compliance</small>", page)
+
     def test_viewer_can_browse_not_change(self):
         self.upload(role_zip())
         bid = self.bench("TEST9-CIS-1.2.3")[0]
