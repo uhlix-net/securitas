@@ -140,7 +140,7 @@ def scan(cfg, targets, log, record_key):
 #   - a scheduled task \Securitas\CIS Audit <benchmark key> that runs the wrapper as SYSTEM with that fixed key.
 #     The scan account may only start the task (read + execute on the task) and read the output folder.
 # That is the Windows counterpart of the Linux sudo rule: the scan account cannot change what runs as SYSTEM.
-WIN_TASK_PATH = "\\Securitas\\"
+WIN_TASK_FOLDER = "\\Securitas"
 WIN_OUT_DIR = "C:\\ProgramData\\Securitas\\CIS"
 WIN_ROLES = {0: "standalone workstation", 1: "member workstation", 2: "standalone server", 3: "member server",
              4: "backup domain controller", 5: "primary domain controller"}
@@ -152,21 +152,23 @@ $name = 'CIS Audit ' + $key
 $out = Join-Path '%(out)s' ($key + '.json')
 '##ROLE ' + (Get-CimInstance Win32_ComputerSystem).DomainRole
 '##OS ' + (Get-CimInstance Win32_OperatingSystem).Caption
-$task = Get-ScheduledTask -TaskPath '%(path)s' -TaskName $name -ErrorAction SilentlyContinue
-if (-not $task) { '##ERROR the scheduled task %(path)s' + $name + ' is not installed, or this account may not see it (install it with the Ansible playbook)'; return }
-$t0 = (Get-Date).ToUniversalTime()
-try { Start-ScheduledTask -TaskPath '%(path)s' -TaskName $name } catch { '##ERROR this account may not start the scheduled task: ' + $_.Exception.Message; return }
+# The Task Scheduler COM API checks the task's own permissions. (Get-ScheduledTask goes through the
+# root\Microsoft\Windows\TaskScheduler WMI namespace, which a non-admin scan account cannot read.)
+$svc = New-Object -ComObject Schedule.Service
+$svc.Connect()
+try { $task = $svc.GetFolder('%(folder)s').GetTask($name) } catch { '##ERROR the scheduled task %(folder)s\' + $name + ' is not installed, or this account may not see it (install it with the Ansible playbook)'; return }
+$t0 = Get-Date
+try { $null = $task.Run($null) } catch { '##ERROR this account may not start the scheduled task: ' + $_.Exception.Message; return }
 $deadline = $t0.AddSeconds(%(timeout)d)
 do {
   Start-Sleep -Seconds 5
-  $state = (Get-ScheduledTask -TaskPath '%(path)s' -TaskName $name).State
-  $info = Get-ScheduledTaskInfo -TaskPath '%(path)s' -TaskName $name
-  $ran = $info.LastRunTime -and $info.LastRunTime.ToUniversalTime() -ge $t0.AddSeconds(-5)
-} until ((($state -ne 'Running') -and $ran) -or ((Get-Date).ToUniversalTime() -gt $deadline))
-if ($state -eq 'Running') { '##ERROR the audit was still running after %(timeout)d seconds'; return }
-'##RESULT ' + $info.LastTaskResult
+  $task = $svc.GetFolder('%(folder)s').GetTask($name)
+  $ran = $task.LastRunTime -ge $t0.AddSeconds(-5)
+} until ((($task.State -ne 4) -and $ran) -or ((Get-Date) -gt $deadline))
+if ($task.State -eq 4) { '##ERROR the audit was still running after %(timeout)d seconds'; return }
+'##RESULT ' + $task.LastTaskResult
 $f = Get-Item -LiteralPath $out -ErrorAction SilentlyContinue
-if (-not $f -or $f.LastWriteTimeUtc -lt $t0.AddSeconds(-5)) { '##ERROR the audit wrote no new result (task result ' + $info.LastTaskResult + '); see ' + $key + '.log in %(out)s'; return }
+if (-not $f -or $f.LastWriteTime -lt $t0.AddSeconds(-5)) { '##ERROR the audit wrote no new result (task result ' + $task.LastTaskResult + '); see ' + $key + '.log in %(out)s'; return }
 '##JSON'
 [System.IO.File]::ReadAllText($out)
 """
@@ -175,7 +177,7 @@ if (-not $f -or $f.LastWriteTimeUtc -lt $t0.AddSeconds(-5)) { '##ERROR the audit
 def windows_script(key, timeout=3000):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", key or ""):
         raise ValueError("bad benchmark key %r" % key)
-    return WIN_SCRIPT % {"key": key, "out": WIN_OUT_DIR, "path": WIN_TASK_PATH, "timeout": int(timeout)}
+    return WIN_SCRIPT % {"key": key, "out": WIN_OUT_DIR, "folder": WIN_TASK_FOLDER, "timeout": int(timeout)}
 
 
 def parse_windows(text):

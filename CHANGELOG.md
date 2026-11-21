@@ -69,6 +69,8 @@ Compliance: a library of CIS benchmarks, and Linux hosts checked against them.
   - The CIS *Next Generation Windows Security* rules (tagged `ngws-*`) are in neither Level 1 nor Level 2.
     They can be switched on one by one.
   - Each result records the role the host was checked as.
+  - The task is started and watched through the Task Scheduler COM API, which honours the task's own permissions.
+    `Get-ScheduledTask` reads a WMI namespace that a non-admin scan account cannot read.
 - **Compliance summary.** *Compliance → Summary* (`/compliance`) has one row per platform: systems, how many
   are matched to an active benchmark, which benchmark, the check results (empty until a checker exists) and the
   schedule, plus the active benchmarks.
