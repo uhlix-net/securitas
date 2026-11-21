@@ -1113,7 +1113,8 @@ class ComplianceUI(unittest.TestCase):
             return b and (b.id, b.active, b.profile, {r.rule_id: r.override for r in b.rules})
 
     def test_upload_list_and_details(self):
-        r = self.upload(role_zip())
+        data = role_zip()                    # built once: the zip records file times, so a rebuild can differ
+        r = self.upload(data)
         self.assertEqual(r.status_code, 303, r.text[:500])
         bid, active, profile, _ = self.bench("TEST9-CIS-1.2.3")
         self.assertEqual(r.headers["location"], "/compliance/benchmarks/%d?ok=imported" % bid)
@@ -1127,7 +1128,7 @@ class ComplianceUI(unittest.TestCase):
         self.assertIn("Ensure &#39;audit log&#39; mode is configured", detail)
         self.assertIn("v3.1.0", detail)
         self.assertIn("off in role", detail)             # 1.1.3 is off in the role's defaults
-        self.assertEqual(self.c.get("/compliance/benchmarks/%d/download" % bid).content, role_zip())
+        self.assertEqual(self.c.get("/compliance/benchmarks/%d/download" % bid).content, data)
         from securitas.db import AuditEvent
         with self.db.Session() as s:
             self.assertIn("benchmark.uploaded", s.scalars(select(AuditEvent.action)).all())
