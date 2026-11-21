@@ -4,7 +4,7 @@
 
 # Securitas
 
-CVE reports for Kubernetes, Linux and Windows. Securitas scans on a schedule or on demand, ranks
+Vulnerability and compliance reports for Kubernetes, Linux and Windows. Securitas scans on a schedule or on demand, ranks
 the findings with the [CISA Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
 (KEV) catalog and [EPSS](https://www.first.org/epss/) scores, keeps every scan in its history, and
 serves the results as web pages with an **Export to PDF** button.
