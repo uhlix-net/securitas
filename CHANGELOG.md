@@ -24,8 +24,8 @@ Compliance: a library of CIS benchmarks, and Linux hosts checked against them.
 - **Remove a benchmark** (with a confirmation): its rules, choices and stored zip go with it.
 - Viewers and operators can browse benchmarks and rules; only admins change them. Every upload, change,
   download and removal is in the audit log.
-- Linux and Windows CIS roles are read (Windows roles such as `Windows-2022-CIS`); STIG roles are refused for
-  now. Kubernetes compliance will come from Trivy Operator's CIS report, so it needs no upload.
+- Linux and Windows CIS roles are read (Windows roles such as `Windows-2022-CIS`, with member-server and
+  domain-controller levels); STIG roles are refused for now. Kubernetes compliance will come from Trivy Operator's CIS report, so it needs no upload.
 
 - **Home page** (`/`): vulnerabilities and compliance at a glance: headline numbers (priority CVEs, known
   exploited, critical, systems, compliance score, systems checked, rules failed), both platform tables, the CVE
@@ -53,6 +53,22 @@ Compliance: a library of CIS benchmarks, and Linux hosts checked against them.
     benchmark is removed.
   - Compliance schedules now start Linux compliance scans. Compliance scans have their own worker, so they
     run alongside vulnerability scans.
+- **Windows compliance checks.** Windows Server hosts are checked against the active Windows benchmark for
+  their OS (for example `Windows-2022-CIS-4.2.0`, `Windows-2025-CIS-1.2.2`) with
+  [syver](https://github.com/krameff/syver), the Goss fork the Ansible-Lockdown Windows audits are written for, and
+  the benchmark's audit content (`Windows-2022-CIS-Audit` branch `benchmark_v4.0.0`, `Windows-2025-CIS-Audit`
+  branch `benchmark_v1.0.0`). Over WinRM, as the scan account, Securitas starts the scheduled task
+  `\Securitas\CIS Audit <benchmark>`, which runs the audit as SYSTEM, waits for it and reads its JSON result from
+  `C:\ProgramData\Securitas\CIS`. Ansible installs syver (pinned, checksum- and signature-checked), the content,
+  the wrapper and the task. The scan account may only start the task and read its output, so it cannot change
+  what runs as SYSTEM.
+  - Windows benchmarks tag rules for **member servers** or **domain controllers**. The default Windows profile
+    is *Level 1, by each host's role*: a domain controller gets the domain controller rules, a member server
+    the member server rules (the role is read from the host when it is checked). Fixed member-server and
+    domain-controller profiles, and Level 2, can be chosen per benchmark.
+  - The CIS *Next Generation Windows Security* rules (tagged `ngws-*`) are in neither Level 1 nor Level 2.
+    They can be switched on one by one.
+  - Each result records the role the host was checked as.
 - **Compliance summary.** *Compliance → Summary* (`/compliance`) has one row per platform: systems, how many
   are matched to an active benchmark, which benchmark, the check results (empty until a checker exists) and the
   schedule, plus the active benchmarks.
@@ -60,7 +76,7 @@ Compliance: a library of CIS benchmarks, and Linux hosts checked against them.
   stored apart from the vulnerability scan schedules. They are saved but start nothing until a checker exists.
 - **Compliance report.** *Compliance → Report* (`/compliance/report`) lists the active benchmark per operating
   system and every enabled target with its OS, its benchmark and its newest check (passed, failed, score).
-  Windows and Kubernetes have no checker yet.
+  Kubernetes has no checker yet.
 
 ### Changed
 
@@ -82,6 +98,8 @@ Compliance: a library of CIS benchmarks, and Linux hosts checked against them.
   `compliance_results`) are created at startup.
 - A column is added to `compliance_scans` (`hosts`) at startup if a 0.5.0 release candidate created the table
   without it.
+- Windows compliance checks need syver, the audit content, the wrapper and the scheduled task on each host:
+  uhlix-net/ansible `Windows_Securitas_CIS_Audit.yml`; the interface is described in `securitas/scan_compliance.py`.
 - Linux compliance checks need Goss, the audit content, the wrapper and its sudo rule on each host. uhlix-net/ansible
   `Linux_Securitas_CIS_Audit.yml` installs them; the wrapper's interface is described in `securitas/scan_compliance.py`. No change to
   existing data.

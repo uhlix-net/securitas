@@ -21,14 +21,39 @@ MAX_ENTRIES = 5000
 MAX_FILE = 5 * 1024 * 1024          # one YAML file
 
 PLATFORMS = ("linux", "windows", "kubernetes")
-PROFILES = {
-    "level1-server": "Level 1 - Server",
-    "level2-server": "Level 2 - Server (includes Level 1)",
-    "level1-workstation": "Level 1 - Workstation",
-    "level2-workstation": "Level 2 - Workstation (includes Level 1)",
+# Profiles per platform. Linux roles tag rules for servers or workstations. Windows roles tag them for member
+# servers or domain controllers; the "auto" profiles pick by each host's role (detected when it is checked).
+PLATFORM_PROFILES = {
+    "linux": {
+        "level1-server": "Level 1 - Server",
+        "level2-server": "Level 2 - Server (includes Level 1)",
+        "level1-workstation": "Level 1 - Workstation",
+        "level2-workstation": "Level 2 - Workstation (includes Level 1)",
+    },
+    "windows": {
+        "level1-auto": "Level 1 - member server or domain controller, by each host's role",
+        "level2-auto": "Level 2 - member server or domain controller, by each host's role (includes Level 1)",
+        "level1-memberserver": "Level 1 - Member server",
+        "level2-memberserver": "Level 2 - Member server (includes Level 1)",
+        "level1-domaincontroller": "Level 1 - Domain controller",
+        "level2-domaincontroller": "Level 2 - Domain controller (includes Level 1)",
+    },
 }
+PROFILES = {k: v for d in PLATFORM_PROFILES.values() for k, v in d.items()}
+DEFAULT_PROFILES = {"linux": "level1-server", "windows": "level1-auto"}
 DEFAULT_PROFILE = "level1-server"
-LEVEL_TAGS = ("level1-server", "level2-server", "level1-workstation", "level2-workstation")
+LEVEL_TAGS = ("level1-server", "level2-server", "level1-workstation", "level2-workstation",
+              "level1-memberserver", "level2-memberserver", "level1-domaincontroller", "level2-domaincontroller",
+              "ngws-memberserver", "ngws-domaincontroller")   # ngws: CIS Next Generation Windows Security (optional)
+HOST_KINDS = ("memberserver", "domaincontroller")
+
+
+def profiles_for(platform):
+    return PLATFORM_PROFILES.get(platform, PLATFORM_PROFILES["linux"])
+
+
+def default_profile(platform):
+    return DEFAULT_PROFILES.get(platform, DEFAULT_PROFILE)
 
 TOP_RE = re.compile(r"^(?P<name>[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*?-(?P<kind>CIS|STIG))-(?P<version>\d+(?:\.\d+){1,3})$")
 SPLIT_RE = re.compile(r"""["']?\s+["']?(?=\d+(?:\.\d+)+\s*\|\s*(?:AUDIT|PATCH)\s*\|)""")
@@ -88,9 +113,12 @@ def os_for(prefix):
     return prefix.lower(), prefix
 
 
-def in_profile(levels, profile):
-    """Is a rule with these level tags part of the profile? Level 2 profiles include their Level 1 rules."""
+def in_profile(levels, profile, host_kind="memberserver"):
+    """Is a rule with these level tags part of the profile? Level 2 profiles include their Level 1 rules.
+    host_kind ("memberserver" or "domaincontroller") decides the Windows "auto" profiles."""
     lvl, _, kind = profile.partition("-")
+    if kind == "auto":
+        kind = host_kind if host_kind in HOST_KINDS else "memberserver"
     want = {"level1-" + kind} | ({"level2-" + kind} if lvl == "level2" else set())
     return bool(want & set(levels))
 
@@ -227,16 +255,22 @@ def display_name(b, tz="UTC"):
 
 # ------------------------------------------------------------------ database operations
 
-def rule_on(rule, profile):
+def rule_on(rule, profile, host_kind="memberserver"):
     """Is the rule checked? An override set in Securitas wins; otherwise the role's default and the profile."""
     if rule.override is not None:
         return rule.override
-    return rule.default_on and in_profile(rule.levels or [], profile)
+    return rule.default_on and in_profile(rule.levels or [], profile, host_kind)
+
+
+def checked_rules(b, host_kind="memberserver"):
+    """The rules the benchmark checks on a host of this kind, as the checkers take them."""
+    return [{"id": r.rule_id, "title": r.title, "kind": r.kind} for r in b.rules if rule_on(r, b.profile, host_kind)]
 
 
 def counts(b):
     on = sum(1 for r in b.rules if rule_on(r, b.profile))
-    return {"total": len(b.rules), "on": on, "overrides": sum(1 for r in b.rules if r.override is not None),
+    on_dc = sum(1 for r in b.rules if rule_on(r, b.profile, "domaincontroller")) if b.platform == "windows" else on
+    return {"total": len(b.rules), "on": on, "on_dc": on_dc, "overrides": sum(1 for r in b.rules if r.override is not None),
             "patch": sum(1 for r in b.rules if r.kind == "PATCH"), "audit": sum(1 for r in b.rules if r.kind == "AUDIT")}
 
 
@@ -254,7 +288,7 @@ def store(s, parsed, data, username, tz="UTC"):
     has_active = s.scalar(select(Benchmark.id).where(Benchmark.os_key == parsed["os_key"], Benchmark.active.is_(True)))
     b = Benchmark(key=parsed["key"], name=parsed["name"], version=parsed["version"], kind=parsed["kind"],
                   benchmark_version=parsed["benchmark_version"], platform=parsed["platform"], os_key=parsed["os_key"],
-                  os_label=parsed["os_label"], profile=DEFAULT_PROFILE, active=not has_active,
+                  os_label=parsed["os_label"], profile=default_profile(parsed["platform"]), active=not has_active,
                   rule_count=len(parsed["rules"]), filename=parsed["filename"][:255], sha256=parsed["sha256"],
                   size=parsed["size"], meta=parsed["meta"], uploaded_by=username)
     for r in parsed["rules"]:

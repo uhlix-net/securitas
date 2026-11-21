@@ -4,7 +4,7 @@
 <section>
   <p class="small"><a href="/compliance/benchmarks">← All benchmarks</a></p>
   <h2>{{ b.key }} {% if b.active %}<span class="badge b-done">Active for {{ b.os_label }}</span>{% else %}<span class="badge b-off">Inactive</span>{% endif %}</h2>
-  <p class="sub">{{ name(b) }}. {{ c.on }} of {{ c.total }} rules are checked{% if c.overrides %}, {{ c.overrides }} of them set here{% endif %}.</p>
+  <p class="sub">{{ name(b) }}. {% if b.platform == "windows" %}Rules checked: {{ c.on }} of {{ c.total }} on member servers, {{ c.on_dc }} of {{ c.total }} on domain controllers{% else %}{{ c.on }} of {{ c.total }} rules are checked{% endif %}{% if c.overrides %}, {{ c.overrides }} of them set here{% endif %}.</p>
   <div class="scroll"><table>
     <tbody>
       <tr><th style="width:190px">Role</th><td><span class="mono">{{ b.name }}</span> version <span class="mono">{{ b.version }}</span>{% if b.meta.namespace %} ({{ b.meta.namespace }}{% if b.meta.role_name %}.{{ b.meta.role_name }}{% endif %}){% endif %}</td></tr>
@@ -29,7 +29,7 @@
       <div class="row"><label for="pf">Profile</label><select id="pf" name="profile">{% for k, lab in profiles.items() %}<option value="{{ k }}"{% if k == b.profile %} selected{% endif %}>{{ lab }}</option>{% endfor %}</select><button class="btn">Save profile</button></div>
     </form>
   </div>
-  <p class="hint">The profile decides which rules are checked: a rule is in a Level 1 profile when it is tagged Level 1 for servers or workstations; Level 2 adds the Level 2 rules. Rules switched on or off below override the profile.</p>
+  <p class="hint">The profile decides which rules are checked: a rule is in a Level 1 profile when it is tagged Level 1 for {{ "member servers or domain controllers" if b.platform == "windows" else "servers or workstations" }}; Level 2 adds the Level 2 rules.{% if b.platform == "windows" %} With a "by each host's role" profile, each host is checked with the domain controller or member server rules, from the role it reports when it is checked.{% endif %} Rules switched on or off below override the profile{% if b.platform == "windows" %} (the "Checked" column below shows the member server view){% endif %}.</p>
 </section>
 {% endif %}
 <section>

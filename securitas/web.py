@@ -1118,8 +1118,8 @@ def create_app(cfg, db, jobs):
             others = s.scalars(select(Benchmark).where(Benchmark.os_key == b.os_key, Benchmark.id != b.id)
                                .order_by(Benchmark.uploaded_at.desc())).all()
             ctx = {"user": user, "sess": request.state.sess, "title": b.key, "b": b, "c": compliance.counts(b),
-                   "shown": shown, "f": f, "sections": sections, "profiles": compliance.PROFILES,
-                   "level_tags": compliance.LEVEL_TAGS, "states": RULE_STATES, "others": others,
+                   "shown": shown, "f": f, "sections": sections, "profiles": compliance.profiles_for(b.platform),
+                   "level_tags": [t for t in compliance.LEVEL_TAGS if any(t in (r.levels or []) for r in b.rules)], "states": RULE_STATES, "others": others,
                    "name": lambda b: compliance.display_name(b, cfg.timezone),
                    "day": lambda b: compliance.upload_date(b, cfg.timezone), "filtered": any(f.values()),
                    "query": urllib.parse.urlencode({k: v for k, v in f.items() if v})}
@@ -1143,7 +1143,7 @@ def create_app(cfg, db, jobs):
                 msg = "saved"
             elif action == "profile":
                 p = str(form.get("profile", ""))
-                if p not in compliance.PROFILES:
+                if p not in compliance.profiles_for(b.platform):
                     raise HTTPException(400, "Unknown profile.")
                 if p == b.profile:
                     msg = "nochange"
@@ -1200,7 +1200,10 @@ def create_app(cfg, db, jobs):
         "linux": "Checked over SSH with Goss and the benchmark's Ansible-Lockdown audit content. Ansible installs both on "
                  "each host, root-owned, with one sudo rule that lets the scan account run only "
                  "/usr/local/sbin/securitas-cis-audit.",
-        "windows": "Windows hosts are not checked yet: the checker comes in a later release.",
+        "windows": "Checked over WinRM with syver (the Goss fork for Windows) and the benchmark's Ansible-Lockdown audit "
+                   "content. Ansible installs both on each host, writable by administrators only, with a scheduled task "
+                   "that runs the audit as SYSTEM; the scan account may only start that task and read its result. "
+                   "Domain controllers get the domain controller rules, member servers the member server rules.",
         "kubernetes": "The cluster is not checked yet: results will come from Trivy Operator's CIS report (k8s-cis), "
                       "which needs compliance reports turned on in the operator.",
     }

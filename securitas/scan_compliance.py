@@ -126,3 +126,105 @@ def scan(cfg, targets, log, record_key):
                 results[t["host"]] = e
                 log("linux: %s: failed: %s" % (t["host"], e))
     return results
+
+
+# ------------------------------------------------------------------ Windows
+
+# On each Windows host Ansible (uhlix-net/ansible Windows_Securitas_CIS_Audit.yml) installs, writable by
+# Administrators and SYSTEM only:
+#   - syver (the Goss fork with Windows support that the Ansible-Lockdown Windows audits are written for),
+#     checksum- and signature-checked, at C:\Program Files\Securitas\CIS\syver\syver.exe
+#   - the audit content per benchmark at C:\Program Files\Securitas\CIS\<benchmark key>\
+#   - the wrapper C:\Program Files\Securitas\CIS\securitas-cis-audit.ps1, which runs the content's run_audit.ps1
+#     and writes C:\ProgramData\Securitas\CIS\<benchmark key>.json
+#   - a scheduled task \Securitas\CIS Audit <benchmark key> that runs the wrapper as SYSTEM with that fixed key.
+#     The scan account may only start the task (read + execute on the task) and read the output folder.
+# That is the Windows counterpart of the Linux sudo rule: the scan account cannot change what runs as SYSTEM.
+WIN_TASK_PATH = "\\Securitas\\"
+WIN_OUT_DIR = "C:\\ProgramData\\Securitas\\CIS"
+WIN_ROLES = {0: "standalone workstation", 1: "member workstation", 2: "standalone server", 3: "member server",
+             4: "backup domain controller", 5: "primary domain controller"}
+
+WIN_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+$key = '%(key)s'
+$name = 'CIS Audit ' + $key
+$out = Join-Path '%(out)s' ($key + '.json')
+'##ROLE ' + (Get-CimInstance Win32_ComputerSystem).DomainRole
+'##OS ' + (Get-CimInstance Win32_OperatingSystem).Caption
+$task = Get-ScheduledTask -TaskPath '%(path)s' -TaskName $name -ErrorAction SilentlyContinue
+if (-not $task) { '##ERROR the scheduled task %(path)s' + $name + ' is not installed, or this account may not see it (install it with the Ansible playbook)'; return }
+$t0 = (Get-Date).ToUniversalTime()
+try { Start-ScheduledTask -TaskPath '%(path)s' -TaskName $name } catch { '##ERROR this account may not start the scheduled task: ' + $_.Exception.Message; return }
+$deadline = $t0.AddSeconds(%(timeout)d)
+do {
+  Start-Sleep -Seconds 5
+  $state = (Get-ScheduledTask -TaskPath '%(path)s' -TaskName $name).State
+  $info = Get-ScheduledTaskInfo -TaskPath '%(path)s' -TaskName $name
+  $ran = $info.LastRunTime -and $info.LastRunTime.ToUniversalTime() -ge $t0.AddSeconds(-5)
+} until ((($state -ne 'Running') -and $ran) -or ((Get-Date).ToUniversalTime() -gt $deadline))
+if ($state -eq 'Running') { '##ERROR the audit was still running after %(timeout)d seconds'; return }
+'##RESULT ' + $info.LastTaskResult
+$f = Get-Item -LiteralPath $out -ErrorAction SilentlyContinue
+if (-not $f -or $f.LastWriteTimeUtc -lt $t0.AddSeconds(-5)) { '##ERROR the audit wrote no new result (task result ' + $info.LastTaskResult + '); see ' + $key + '.log in %(out)s'; return }
+'##JSON'
+[System.IO.File]::ReadAllText($out)
+"""
+
+
+def windows_script(key, timeout=3000):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", key or ""):
+        raise ValueError("bad benchmark key %r" % key)
+    return WIN_SCRIPT % {"key": key, "out": WIN_OUT_DIR, "path": WIN_TASK_PATH, "timeout": int(timeout)}
+
+
+def parse_windows(text):
+    """The script's output -> (domain role number, OS name, Goss JSON text). Raises RuntimeError on ##ERROR."""
+    tag = lambda name: (m.group(1).strip() if (m := re.search(r"^##%s (.*)$" % name, text, re.M)) else "")
+    if tag("ERROR"):
+        raise RuntimeError(tag("ERROR"))
+    role = int(tag("ROLE")) if tag("ROLE").isdigit() else -1
+    if "##JSON" not in text:
+        raise RuntimeError("the audit returned nothing: " + text.strip()[-300:])
+    return role, tag("OS"), text.split("##JSON", 1)[1]
+
+
+def host_kind(role):
+    return "domaincontroller" if role >= 4 else "memberserver"
+
+
+def run_windows_host(cfg, target):
+    """target: {host, key, rules_by_kind}. Returns {"os", "rules", "counts", "host_kind", "role"}."""
+    from . import scan_windows
+    timeout = max(cfg.host_timeout, 3000)
+    c = scan_windows.client(cfg, target["host"])
+    c.wsman.operation_timeout = 60          # poll; the script itself waits for the task
+    out, streams, had_errors = c.execute_ps(windows_script(target["key"], timeout - 60))
+    if had_errors and "##JSON" not in out:
+        raise RuntimeError("PowerShell error: " + "; ".join(str(e) for e in streams.error)[:300])
+    role, os_name, payload = parse_windows(out)
+    kind = host_kind(role)
+    by, summary = parse_goss(payload)
+    rules, counts = evaluate((target.get("rules_by_kind") or {}).get(kind) or target["rules"], by)
+    return {"os": os_name, "rules": rules, "counts": counts, "host_kind": kind, "role": WIN_ROLES.get(role, str(role)),
+            "goss": {k: summary.get(k) for k in ("test-count", "failed-count", "skipped-count", "total-duration")}}
+
+
+def scan_windows(cfg, targets, log):
+    if not cfg.winrm_user or not cfg.winrm_password:
+        raise RuntimeError("Windows compliance scans need a WinRM account (Settings > Scan credentials)")
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, cfg.host_concurrency)) as ex:
+        futs = {ex.submit(run_windows_host, cfg, t): t for t in targets}
+        for fut in concurrent.futures.as_completed(futs):
+            t = futs[fut]
+            try:
+                results[t["host"]] = r = fut.result()
+                c = r["counts"]
+                log("windows: %s: %s as %s, %d passed, %d failed, %d not applicable, %d without a check, score %s"
+                    % (t["host"], t["key"], r["role"], c["pass"], c["fail"], c["skip"], c["notest"],
+                       "%s%%" % c["score"] if c["score"] is not None else "-"))
+            except Exception as e:
+                results[t["host"]] = e
+                log("windows: %s: failed: %s" % (t["host"], e))
+    return results

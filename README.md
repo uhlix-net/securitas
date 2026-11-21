@@ -50,7 +50,11 @@ serves the results as web pages with an **Export to PDF** button.
 - **Linux compliance checks.** Compliance scans check each Linux host against its active benchmark with Goss and
   the benchmark's Ansible-Lockdown audit content, through one root-owned wrapper the scan account may run with
   sudo (nothing else). Per host: rules passed, failed, not applicable and without an automated check, a score,
-  and every rule's tests. Windows and Kubernetes compliance come later.
+  and every rule's tests.
+- **Windows compliance checks.** The same for Windows Server, with syver (the Goss fork for Windows) and the
+  benchmark's audit content, run as SYSTEM by a scheduled task the scan account may only start. Domain
+  controllers get the domain controller rules, member servers the member server rules. Kubernetes compliance
+  comes later.
 - **Sign-in and roles.**
   - Sign-in: local accounts, LDAP (Active Directory) and OpenID Connect single sign-on.
   - Three roles: Viewer, Operator and Admin. LDAP and SSO users get their role from their groups.

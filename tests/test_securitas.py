@@ -1289,7 +1289,7 @@ class Menus(unittest.TestCase):
             self.assertEqual(s.scalar(select(ComplianceSchedule.cron).where(ComplianceSchedule.platform == "linux")), "0 6 * * 0")
             self.assertEqual(s.scalar(select(Schedule.cron).where(Schedule.platform == "linux")), "0 5 * * *")   # untouched
         page = self.c.get("/compliance/schedules").text
-        self.assertIn("start nothing: Kubernetes, Windows", page)
+        self.assertIn("start nothing: Kubernetes.", page)
         self.assertIn("0 6 * * 0", self.c.get("/compliance").text)
         self.assertIn('action="/vulnerabilities/schedules/linux"', self.c.get("/vulnerabilities/schedules").text)
 
@@ -1477,3 +1477,111 @@ class ComplianceScans(unittest.TestCase):
         login(v, "vic", "a-long-password-1")
         r = v.post("/compliance/scans", data={"csrf": csrf(v, "/compliance/scans"), "platform": "linux"}, follow_redirects=False)
         self.assertEqual(r.status_code, 403)
+
+
+WIN_ZIPS = {k: os.environ.get("SECURITAS_TEST_" + k.replace("-", "_").upper(), "/mnt/c/Users/huhl/Downloads/%s.zip" % k)
+            for k in ("Windows-2022-CIS-4.2.0", "Windows-2025-CIS-1.2.2")}
+
+
+def win_zip(top="Windows-2022-CIS-9.0.0"):
+    """A Windows-shaped role: member server / domain controller level tags."""
+    tasks = """---
+- name: "1.1.1 | PATCH | Ensure 'Enforce password history' is set to '24 or more password(s)'"
+  when: win22cis_rule_1_1_1
+  tags: [level1-domaincontroller, level1-memberserver, rule_1.1.1, NIST800-53R5_IA-5]
+  ansible.windows.win_security_policy: {section: System Access, key: PasswordHistorySize, value: 24}
+- name: "2.3.5.4 | PATCH | Ensure 'Domain controller: LDAP server signing requirements' is set to 'Require signing' (DC only)"
+  when: win22cis_rule_2_3_5_4
+  tags: [level1-domaincontroller, rule_2.3.5.4]
+  ansible.windows.win_regedit: {path: HKLM:\\x, name: y, data: 2}
+- name: "2.3.10.1 | PATCH | Ensure network access is restricted (MS only)"
+  when: win22cis_rule_2_3_10_1
+  tags: [level1-memberserver, rule_2.3.10.1]
+  ansible.windows.win_regedit: {path: HKLM:\\x, name: z, data: 1}
+- name: "18.1.1 | PATCH | Ensure a level 2 setting"
+  when: win22cis_rule_18_1_1
+  tags: [level2-domaincontroller, level2-memberserver, rule_18.1.1]
+  ansible.windows.win_regedit: {path: HKLM:\\x, name: w, data: 1}
+"""
+    return role_zip(top=top, platform="Windows", extra={"tasks/section_1/cis_1.1.x.yml": tasks},   # replaces the Linux sample
+                    defaults="benchmark_version: 'v4.0.0'\nwin22cis_rule_1_1_1: true\nwin22cis_rule_2_3_5_4: true\n"
+                             "win22cis_rule_2_3_10_1: true\nwin22cis_rule_18_1_1: true\n")
+
+
+class WindowsCompliance(unittest.TestCase):
+    def test_profiles_by_role(self):
+        from securitas import compliance
+        b = compliance.parse_zip(win_zip())
+        r = {x["rule_id"]: x for x in b["rules"]}
+        self.assertEqual(r["2.3.5.4"]["levels"], ["level1-domaincontroller"])
+        self.assertEqual(compliance.default_profile("windows"), "level1-auto")
+        ms = [x for x in b["rules"] if compliance.in_profile(x["levels"], "level1-auto", "memberserver")]
+        dc = [x for x in b["rules"] if compliance.in_profile(x["levels"], "level1-auto", "domaincontroller")]
+        self.assertEqual(sorted(x["rule_id"] for x in ms), ["1.1.1", "2.3.10.1"])
+        self.assertEqual(sorted(x["rule_id"] for x in dc), ["1.1.1", "2.3.5.4"])
+        self.assertEqual(len([x for x in b["rules"] if compliance.in_profile(x["levels"], "level2-auto", "domaincontroller")]), 3)
+
+    @unittest.skipUnless(all(os.path.exists(p) for p in WIN_ZIPS.values()), "real Windows CIS zips not available")
+    def test_real_windows_zips(self):
+        import yaml
+        import zipfile
+        from securitas import compliance
+        for key, path in WIN_ZIPS.items():
+            b = compliance.parse_zip(open(path, "rb").read())
+            self.assertEqual((b["key"], b["platform"]), (key, "windows"))
+            self.assertTrue(all(r["levels"] for r in b["rules"]), key)          # every rule has a level tag
+            z = zipfile.ZipFile(path)
+            d = yaml.safe_load(z.read(key + "/defaults/main/main.yml"))
+            toggles = {k for k in d if re.fullmatch(r"win\d\dcis_rule_\d+(_\d+)+", k)}
+            self.assertEqual({r["toggle"] for r in b["rules"]}, toggles, key)
+
+    def test_parse_windows_output(self):
+        from securitas import scan_compliance as sc
+        role, osn, payload = sc.parse_windows("##ROLE 5\n##OS Microsoft Windows Server 2022 Standard\n##RESULT 0\n##JSON\n" + GOSS_OUT)
+        self.assertEqual((role, sc.host_kind(role), osn), (5, "domaincontroller", "Microsoft Windows Server 2022 Standard"))
+        self.assertEqual(sc.host_kind(3), "memberserver")
+        with self.assertRaisesRegex(RuntimeError, "may not start"):
+            sc.parse_windows("##ROLE 3\n##ERROR this account may not start the scheduled task: Access is denied\n")
+        self.assertIn("'Windows-2022-CIS-4.2.0'", sc.windows_script("Windows-2022-CIS-4.2.0"))
+        with self.assertRaises(ValueError):
+            sc.windows_script("x' ; Remove-Item C:\\")
+
+    def test_scan_uses_rules_for_each_role(self):
+        app, db, jobs, cfg = make_app()
+        c = client(app)
+        login(c, "admin", ADMIN_PW)
+        from securitas.db import ComplianceResult, PlatformResult, Scan, Target
+        with db.Session() as s, s.begin():
+            s.add_all([Target(platform="windows", host="dc1"), Target(platform="windows", host="ms1")])
+            sc_ = Scan(trigger="manual", platforms=["windows"], status="done")
+            s.add(sc_)
+            s.flush()
+            s.add(PlatformResult(scan_id=sc_.id, platform="windows", status="done", raw={
+                "id": "windows", "title": "Windows", "totals": {}, "findings": [], "system_columns": [], "warnings": [], "failed": 0,
+                "systems": [{"name": "dc1", "os": "Windows Server 2022 Standard"}, {"name": "ms1", "os": "Windows Server 2022 Datacenter"}]}))
+        r = c.post("/compliance/benchmarks", data={"csrf": csrf(c, "/compliance/benchmarks")},
+                   files={"file": ("w.zip", win_zip(top="Windows-2022-CIS-9.0.0"), "application/zip")}, follow_redirects=False)
+        self.assertEqual(r.status_code, 303)
+        from securitas import scan_compliance as scm
+        seen = {}
+
+        def fake(targets, say):
+            out = {}
+            for t in targets:
+                kind = "domaincontroller" if t["host"] == "dc1" else "memberserver"
+                rules, n = scm.evaluate(t["rules_by_kind"][kind], {})
+                seen[t["host"]] = [x["id"] for x in rules]
+                out[t["host"]] = {"os": "Windows Server 2022", "rules": rules, "counts": n, "host_kind": kind}
+            return out
+        jobs.compliance_scanners["windows"] = fake
+        page = c.get("/compliance/scans").text
+        self.assertIn('name="platform" value="windows" checked', page)
+        c.post("/compliance/scans", data={"csrf": csrf(c, "/compliance/scans"), "platform": "windows"})
+        jobs.run_compliance(jobs._claim_compliance())
+        self.assertEqual(seen, {"dc1": ["1.1.1", "2.3.5.4"], "ms1": ["1.1.1", "2.3.10.1"]})
+        with db.Session() as s:
+            prof = {r.host: r.profile for r in s.scalars(select(ComplianceResult)).all()}
+        self.assertEqual(prof, {"dc1": "level1-auto (domaincontroller)", "ms1": "level1-auto (memberserver)"})
+        detail = c.get("/compliance/benchmarks/1").text
+        self.assertIn("2 of 4 on member servers, 2 of 4 on domain controllers", detail)
+        self.assertIn("by each host&#39;s role", detail)

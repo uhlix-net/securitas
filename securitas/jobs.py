@@ -72,7 +72,7 @@ class Jobs:
         self.scanners = scanners or {"kubernetes": self._scan_kubernetes, "linux": self._scan_linux,
                                      "windows": self._scan_windows}
         # compliance checkers per platform: (targets, say) -> {host: result | Exception}
-        self.compliance_scanners = {"linux": self._comp_linux}
+        self.compliance_scanners = {"linux": self._comp_linux, "windows": self._comp_windows}
         self.comp_wake = threading.Event()
         self.wake = threading.Event()
         self.stop = threading.Event()
@@ -299,10 +299,11 @@ class Jobs:
             os_name = seen.get((t.platform, t.host), "")
             key = compliance.os_key_for(os_name)
             b = active.get(key)
-            rules = [{"id": r.rule_id, "title": r.title, "kind": r.kind} for r in b.rules if compliance.rule_on(r, b.profile)] if b else []
+            by_kind = {k: compliance.checked_rules(b, k) for k in compliance.HOST_KINDS} if b else {}
+            rules = by_kind.get("memberserver", [])
             out.setdefault(t.platform, []).append({
                 "id": t.id, "host": t.host, "label": t.label, "host_key": t.host_key, "os": os_name, "os_key": key,
-                "bench": b, "rules_list": rules, "rules": len(rules)})
+                "bench": b, "rules_list": rules, "rules_by_kind": by_kind, "rules": len(rules)})
         return out, active
 
     def latest_compliance(self, s, platform):
@@ -390,7 +391,8 @@ class Jobs:
         with self.db.Session() as s, s.begin():
             s.add(ComplianceResult(scan_id=cid, platform=platform, host=x["host"], label=x["label"],
                                    os=(result or {}).get("os") or x["os"], benchmark_id=x["bench_id"],
-                                   benchmark_key=x["key"], benchmark_name=x["bench_name"], profile=x["profile"],
+                                   benchmark_key=x["key"], benchmark_name=x["bench_name"],
+                                   profile=x["profile"] + (" (%s)" % (result or {})["host_kind"] if (result or {}).get("host_kind") else ""),
                                    status=status, error=error[:2000], seconds=seconds,
                                    counts=(result or {}).get("counts") or {}, rules=(result or {}).get("rules") or []))
 
@@ -404,6 +406,10 @@ class Jobs:
     def _comp_linux(self, targets, say):
         from . import scan_compliance
         return scan_compliance.scan(self.settings.effective(), targets, say, self._record_key)
+
+    def _comp_windows(self, targets, say):
+        from . import scan_compliance
+        return scan_compliance.scan_windows(self.settings.effective(), targets, say)
 
     # ------------------------------------------------------------ running a scan
 
