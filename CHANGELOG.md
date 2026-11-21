@@ -27,6 +27,15 @@ Compliance: a library of CIS benchmarks, and Linux hosts checked against them.
 - Linux and Windows CIS roles are read (Windows roles such as `Windows-2022-CIS`); STIG roles are refused for
   now. Kubernetes compliance will come from Trivy Operator's CIS report, so it needs no upload.
 
+- **Home page** (`/`): vulnerabilities and compliance at a glance: headline numbers (priority CVEs, known
+  exploited, critical, systems, compliance score, systems checked, rules failed), both platform tables, the CVE
+  history graph and severity pies, a compliance score bar per host (passed and failed rules, lowest score
+  first) and a pie of rule results per platform.
+- **About page** (top menu): version, what is scanned and how, data sources, database, time zone, your
+  account, source code and licence.
+- **Scan only some hosts.** On *Compliance → Scans*, tick one or more hosts to check just those; leave them all
+  unticked to check every matched host of the platforms ticked. The scan history and the scan page show the
+  selection.
 - **Linux compliance checks.** *Compliance → Scans → Run compliance scan* checks each enabled Linux target
   against the active benchmark for its OS (matched by the OS its latest vulnerability scan saw) with
   [Goss](https://github.com/goss-org/goss) and the benchmark's Ansible-Lockdown audit content (for
@@ -55,14 +64,15 @@ Compliance: a library of CIS benchmarks, and Linux hosts checked against them.
 
 ### Changed
 
-- **New menus.** The top menu is *Vulnerabilities*, *Compliance*, *Targets*, *Audit log* and *Settings*.
+- **New menus.** The top menu is *Home*, *Vulnerabilities*, *Compliance*, *Targets*, *Audit log*, *Settings* and
+  *About*. The vulnerability summary moved from `/` to `/vulnerabilities`; `/` is now the Home page.
   - *Vulnerabilities*: Summary, Report, Scans, **Schedules** (moved from Settings to `/vulnerabilities/schedules`;
     they are vulnerability scan schedules) and **Sources** (moved to `/vulnerabilities/sources`).
   - *Compliance*: Summary, Report, Scans, Schedules and Benchmarks.
   - **Targets** (`/targets`) and **Audit log** (`/audit`) moved out of Settings to the top menu (admins only).
   - Settings keeps Users, Authentication and Scan credentials. Users whose role has no settings pages
     (viewers, operators) no longer see the Settings menu.
-  - The Summary, Report and Scans addresses (`/`, `/report`, `/scans`) are unchanged. The old addresses
+  - The vulnerability Report and Scans addresses (`/report`, `/scans`) are unchanged. The old addresses
     (`/settings/sources`, `/settings/schedules`, `/settings/targets`, `/settings/audit`, `/settings/compliance`)
     redirect to the new ones.
 
@@ -70,6 +80,8 @@ Compliance: a library of CIS benchmarks, and Linux hosts checked against them.
 
 - Six new tables (`benchmarks`, `benchmark_rules`, `benchmark_files`, `compliance_schedules`, `compliance_scans`,
   `compliance_results`) are created at startup.
+- A column is added to `compliance_scans` (`hosts`) at startup if a 0.5.0 release candidate created the table
+  without it.
 - Linux compliance checks need Goss, the audit content, the wrapper and its sudo rule on each host. uhlix-net/ansible
   `Linux_Securitas_CIS_Audit.yml` installs them; the wrapper's interface is described in `securitas/scan_compliance.py`. No change to
   existing data.

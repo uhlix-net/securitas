@@ -39,7 +39,7 @@ MESSAGES = {
     "imported": "Benchmark imported.", "activated": "Active benchmark changed.",
 }
 ERRORS = {
-    "csrf": "The form expired. Please try again.", "noplat": "Pick at least one platform.",
+    "csrf": "The form expired. Please try again.", "noplat": "Pick at least one platform or host.",
     "cron": "That is not a valid cron expression (5 fields: minute hour day month weekday).",
     "exists": "That name is already in use.", "pw": "", "self": "You cannot change or remove your own account here.",
     "lastadmin": "At least one admin must remain.", "host": "Enter a host name.", "group": "Enter a group name.",
@@ -437,8 +437,8 @@ def create_app(cfg, db, jobs):
 
     # ------------------------------------------------------------ current report
 
-    @api.get("/")
-    def index(request: Request, user=Depends(V)):
+    @api.get("/vulnerabilities")
+    def vuln_summary(request: Request, user=Depends(V)):
         m = jobs.current_model()
         rows = report.summary(m)
         tot = {k: sum(r[k] for r in rows) for k in ("systems", "priority", "kev", "critical", "high")}
@@ -446,7 +446,7 @@ def create_app(cfg, db, jobs):
         rng = rng if rng in report.RANGES else report.DEFAULT_RANGE
         return a.page(request, "summary.html", {"user": user, "sess": request.state.sess, "title": "Summary", "model": m,
                                                 "rows": rows, "tot": tot, "range": rng,
-                                                "range_switch": charts.range_switch(rng),
+                                                "range_switch": charts.range_switch(rng, "/vulnerabilities"),
                                                 "history": charts.history_svg(jobs.history(rng)),
                                                 "pies": charts.pies(report.platform_levels(m))})
 
@@ -874,7 +874,7 @@ def create_app(cfg, db, jobs):
     # Top-level sections and their pages: (path, label, permission). Vulnerability scans and reports keep their
     # old addresses (/, /report, /scans) so bookmarks and PDF links still work.
     a.env.globals["SECTIONS"] = {
-        "vulnerabilities": [("/", "Summary", "view"), ("/report", "Report", "view"), ("/scans", "Scans", "view"),
+        "vulnerabilities": [("/vulnerabilities", "Summary", "view"), ("/report", "Report", "view"), ("/scans", "Scans", "view"),
                             ("/vulnerabilities/schedules", "Schedules", "schedule.edit"),
                             ("/vulnerabilities/sources", "Sources", "view")],
         "compliance": [("/compliance", "Summary", "view"), ("/compliance/report", "Report", "view"),
@@ -896,7 +896,7 @@ def create_app(cfg, db, jobs):
                           ("/admin/targets", "/targets"), ("/admin/audit", "/audit"),
                           ("/schedules", "/vulnerabilities/schedules"), ("/settings/schedules", "/vulnerabilities/schedules"),
                           ("/settings/targets", "/targets"), ("/settings/audit", "/audit"), ("/settings/sources", "/vulnerabilities/sources"),
-                          ("/settings/compliance", "/compliance/benchmarks"), ("/vulnerabilities", "/")):
+                          ("/settings/compliance", "/compliance/benchmarks")):
         api.add_api_route(old, (lambda target: (lambda: RedirectResponse(target, status_code=301, headers=HEADERS)))(new_path),
                           methods=["GET"], include_in_schema=False)
 
@@ -1257,6 +1257,8 @@ def create_app(cfg, db, jobs):
             systems, _ = jobs.compliance_plan(s)
             ntargets = {p: len(v) for p, v in systems.items()}
             matched = {p: sum(1 for x in v if x["bench"]) for p, v in systems.items()}
+            pickable = {p: [{"host": x["host"], "label": x["label"], "key": x["bench"].key} for x in v if x["bench"]]
+                        for p, v in systems.items()}
             total = s.scalar(select(func.count(ComplianceScan.id)))
             rows = s.scalars(select(ComplianceScan).order_by(ComplianceScan.id.desc()).offset((page - 1) * 50).limit(50)).all()
             stats = {}
@@ -1274,18 +1276,28 @@ def create_app(cfg, db, jobs):
         return a.page(request, "compliance_scans.html", {
             "user": user, "sess": request.state.sess, "title": "Compliance scans", "ntargets": ntargets, "matched": matched,
             "checker": COMPLIANCE_CHECKER, "has_checker": {p: p in jobs.compliance_scanners for p in PLATFORMS},
-            "scans": rows, "stats": stats, "page": page, "pages": max(1, (total + 49) // 50), "busy": busy},
+            "scans": rows, "stats": stats, "page": page, "pages": max(1, (total + 49) // 50), "busy": busy,
+            "pickable": pickable},
             refresh=15 if busy else None)
 
     @api.post("/compliance/scans")
     async def compliance_scan_run(request: Request, user=Depends(OP)):
         form = await a.csrf(request)
-        plats = [p for p in PLATFORMS if p in form.getlist("platform") and p in jobs.compliance_scanners]
-        if not plats:
-            return go("/compliance/scans", err="noplat")
+        picked = set(form.getlist("host"))
         with db.Session() as s, s.begin():
-            scan = jobs.enqueue_compliance(s, plats, "manual", user.username)
-            a.audit(s, request, "compliance_scan.run", "#%d %s" % (scan.id, ", ".join(plats)))
+            plan, _ = jobs.compliance_plan(s)
+            if picked:
+                # only the hosts ticked: their platforms follow from the hosts; the platform boxes are ignored
+                hosts = {x["host"]: p for p, lst in plan.items() for x in lst if x["host"] in picked and x["bench"]}
+                plats = [p for p in PLATFORMS if p in hosts.values() and p in jobs.compliance_scanners]
+            else:
+                hosts = {}
+                plats = [p for p in PLATFORMS if p in form.getlist("platform") and p in jobs.compliance_scanners]
+            if not plats:
+                return go("/compliance/scans", err="noplat")
+            scan = jobs.enqueue_compliance(s, plats, "manual", user.username, hosts=list(hosts))
+            a.audit(s, request, "compliance_scan.run", "#%d %s%s" % (scan.id, ", ".join(plats),
+                                                                     ": " + ", ".join(sorted(hosts)) if hosts else ""))
             sid = scan.id
         return go("/compliance/scans/%d" % sid, ok="queued")
 
@@ -1323,6 +1335,49 @@ def create_app(cfg, db, jobs):
         return a.page(request, "compliance_host.html", {"user": user, "sess": request.state.sess,
                                                         "title": "%s · compliance scan #%d" % (r.host, sid), "r": r,
                                                         "rules": rules, "st": st, "q": q, "statuses": scan_compliance.STATUSES})
+
+    # ------------------------------------------------------------ home and about
+
+    def compliance_charts(s):
+        systems, _ = compliance_systems(s)
+        rows = [platform_row(p, systems.get(p, [])) for p in ("linux", "windows", "kubernetes")]
+        pies, bars = [], []
+        for p in ("linux", "windows"):
+            res = [x["result"] for x in systems.get(p, []) if x.get("result")]
+            if not res:
+                continue
+            lv = {k: sum(r.counts.get(k, 0) for r in res) for k, _ in charts.RESULTS}
+            pies.append({"id": p, "title": PLATFORM_LABEL[p], "total": sum(lv.values()), "levels": lv})
+            bars += [{"host": r.host, "pass": r.counts.get("pass", 0), "fail": r.counts.get("fail", 0),
+                      "score": r.counts.get("score"), "href": "/compliance/scans/%d/hosts/%d" % (r.scan_id, r.id)} for r in res]
+        return rows, charts.result_pies(pies), charts.score_bars(bars) if bars else ""
+
+    @api.get("/")
+    def home(request: Request, user=Depends(V)):
+        m = jobs.current_model()
+        vrows = report.summary(m)
+        vtot = {k: sum(r[k] for r in vrows) for k in ("systems", "priority", "kev", "critical", "high")}
+        rng = request.query_params.get("range", report.DEFAULT_RANGE)
+        rng = rng if rng in report.RANGES else report.DEFAULT_RANGE
+        with db.Session() as s:
+            crows, cpies, cbars = compliance_charts(s)
+        scores = [r["score"] for r in crows if r["score"] is not None]
+        ctot = {"systems": sum(r["systems"] or 0 for r in crows), "checked": sum(r["checked"] for r in crows),
+                "failed": sum(r["failed"] for r in crows), "score": round(sum(scores) / len(scores), 1) if scores else None}
+        return a.page(request, "home.html", {
+            "user": user, "sess": request.state.sess, "title": "Home", "model": m, "vrows": vrows, "vtot": vtot,
+            "range": rng, "range_switch": charts.range_switch(rng, "/"), "history": charts.history_svg(jobs.history(rng)),
+            "vpies": charts.pies(report.platform_levels(m)), "crows": crows, "ctot": ctot, "cpies": cpies, "cbars": cbars})
+
+    @api.get("/about")
+    def about(request: Request, user=Depends(any_user)):
+        eff = a.eff()
+        with db.Session() as s:
+            nb = s.scalar(select(func.count(Benchmark.id)))
+        return a.page(request, "about.html", {"user": user, "sess": request.state.sess, "title": "About",
+                                              "db_kind": db.engine.dialect.name, "nbench": nb,
+                                              "platforms_on": [p for p in PLATFORMS if eff.platform_on(p)],
+                                              "checkers": [p for p in PLATFORMS if p in jobs.compliance_scanners]})
 
     @api.get("/compliance/schedules")
     def compliance_schedules(request: Request, user=Depends(a.need("schedule.edit"))):

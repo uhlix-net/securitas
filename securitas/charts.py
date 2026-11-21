@@ -32,11 +32,11 @@ def _nice_axis(v):
     return best or (max(4, math.ceil(v)), 1)
 
 
-def range_switch(current):
+def range_switch(current, base="/vulnerabilities"):
     links = []
     for key, (name, span, _) in RANGES.items():
         cls = ' class="on" aria-current="true"' if key == current else ""
-        links.append('<a%s href="/?range=%s#history">%s <span>(%s)</span></a>' % (cls, key, name, span))
+        links.append('<a%s href="%s?range=%s#history">%s <span>(%s)</span></a>' % (cls, base, key, name, span))
     return '<nav class="seg seglinks" aria-label="Interval">%s</nav>' % "".join(links)
 
 
@@ -103,12 +103,14 @@ def _arc(cx, cy, r, a0, a1):
     return "M%.2f %.2f L%.2f %.2f A%.2f %.2f 0 %d 1 %.2f %.2f Z" % (cx, cy, x0, y0, r, r, 1 if a1 - a0 > math.pi else 0, x1, y1)
 
 
-def pie_svg(p):
-    """p: {"id", "title", "total", "levels": {level: count}}. Slices most severe first, clockwise from 12 o'clock."""
+def pie_svg(p, keys=None, var="lv", href="/report#", unit="CVEs"):
+    """p: {"id", "title", "total", "levels": {level: count}}. Slices in `keys` order (most severe first by default),
+    clockwise from 12 o'clock, coloured var(--<var>-<key>)."""
+    LEVELS = keys or globals()["LEVELS"]
     total = p["total"]
     cx = cy = 90
     r = 84
-    out = ['<svg class="pie" viewBox="0 0 180 180" role="img" aria-label="%s: %s CVEs by severity">' % (e(p["title"]), n(total))]
+    out = ['<svg class="pie" viewBox="0 0 180 180" role="img" aria-label="%s: %s %s">' % (e(p["title"]), n(total), e(unit))]
     if total == 0:
         out.append('<circle cx="90" cy="90" r="84" class="empty"/>')
     else:
@@ -120,18 +122,18 @@ def pie_svg(p):
             frac = c / total
             tip = "<title>%s: %s of %s (%.1f%%)</title>" % (e(name), n(c), n(total), 100 * frac)
             if frac >= 0.9999:
-                out.append('<circle class="slice" cx="90" cy="90" r="%d" style="fill:var(--lv-%s)">%s</circle>' % (r, key, tip))
+                out.append('<circle class="slice" cx="90" cy="90" r="%d" style="fill:var(--%s-%s)">%s</circle>' % (r, var, key, tip))
             else:
-                out.append('<path class="slice" d="%s" style="fill:var(--lv-%s)">%s</path>' % (
-                    _arc(cx, cy, r, a, a + 2 * math.pi * frac), key, tip))
+                out.append('<path class="slice" d="%s" style="fill:var(--%s-%s)">%s</path>' % (
+                    _arc(cx, cy, r, a, a + 2 * math.pi * frac), var, key, tip))
             a += 2 * math.pi * frac
     out.append("</svg>")
-    rows = "".join('<tr><td><span class="sw" style="background:var(--lv-%s)"></span>%s</td><td class="n">%s</td><td class="n">%s</td></tr>' % (
-        key, e(name), n(p["levels"].get(key, 0)),
+    rows = "".join('<tr><td><span class="sw" style="background:var(--%s-%s)"></span>%s</td><td class="n">%s</td><td class="n">%s</td></tr>' % (
+        var, key, e(name), n(p["levels"].get(key, 0)),
         ("%.1f%%" % (100 * p["levels"].get(key, 0) / total)) if total else "&ndash;") for key, name in LEVELS)
-    return ('<figure class="piecard" id="pie-%s"><figcaption><a href="/report#%s">%s</a> <span class="muted">%s CVEs</span></figcaption>'
+    return ('<figure class="piecard" id="pie-%s-%s"><figcaption><a href="%s%s">%s</a> <span class="muted">%s %s</span></figcaption>'
             '<div class="piewrap">%s<table class="pielegend"><tbody>%s</tbody></table></div></figure>' % (
-                e(p["id"]), e(p["id"]), e(p["title"]), n(total), "".join(out), rows))
+                e(var), e(p["id"]), e(href), e(p["id"]), e(p["title"]), n(total), e(unit), "".join(out), rows))
 
 
 def pies(platforms):
@@ -140,11 +142,58 @@ def pies(platforms):
     return '<div class="pies">%s</div>' % "".join(pie_svg(p) for p in platforms)
 
 
+# Compliance rule results, in slice order.
+RESULTS = [("fail", "Failed"), ("pass", "Passed"), ("skip", "Not applicable"), ("notest", "No automated check")]
+
+
+def result_pies(platforms):
+    """platforms: [{"id", "title", "total", "levels": {result: count}}] -> rule results per platform."""
+    if not platforms:
+        return ""
+    return '<div class="pies">%s</div>' % "".join(
+        pie_svg(p, RESULTS, "cr", "/compliance/report#", "rule results") for p in platforms)
+
+
+def score_bars(hosts):
+    """hosts: [{"host", "pass", "fail", "score", "href"}]: a stacked bar of passed and failed rules per host,
+    labelled with the score. Sorted lowest score first so the hosts needing work are on top."""
+    if not hosts:
+        return '<p class="muted">No host has been checked yet.</p>'
+    hosts = sorted(hosts, key=lambda h: (h["score"] if h["score"] is not None else 101, h["host"]))
+    w, lab, row, bar = 760, 230, 26, 16
+    width = w - lab - 70
+    out = ['<svg class="chart bars" viewBox="0 0 %d %d" role="img" aria-label="Compliance score per host">' % (w, row * len(hosts) + 6)]
+    for i, h in enumerate(hosts):
+        y = 3 + i * row
+        tot = h["pass"] + h["fail"]
+        pw = width * h["pass"] / tot if tot else 0
+        out.append('<g class="pt"><title>%s: %s passed, %s failed, score %s</title>' % (
+            e(h["host"]), n(h["pass"]), n(h["fail"]), "%s%%" % h["score"] if h["score"] is not None else "-"))
+        out.append('<a href="%s"><text class="ax" x="%d" y="%d" text-anchor="end">%s</text></a>' % (
+            e(h["href"]), lab - 8, y + bar - 3, e(h["host"] if len(h["host"]) <= 32 else h["host"][:31] + "…")))
+        out.append('<rect x="%d" y="%d" width="%.1f" height="%d" rx="2" style="fill:var(--cr-pass)"/>' % (lab, y, pw, bar))
+        out.append('<rect x="%.1f" y="%d" width="%.1f" height="%d" rx="2" style="fill:var(--cr-fail)"/>' % (lab + pw, y, width - pw if tot else 0, bar))
+        if not tot:
+            out.append('<rect x="%d" y="%d" width="%d" height="%d" rx="2" class="empty"/>' % (lab, y, width, bar))
+        out.append('<text class="end" x="%d" y="%d">%s</text></g>' % (lab + width + 8, y + bar - 3,
+                                                                       "%s%%" % h["score"] if h["score"] is not None else "–"))
+    out.append("</svg>")
+    legend = ('<ul class="legend"><li><span class="sw" style="background:var(--cr-pass)"></span>Passed</li>'
+              '<li><span class="sw" style="background:var(--cr-fail)"></span>Failed</li></ul>')
+    rows = "".join('<tr><td class="mono"><a href="%s">%s</a></td><td class="n">%s</td><td class="n">%s</td><td class="n">%s</td></tr>' % (
+        e(h["href"]), e(h["host"]), n(h["pass"]), n(h["fail"]), "%s%%" % h["score"] if h["score"] is not None else "–") for h in hosts)
+    table = ('<details class="tview"><summary>Show as a table</summary><div class="scroll"><table><thead><tr><th>Host</th>'
+             '<th class="n">Passed</th><th class="n">Failed</th><th class="n">Score</th></tr></thead><tbody>%s</tbody></table></div></details>' % rows)
+    return legend + "".join(out) + table
+
+
 # Light and dark colour tokens for the charts (added to render.TOKENS_*). Validated with the data-viz palette
 # checks: platforms are categorical slots 1-3; severity is an ordinal ramp (Critical .. Low) plus neutral Unknown.
-TOKENS_LIGHT = ("--pl-kubernetes:#2a78d6;--pl-linux:#eb6834;--pl-windows:#1baf7a;--pl-other:#6250d6;"
+TOKENS_LIGHT = ("--cr-pass:#2e8b57;--cr-fail:#b3261e;--cr-skip:#9aa3ae;--cr-notest:#c9d3df;"
+                "--pl-kubernetes:#2a78d6;--pl-linux:#eb6834;--pl-windows:#1baf7a;--pl-other:#6250d6;"
                 "--lv-critical:#7a0d16;--lv-high:#b3261e;--lv-medium:#e0561b;--lv-low:#f29a5c;--lv-unknown:#9aa3ae")
-TOKENS_DARK = ("--pl-kubernetes:#3987e5;--pl-linux:#d95926;--pl-windows:#199e70;--pl-other:#9085e9;"
+TOKENS_DARK = ("--cr-pass:#4fb67c;--cr-fail:#ec7a45;--cr-skip:#6b7584;--cr-notest:#465163;"
+               "--pl-kubernetes:#3987e5;--pl-linux:#d95926;--pl-windows:#199e70;--pl-other:#9085e9;"
                "--lv-critical:#f7b38a;--lv-high:#ec7a45;--lv-medium:#d4442a;--lv-low:#9e2a22;--lv-unknown:#6b7584")
 
 CSS = """
@@ -168,5 +217,6 @@ details.tview{margin-top:8px}details.tview summary{cursor:pointer;color:var(--ac
 .piewrap{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
 svg.pie{width:150px;height:150px;flex:none}svg.pie .slice{stroke:var(--card);stroke-width:2;stroke-linejoin:round}
 svg.pie .slice:hover{opacity:.85}svg.pie .empty{fill:none;stroke:var(--line);stroke-width:2}
+svg.bars .empty{fill:none;stroke:var(--line)}svg.bars a text{fill:var(--accent)}svg.bars .pt:hover rect{opacity:.85}
 table.pielegend{width:auto;flex:1;min-width:170px;border:0}table.pielegend td{padding:3px 6px;border:0;font-size:13px}
 """

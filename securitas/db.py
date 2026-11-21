@@ -252,6 +252,7 @@ class ComplianceScan(Base):
     trigger: Mapped[str] = mapped_column(String(16))                # schedule | manual
     requested_by: Mapped[str] = mapped_column(String(255), default="")
     platforms: Mapped[list] = mapped_column(JSONType, default=list)
+    hosts: Mapped[list | None] = mapped_column(JSONType, nullable=True)   # only these hosts; None = every matched host
     log: Mapped[str] = mapped_column(Text, default="")
     error: Mapped[str] = mapped_column(Text, default="")
     results: Mapped[list["ComplianceResult"]] = relationship(back_populates="scan", cascade="all, delete-orphan",
@@ -313,10 +314,24 @@ class Database:
                 time.sleep(3)
         with self._lock:
             Base.metadata.create_all(self.engine)
+            self._add_columns()
             with self.Session() as s, s.begin():
                 v = s.get(Setting, "schema_version")
                 if v is None:
                     s.add(Setting(key="schema_version", value={"v": SCHEMA_VERSION}))
+
+    # Columns added to existing tables after their first release: (table, column, SQLite type, PostgreSQL type).
+    # create_all() makes new tables but does not change existing ones.
+    ADDED_COLUMNS = [("compliance_scans", "hosts", "JSON", "JSONB")]
+
+    def _add_columns(self):
+        from sqlalchemy import inspect
+        insp = inspect(self.engine)
+        pg = self.engine.dialect.name == "postgresql"
+        for table, col, lite, pgtype in self.ADDED_COLUMNS:
+            if table in insp.get_table_names() and col not in {c["name"] for c in insp.get_columns(table)}:
+                with self.engine.begin() as c:
+                    c.execute(text('ALTER TABLE %s ADD COLUMN %s %s' % (table, col, pgtype if pg else lite)))
 
     def ping(self):
         with self.engine.connect() as c:

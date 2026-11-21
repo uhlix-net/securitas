@@ -14,6 +14,18 @@
     {% endfor %}
       <button class="btn primary">Run compliance scan</button>
     </div>
+    {% set any_hosts = pickable.values()|map("length")|sum %}
+    {% if any_hosts %}
+    <fieldset style="border:0;margin:10px 0 0;padding:0">
+      <legend class="small"><strong>Only some hosts?</strong> Tick them to scan just those (the platform boxes are then ignored). Leave all unticked to scan every matched host of the platforms ticked above.</legend>
+      {% for p in PLATFORMS %}{% if pickable.get(p) and has_checker[p] %}
+      <div class="row" style="align-items:center;gap:4px 0">
+        <span class="small muted" style="min-width:70px">{{ PLATFORM_LABEL[p] }}</span>
+        {% for h in pickable[p] %}<label class="inline"><input type="checkbox" name="host" value="{{ h.host }}"> <span class="mono">{{ h.host }}</span>{% if h.label %} <span class="muted small">({{ h.label }})</span>{% endif %}</label>{% endfor %}
+      </div>
+      {% endif %}{% endfor %}
+    </fieldset>
+    {% endif %}
   </form>
   <p class="hint">{{ checker.linux }}</p>
 </section>
@@ -29,7 +41,7 @@
     <tr>
       <td class="mono"><a href="/compliance/scans/{{ s.id }}">#{{ s.id }}</a></td>
       <td class="date">{{ fmt(s.started_at or s.created_at) }}</td>
-      <td>{% for p in s.platforms %}{{ PLATFORM_LABEL[p] }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+      <td>{% for p in s.platforms %}{{ PLATFORM_LABEL[p] }}{% if not loop.last %}, {% endif %}{% endfor %}{% if s.hosts %}<br><span class="small muted">only {{ s.hosts|join(", ") }}</span>{% endif %}</td>
       <td>{{ "Scheduled" if s.trigger == "schedule" else "Manual" }}{% if s.requested_by %} <span class="muted">by {{ s.requested_by }}</span>{% endif %}</td>
       <td><span class="badge b-{{ s.status }}">{{ STATUS_LABEL[s.status] }}</span></td>
       <td class="n">{% if c %}{{ c.done }} of {{ c.hosts }}{% endif %}</td>

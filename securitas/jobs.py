@@ -145,9 +145,9 @@ class Jobs:
         self.wake.set()
         return scan
 
-    def enqueue_compliance(self, s, platforms, trigger, user=""):
+    def enqueue_compliance(self, s, platforms, trigger, user="", hosts=None):
         scan = ComplianceScan(platforms=[p for p in PLATFORMS if p in platforms], trigger=trigger, requested_by=user,
-                              status="queued")
+                              status="queued", hosts=sorted(hosts) if hosts else None)
         s.add(scan)
         s.flush()
         self.comp_wake.set()
@@ -330,15 +330,18 @@ class Jobs:
                 self._save_comp_log(cid, lines)
 
         with self.db.Session() as s:
-            platforms = list(s.get(ComplianceScan, cid).platforms)
+            cs = s.get(ComplianceScan, cid)
+            platforms, only = list(cs.platforms), set(cs.hosts or [])
             plan, _ = self.compliance_plan(s)
+            if only:
+                plan = {p: [x for x in lst if x["host"] in only] for p, lst in plan.items()}
             snap = {p: [{**x, "bench_id": x["bench"].id if x["bench"] else None,
                          "key": x["bench"].key if x["bench"] else "",
                          "bench_name": compliance.display_name(x["bench"], self.cfg.timezone) if x["bench"] else "",
                          "profile": x["bench"].profile if x["bench"] else "",
                          "system_type": "workstation" if x["bench"] and x["bench"].profile.endswith("workstation") else "server",
                          "bench": None, "rules": x["rules_list"]} for x in plan.get(p, [])] for p in platforms}
-        say("started: " + ", ".join(platforms))
+        say("started: " + ", ".join(platforms) + ("; only " + ", ".join(sorted(only)) if only else ""))
         statuses = []
         for p in platforms:
             t0 = time.time()

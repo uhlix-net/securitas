@@ -18,7 +18,7 @@ serves the results as web pages with an **Export to PDF** button.
 - **Severity filter.** The report, past scans and the PDF can be narrowed to one or more severity levels
   (Critical, High / Important, Medium / Moderate, Low, Unknown) and to priority CVEs only. The filter is in
   the address, so a filtered view can be bookmarked or shared; Export to PDF uses the same filter.
-- **Summary first.** After sign-in, a summary page lists each platform with its scan status, when it was
+- **Vulnerability summary.** *Vulnerabilities → Summary* lists each platform with its scan status, when it was
   last scanned, and its counts: systems, priority CVEs, known exploited, critical and high. Each platform
   name links to its section of the full report at `/report`. The same table opens the report and the PDF.
   Below it, a graph of distinct CVEs per platform over time (daily for 7 days, weekly for 3 months or
@@ -33,8 +33,9 @@ serves the results as web pages with an **Export to PDF** button.
   WinRM password), targets, schedules, users and vulnerability sources on the Settings pages. Changes
   apply immediately; secrets are encrypted in the database and never shown again. Anything not set
   there comes from the Helm values, so a plain Helm install still works unchanged.
-- **Two sections.** The top menu has *Vulnerabilities* (summary, report, scans, schedules, sources) and
-  *Compliance* (summary, report, scans, schedules, benchmarks), then *Targets*, *Audit log* and *Settings*.
+- **Home page and two sections.** *Home* sums up vulnerabilities and compliance with charts. The top menu then
+  has *Vulnerabilities* (summary, report, scans, schedules, sources) and *Compliance* (summary, report, scans,
+  schedules, benchmarks), then *Targets*, *Audit log*, *Settings* and *About*.
 - **Transparent sources.** The Sources page (Vulnerabilities → Sources) explains every data source (CISA KEV, EPSS, Trivy, dnf
   advisories, Microsoft release data), when it was last fetched, what turning it off changes, and shows
   the exact script each scanner runs on a host. KEV and EPSS can be turned off; each platform can be

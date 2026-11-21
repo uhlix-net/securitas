@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+  <h2>About Securitas</h2>
+  <p class="sub">Version <span class="mono">{{ version }}</span>{% if cfg.cluster_name %} · {{ cfg.cluster_name }}{% endif %}</p>
+  <p>Securitas reports vulnerabilities and compliance for Kubernetes, Linux and Windows. It scans on a schedule or on demand, ranks CVEs by the CISA Known Exploited Vulnerabilities catalog and EPSS scores, checks hosts against CIS benchmarks, keeps every scan in its history, and serves the results as web pages and PDFs.</p>
+  <div class="scroll"><table>
+    <tbody>
+      <tr><th style="width:220px">Vulnerability scans</th><td>Kubernetes: Trivy Operator's vulnerability reports. Linux: pending security advisories (<span class="mono">dnf updateinfo</span>) over SSH. Windows: OS build compared with Microsoft's security release data, over WinRM. Nothing is installed or changed on the scanned systems. Platforms turned on: {% for p in platforms_on %}{{ PLATFORM_LABEL[p] }}{% if not loop.last %}, {% endif %}{% else %}none{% endfor %}. Details on <a href="/vulnerabilities/sources">Vulnerabilities → Sources</a>.</td></tr>
+      <tr><th>Ranking</th><td><a href="https://www.cisa.gov/known-exploited-vulnerabilities-catalog" rel="noopener noreferrer">CISA KEV</a> and <a href="https://www.first.org/epss/" rel="noopener noreferrer">EPSS</a>.</td></tr>
+      <tr><th>Compliance checks</th><td>CIS benchmarks from <a href="https://github.com/ansible-lockdown" rel="noopener noreferrer">Ansible-Lockdown</a> roles ({{ nbench }} loaded, see <a href="/compliance/benchmarks">Benchmarks</a>), checked with <a href="https://github.com/goss-org/goss" rel="noopener noreferrer">Goss</a> and the benchmarks' audit content. Platforms with a checker: {% for p in checkers %}{{ PLATFORM_LABEL[p] }}{% if not loop.last %}, {% endif %}{% else %}none{% endfor %}.</td></tr>
+      <tr><th>Database</th><td>{{ "PostgreSQL" if db_kind == "postgresql" else "SQLite" if db_kind == "sqlite" else db_kind }}</td></tr>
+      <tr><th>Time zone</th><td>{{ cfg.timezone }} (schedules and times on these pages)</td></tr>
+      <tr><th>Your account</th><td>{{ user.display_name or user.username }} · {{ ROLE_LABEL[user.role] }} · signed in via {{ sess.method or "?" }}</td></tr>
+      <tr><th>Source code</th><td><a href="https://github.com/uhlix-net/securitas" rel="noopener noreferrer">github.com/uhlix-net/securitas</a> · <a href="https://github.com/uhlix-net/securitas/blob/main/CHANGELOG.md" rel="noopener noreferrer">changelog</a></td></tr>
+      <tr><th>Licence</th><td>Apache License 2.0</td></tr>
+    </tbody></table></div>
+</section>
+{% endblock %}

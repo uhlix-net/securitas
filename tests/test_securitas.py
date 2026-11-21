@@ -507,9 +507,10 @@ class Web(unittest.TestCase):
 
     def test_summary_landing_page(self):
         login(self.c, "admin", ADMIN_PW)
-        self.assertIn("No scan has finished yet", self.c.get("/").text)
+        self.assertIn("No scan has finished yet", self.c.get("/vulnerabilities").text)
+        self.assertIn("No scan has finished yet", self.c.get("/").text)                 # Home says so too
         self._scan(["kubernetes"])
-        page = self.c.get("/").text
+        page = self.c.get("/vulnerabilities").text
         self.assertIn("<title>Summary", page)
         self.assertIn('href="/report#kubernetes"', page)
         m = self.jobs.current_model()
@@ -525,14 +526,14 @@ class Web(unittest.TestCase):
         with self.db.Session() as s, s.begin():
             self.jobs.enqueue(s, ["kubernetes"], "manual", "admin")
         self.jobs.run_scan(self.jobs._claim())
-        page = self.c.get("/").text
+        page = self.c.get("/vulnerabilities").text
         self.assertIn('id="history"', page)
-        self.assertIn('class="on" aria-current="true" href="/?range=week#history"', page)   # default: weekly
+        self.assertIn('class="on" aria-current="true" href="/vulnerabilities?range=week#history"', page)   # default: weekly
         self.assertIn("<title>Kubernetes,", page)
-        self.assertIn('id="pie-kubernetes"', page)
+        self.assertIn('id="pie-lv-kubernetes"', page)
         self.assertNotIn("<script", page)
-        self.assertIn('aria-current="true" href="/?range=month#history"', self.c.get("/?range=month").text)
-        self.assertIn('aria-current="true" href="/?range=week#history"', self.c.get("/?range=bogus").text)
+        self.assertIn('aria-current="true" href="/vulnerabilities?range=month#history"', self.c.get("/vulnerabilities?range=month").text)
+        self.assertIn('aria-current="true" href="/vulnerabilities?range=week#history"', self.c.get("/vulnerabilities?range=bogus").text)
         rep_ = self.c.get("/report").text
         self.assertIn("CVE-2099-0003", rep_)                       # low, not a priority: listed now
         self.assertIn('name="sev" value="low" checked', rep_)
@@ -1218,7 +1219,10 @@ class Menus(unittest.TestCase):
 
     def test_top_and_sub_menus(self):
         page = self.c.get("/report").text
-        self.assertIn('<a href="/" class="on">Vulnerabilities</a>', page)
+        self.assertIn('<a href="/">Home</a>', page)
+        self.assertLess(page.index('>Home</a>'), page.index('>Vulnerabilities</a>'))        # Home left of Vulnerabilities
+        self.assertIn('<a href="/vulnerabilities" class="on">Vulnerabilities</a>', page)
+        self.assertIn('<a href="/about">About</a>', page)
         self.assertIn('<a href="/compliance">Compliance</a>', page)
         self.assertIn('<a href="/report" class="on">Report</a>', page)
         for href in ("/scans", "/vulnerabilities/sources"):
@@ -1229,7 +1233,8 @@ class Menus(unittest.TestCase):
         self.assertIn('<a href="/compliance">Summary</a>', page)             # the Summary tab is not on for /compliance/scans
         self.assertIn('<a href="/compliance/report">Report</a>', page)
         self.assertIn('<a href="/compliance/schedules">Schedules</a>', page)
-        page = self.c.get("/").text
+        page = self.c.get("/vulnerabilities").text
+        self.assertIn('<a href="/vulnerabilities" class="on">Summary</a>', page)
         self.assertIn('<a href="/vulnerabilities/schedules">Schedules</a>', page)
         self.assertIn('<a href="/targets">Targets</a>', page)                # top level for admins
         self.assertIn('<a href="/audit">Audit log</a>', page)
@@ -1240,7 +1245,7 @@ class Menus(unittest.TestCase):
 
     def test_old_addresses_redirect(self):
         for old, new in (("/settings/sources", "/vulnerabilities/sources"), ("/settings/compliance", "/compliance/benchmarks"),
-                         ("/settings/compliance/7", "/compliance/benchmarks/7"), ("/vulnerabilities", "/"),
+                         ("/settings/compliance/7", "/compliance/benchmarks/7"),
                          ("/settings/schedules", "/vulnerabilities/schedules"), ("/settings/targets", "/targets"),
                          ("/settings/audit", "/audit"), ("/admin/targets", "/targets")):
             r = self.c.get(old, follow_redirects=False)
@@ -1358,9 +1363,10 @@ class ComplianceScans(unittest.TestCase):
             sc = Scan(trigger="manual", platforms=["linux"], status="done")
             s.add(sc)
             s.flush()
-            s.add(PlatformResult(scan_id=sc.id, platform="linux", status="done", raw={"systems": [
-                {"name": "rocky1", "os": "Rocky Linux 9.9"}, {"name": "rocky2", "os": "Rocky Linux 9.9"},
-                {"name": "ubu1", "os": "Ubuntu 22.04.4 LTS"}]}))
+            s.add(PlatformResult(scan_id=sc.id, platform="linux", status="done", raw={
+                "id": "linux", "title": "Linux", "totals": {}, "findings": [], "system_columns": [], "warnings": [], "failed": 0,
+                "systems": [{"name": "rocky1", "os": "Rocky Linux 9.9"}, {"name": "rocky2", "os": "Rocky Linux 9.9"},
+                            {"name": "ubu1", "os": "Ubuntu 22.04.4 LTS"}]}))
         self.c.post("/compliance/benchmarks", data={"csrf": csrf(self.c, "/compliance/benchmarks")},
                     files={"file": ("r.zip", role_zip(top="RHEL9-CIS-1.0.0"), "application/zip")})
         self.seen = []
@@ -1412,6 +1418,36 @@ class ComplianceScans(unittest.TestCase):
         self.assertIn("/compliance/scans/%d/hosts/%d" % (cid, res["rocky1"].id), report)
         hist = self.c.get("/compliance/scans").text
         self.assertIn("1 of 3", hist)
+
+    def test_selected_hosts_only(self):
+        page = self.c.get("/compliance/scans").text
+        self.assertIn('name="host" value="rocky1"', page)
+        self.assertNotIn('name="host" value="ubu1"', page)            # not matched to a benchmark: not offered
+        r = self.c.post("/compliance/scans", data={"csrf": csrf(self.c, "/compliance/scans"), "host": ["rocky1", "nope"]},
+                        follow_redirects=False)                       # no platform ticked: the hosts decide
+        self.assertEqual(r.headers["location"], "/compliance/scans/1?ok=queued")
+        self.jobs.run_compliance(self.jobs._claim_compliance())
+        self.assertEqual([t["host"] for t in self.seen], ["rocky1"])
+        from securitas.db import ComplianceResult, ComplianceScan
+        with self.db.Session() as s:
+            self.assertEqual(s.get(ComplianceScan, 1).hosts, ["rocky1"])
+            self.assertEqual(s.get(ComplianceScan, 1).status, "done")
+            self.assertEqual(s.scalars(select(ComplianceResult.host)).all(), ["rocky1"])   # ubu1 not even skipped
+        self.assertIn("only rocky1", self.c.get("/compliance/scans").text)
+        self.assertIn("noplat", self.c.post("/compliance/scans", data={"csrf": csrf(self.c, "/compliance/scans"), "host": "ubu1"},
+                                            follow_redirects=False).headers["location"])
+
+    def test_home_and_about(self):
+        self.run_scan()
+        home = self.c.get("/").text
+        self.assertIn("<title>Home", home)
+        self.assertIn("Compliance score per host", home)
+        self.assertIn('id="pie-cr-linux"', home)
+        self.assertIn("50.0%", home)
+        about = self.c.get("/about").text
+        self.assertIn("About Securitas", about)
+        self.assertIn('<a href="/about" class="on">About</a>', about)
+        self.assertIn("Apache License 2.0", about)
 
     def test_result_survives_benchmark_removal(self):
         cid = self.run_scan()
