@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/release-0.5.0.png" alt="Securitas: Vulnerabilities and Compliance for Kubernetes, Linux and Windows" width="100%">
+</p>
+
 # Securitas
 
 CVE reports for Kubernetes, Linux and Windows. Securitas scans on a schedule or on demand, ranks
