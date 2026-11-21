@@ -160,6 +160,12 @@ from `memberOf`. With `groupBase` set, nested groups are found with the Active D
 in-chain matching rule. Configure it in **Settings > Authentication > LDAP** or with `auth.ldap.*`. On the
 same page, admins can look a user up to see their DN, groups and the resulting role.
 
+### Preparing targets
+
+[docs/target-setup.md](docs/target-setup.md) walks through preparing Linux and Windows hosts: the scan accounts for
+vulnerability scans, and Goss/syver, the audit content and the limited sudo rule or scheduled task for compliance
+checks. Ready-made files and example Ansible playbooks are in [`contrib/`](contrib).
+
 ### Linux scans
 
 Create a user on each host that can log in with an SSH key. It needs no sudo. Paste the private key in

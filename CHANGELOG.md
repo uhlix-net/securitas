@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.5.0 (unreleased)
+## 0.5.0 (2026-11-21)
 
-Compliance: a library of CIS benchmarks, and Linux hosts checked against them.
+Compliance: a library of CIS benchmarks, and Linux and Windows hosts checked against them.
 
 ### New
 
@@ -96,6 +96,10 @@ Compliance: a library of CIS benchmarks, and Linux hosts checked against them.
   - The vulnerability Report and Scans addresses (`/report`, `/scans`) are unchanged. The old addresses
     (`/settings/sources`, `/settings/schedules`, `/settings/targets`, `/settings/audit`, `/settings/compliance`)
     redirect to the new ones.
+
+- **Target setup guide.** [docs/target-setup.md](docs/target-setup.md) explains how to prepare Linux and Windows
+  hosts for vulnerability scans and compliance checks. [`contrib/`](contrib) has the wrapper scripts, the sudo rule,
+  the scheduled-task installer and example Ansible playbooks.
 
 ### Upgrading from 0.4.0
 

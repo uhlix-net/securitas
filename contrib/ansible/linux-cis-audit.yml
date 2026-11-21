@@ -1,0 +1,185 @@
+---
+#---
+# Securitas CIS audit for Linux (Goss) - example playbook, see docs/target-setup.md
+#
+# Prepares a Rocky/RHEL host for Securitas compliance scans (Compliance > Scans):
+#   - Goss (official goss-org release, checksum-pinned) at /usr/local/bin/goss
+#   - the Ansible-Lockdown audit content for each benchmark, cloned at a pinned commit, root-owned, at
+#     /opt/securitas-cis/<benchmark key>/ (the key is the Securitas benchmark name, e.g. RHEL9-CIS-2.4.2)
+#   - the wrapper /usr/local/sbin/securitas-cis-audit, which runs `goss validate` read-only on that content
+#     and prints JSON
+#   - one sudo rule: the scan account may run only the wrapper, as root, without a password
+# The scan account cannot change any of these files, so the sudo rule does not give it a way to run its own
+# commands as root. Goss only reads and runs the audit content's checks; it changes nothing on the host.
+#
+# Run against your RHEL-family hosts after the scan account exists (docs/target-setup.md). Set scan_user to its
+# name. Use --check --diff first.
+# Adding a benchmark version: add an entry to securitas_cis_benchmarks with the audit repo commit that matches
+# the role's CIS version (the RHEL9-CIS-Audit branch benchmark_v<CIS version>), and upload the role zip in Securitas.
+#---
+
+- hosts: all
+  become: yes
+
+  vars:
+    scan_user: securitas            # the Securitas scan account on the hosts
+    goss_version: "0.4.10"
+    goss_sha256: "26e365428946294bcec0c61d867bb3c8349f39feb3d0e6f59084e98632785cc7"   # goss_0.4.10_linux_x86_64.tar.gz
+    cis_root: /opt/securitas-cis
+    securitas_cis_benchmarks:
+      # RHEL9-CIS role 2.4.2 implements CIS RHEL 9 v2.0.0 -> RHEL9-CIS-Audit branch benchmark_v2.0.0
+      - key: RHEL9-CIS-2.4.2
+        repo: https://github.com/ansible-lockdown/RHEL9-CIS-Audit.git
+        version: d9c0f2ce3be692d27d21f613030311ad7309fa9f
+        os_major: "9"
+
+  tasks:
+
+  - name: Securitas CIS Audit | Only x86_64 RHEL-family hosts
+    ansible.builtin.assert:
+      that:
+        - ansible_facts['os_family'] == "RedHat"
+        - ansible_facts['architecture'] == "x86_64"
+      fail_msg: "This play installs the x86_64 Goss build for RHEL-family hosts only."
+
+  - name: Securitas CIS Audit | Scan account exists
+    ansible.builtin.getent:
+      database: passwd
+      key: "{{ scan_user }}"
+
+  #---
+  # Goss
+  #---
+  - name: Securitas CIS Audit | Download Goss {{ goss_version }}
+    ansible.builtin.get_url:
+      url: "https://github.com/goss-org/goss/releases/download/v{{ goss_version }}/goss_{{ goss_version }}_linux_x86_64.tar.gz"
+      dest: "/var/tmp/goss_{{ goss_version }}_linux_x86_64.tar.gz"
+      checksum: "sha256:{{ goss_sha256 }}"
+      mode: "0644"
+
+  - name: Securitas CIS Audit | Unpack directory
+    ansible.builtin.file:
+      path: "/var/tmp/goss-{{ goss_version }}"
+      state: directory
+      mode: "0755"
+
+  - name: Securitas CIS Audit | Unpack Goss
+    ansible.builtin.unarchive:
+      src: "/var/tmp/goss_{{ goss_version }}_linux_x86_64.tar.gz"
+      dest: "/var/tmp/goss-{{ goss_version }}"
+      remote_src: true
+      include: [goss]
+      creates: "/var/tmp/goss-{{ goss_version }}/goss"
+
+  - name: Securitas CIS Audit | Install Goss
+    ansible.builtin.copy:
+      src: "/var/tmp/goss-{{ goss_version }}/goss"
+      dest: /usr/local/bin/goss
+      remote_src: true
+      owner: root
+      group: root
+      mode: "0755"
+
+  #---
+  # Audit content (root-owned, pinned commit)
+  #---
+  - name: Securitas CIS Audit | Content directory
+    ansible.builtin.file:
+      path: "{{ cis_root }}"
+      state: directory
+      owner: root
+      group: root
+      mode: "0755"
+
+  - name: Securitas CIS Audit | Audit content
+    ansible.builtin.git:
+      repo: "{{ item.repo }}"
+      dest: "{{ cis_root }}/{{ item.key }}"
+      version: "{{ item.version }}"
+      force: true
+      umask: "0022"
+    loop: "{{ securitas_cis_benchmarks }}"
+    loop_control: {label: "{{ item.key }}"}
+    when: ansible_facts['distribution_major_version'] == item.os_major
+
+  - name: Securitas CIS Audit | Content is owned by root and not writable by others
+    ansible.builtin.file:
+      path: "{{ cis_root }}/{{ item.key }}"
+      owner: root
+      group: root
+      mode: "u=rwX,go=rX"
+      recurse: true
+    loop: "{{ securitas_cis_benchmarks }}"
+    loop_control: {label: "{{ item.key }}"}
+    when: ansible_facts['distribution_major_version'] == item.os_major
+
+  #---
+  # Wrapper and sudo rule
+  #---
+  - name: Securitas CIS Audit | Wrapper
+    ansible.builtin.copy:
+      dest: /usr/local/sbin/securitas-cis-audit
+      owner: root
+      group: root
+      mode: "0755"
+      content: |
+        #!/bin/bash
+        # Managed by Ansible (Securitas contrib/ansible/linux-cis-audit.yml). Do not edit by hand.
+        # Securitas compliance check: runs Goss read-only against the audit content Ansible installed under
+        # {{ cis_root }}/<benchmark key>/ and prints Goss's JSON. {{ scan_user }} may run only this via sudo.
+        # Usage: securitas-cis-audit <benchmark key> [server|workstation]
+        set -u
+        export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
+        key="${1:-}"
+        kind="${2:-server}"
+        if ! [[ "$key" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]; then echo '{"error":"bad benchmark key"}'; exit 2; fi
+        case "$kind" in server) st=Server ;; workstation) st=Workstation ;; *) echo '{"error":"bad system type"}'; exit 2 ;; esac
+        dir="{{ cis_root }}/$key"
+        if [ ! -f "$dir/goss.yml" ] || [ ! -f "$dir/vars/CIS.yml" ]; then
+          echo "{\"error\":\"benchmark $key is not installed on this host\"}"; exit 3
+        fi
+        clean() { printf '%s' "$1" | tr -cd 'A-Za-z0-9._ -'; }
+        os_name=$(. /etc/os-release 2>/dev/null; echo "${NAME:-unknown}" | cut -d' ' -f1)
+        os_ver=$(. /etc/os-release 2>/dev/null; echo "${VERSION_ID:-unknown}")
+        uuid=$(cat /sys/class/dmi/id/product_uuid 2>/dev/null || echo unknown)
+        inline=$(printf '{"benchmark_type":"CIS","benchmark_os":"%s","machine_uuid":"%s","epoch":"%s","os_locale":"%s","os_release":"%s","os_distribution":"%s","os_hostname":"%s","auto_group":"securitas","system_type":"%s"}' \
+          "$(clean "${key%%-*}")" "$(clean "$uuid")" "$(date +%s)" "$(clean "$(date +%Z)")" "$(clean "$os_ver")" \
+          "$(clean "$os_name")" "$(clean "$(hostname)")" "$st")
+        cd "$dir" || exit 3
+        exec nice -n 10 /usr/local/bin/goss -g "$dir/goss.yml" --vars "$dir/vars/CIS.yml" --vars-inline "$inline" \
+          validate --max-concurrent 10 -f json
+
+  - name: Securitas CIS Audit | sudo rule (the wrapper only)
+    ansible.builtin.copy:
+      dest: /etc/sudoers.d/securitas-cis
+      owner: root
+      group: root
+      mode: "0440"
+      validate: /usr/sbin/visudo -cf %s
+      content: |
+        # Managed by Ansible (Securitas contrib/ansible/linux-cis-audit.yml)
+        # Securitas compliance scans: run the read-only CIS audit wrapper as root, nothing else.
+        Defaults:{{ scan_user }} !requiretty
+        {{ scan_user }} ALL=(root) NOPASSWD: /usr/local/sbin/securitas-cis-audit
+
+  #---
+  # Checks (read-only)
+  #---
+  - name: Securitas CIS Audit | Goss version
+    ansible.builtin.command: /usr/local/bin/goss --version
+    register: goss_v
+    changed_when: false
+    check_mode: false
+    failed_when: goss_version not in goss_v.stdout
+
+  - name: Securitas CIS Audit | What the scan account may run
+    ansible.builtin.command: "sudo -l -U {{ scan_user }}"
+    register: sudo_l
+    changed_when: false
+    check_mode: false
+
+  - name: Securitas CIS Audit | Summary
+    ansible.builtin.debug:
+      msg:
+        goss: "{{ goss_v.stdout }}"
+        sudo: "{{ sudo_l.stdout_lines | select('search', 'securitas-cis-audit') | list }}"
