@@ -1266,10 +1266,10 @@ class Menus(unittest.TestCase):
         self.assertIn("no active benchmark for this OS (ubuntu22)", row("ubu1"))
         self.assertIn("run a vulnerability scan", row("new1"))
         self.assertIn("Not checked", row("win1"))
-        self.assertIn("cannot run yet", self.c.get("/compliance/scans").text)
+        self.assertIn("(no checker yet)", self.c.get("/compliance/scans").text)
         summary = self.c.get("/compliance").text
         linux = re.search(r'compliance/report#linux"><strong>Linux</strong></a></td>(.*?)</tr>', summary, re.S).group(1)
-        self.assertEqual(re.findall(r'<td class="n">(\d+)</td>', linux), ["3", "1"])     # 3 Linux systems, 1 matched
+        self.assertEqual(re.findall(r'<td class="n">(\d+)</td>', linux), ["3", "1", "0"])   # 3 systems, 1 matched, 0 checked
         self.assertIn("RHEL9-CIS-1.0.0", linux)
 
     def test_compliance_schedules_are_separate(self):
@@ -1283,7 +1283,7 @@ class Menus(unittest.TestCase):
             self.assertEqual(s.scalar(select(ComplianceSchedule.cron).where(ComplianceSchedule.platform == "linux")), "0 6 * * 0")
             self.assertEqual(s.scalar(select(Schedule.cron).where(Schedule.platform == "linux")), "0 5 * * *")   # untouched
         page = self.c.get("/compliance/schedules").text
-        self.assertIn("do not start scans yet", page)
+        self.assertIn("start nothing: Kubernetes, Windows", page)
         self.assertIn("0 6 * * 0", self.c.get("/compliance").text)
         self.assertIn('action="/vulnerabilities/schedules/linux"', self.c.get("/vulnerabilities/schedules").text)
 
@@ -1301,3 +1301,142 @@ class Menus(unittest.TestCase):
         from securitas.compliance import os_key_for
         self.assertEqual([os_key_for(x) for x in ("Rocky Linux 9.6", "AlmaLinux 8.10", "Windows Server 2022 Standard", "")],
                          ["rhel9", "rhel8", "windows2022", ""])
+
+
+GOSS_OUT = json.dumps({"results": [
+    {"title": "1.1.1 | Ensure cramfs is not available | disabled", "successful": True, "skipped": False, "result": 0,
+     "meta": {"CIS_ID": "1.1.1"}, "summary-line": "ok"},
+    {"title": "1.1.1 | Ensure cramfs is not available | blacklist", "successful": False, "skipped": False, "result": 1,
+     "meta": {"CIS_ID": "1.1.1"}, "summary-line": "Command: blacklist_cramfs: stdout: patterns not found: [/blacklist cramfs/]"},
+    {"title": "2.10.1 | Ensure ssh is configured", "successful": True, "skipped": False, "result": 0, "meta": {"CIS_ID": ["2.10.1"]}},
+    {"title": "2.10.1 | Ensure ssh is configured | Manual Check Required", "successful": False, "skipped": False, "result": 1,
+     "meta": {"CIS_ID": ["2.10.1"]}},
+    {"title": "9.9 | Something | Manual Check Required", "successful": False, "skipped": False, "result": 1, "meta": {"CIS_ID": ["9.9"]}},
+    {"title": "1.1.2 | Ensure audit log mode", "successful": False, "skipped": True, "result": 2, "meta": {"CIS_ID": "1.1.2, 1.1.3"}},
+    {"title": "Benchmark meta", "successful": True, "skipped": False, "result": 0, "meta": {}},
+], "summary": {"test-count": 7, "failed-count": 3, "skipped-count": 1, "total-duration": 1000}})
+
+
+class ComplianceChecker(unittest.TestCase):
+    def test_parse_and_evaluate(self):
+        from securitas import scan_compliance as sc
+        by, summary = sc.parse_goss("some banner\n" + GOSS_OUT)
+        self.assertEqual(sorted(by), ["1.1.1", "1.1.2", "1.1.3", "2.10.1", "9.9"])     # list and string CIS_IDs
+        self.assertEqual(summary["test-count"], 7)
+        rules, n = sc.evaluate([{"id": "1.1.1", "title": "a", "kind": "PATCH"}, {"id": "2.10.1", "title": "b", "kind": "PATCH"},
+                                {"id": "1.1.2", "title": "c", "kind": "PATCH"}, {"id": "9.9", "title": "d", "kind": "AUDIT"}], by)
+        # 2.10.1 passes although its manual placeholder "fails"; 9.9 has only a placeholder: no automated check
+        self.assertEqual([r["status"] for r in rules], ["fail", "pass", "skip", "notest"])
+        self.assertEqual((n["pass"], n["fail"], n["skip"], n["notest"], n["checked"], n["score"]), (1, 1, 1, 1, 4, 50.0))
+
+    def test_parse_errors(self):
+        from securitas import scan_compliance as sc
+        with self.assertRaisesRegex(RuntimeError, "sudo refused"):
+            sc.parse_goss("sudo: a password is required\n")
+        with self.assertRaisesRegex(RuntimeError, "not installed"):
+            sc.parse_goss("sudo: /usr/local/sbin/securitas-cis-audit: command not found")
+        with self.assertRaisesRegex(RuntimeError, "not installed on"):
+            sc.parse_goss('{"error": "benchmark RHEL9-CIS-9.9.9 is not installed on this host"}')
+
+    def test_remote_command_is_quoted(self):
+        from securitas import scan_compliance as sc
+        self.assertEqual(sc.remote_command("RHEL9-CIS-2.4.2"), "sudo -n /usr/local/sbin/securitas-cis-audit RHEL9-CIS-2.4.2 server")
+        with self.assertRaises(ValueError):
+            sc.remote_command("x; rm -rf /")
+
+
+class ComplianceScans(unittest.TestCase):
+    def setUp(self):
+        self.app, self.db, self.jobs, self.cfg = make_app()
+        self.c = client(self.app)
+        login(self.c, "admin", ADMIN_PW)
+        from securitas.db import PlatformResult, Scan, Target
+        with self.db.Session() as s, s.begin():
+            s.add_all([Target(platform="linux", host="rocky1", label="Web"), Target(platform="linux", host="rocky2"),
+                       Target(platform="linux", host="ubu1")])
+            sc = Scan(trigger="manual", platforms=["linux"], status="done")
+            s.add(sc)
+            s.flush()
+            s.add(PlatformResult(scan_id=sc.id, platform="linux", status="done", raw={"systems": [
+                {"name": "rocky1", "os": "Rocky Linux 9.9"}, {"name": "rocky2", "os": "Rocky Linux 9.9"},
+                {"name": "ubu1", "os": "Ubuntu 22.04.4 LTS"}]}))
+        self.c.post("/compliance/benchmarks", data={"csrf": csrf(self.c, "/compliance/benchmarks")},
+                    files={"file": ("r.zip", role_zip(top="RHEL9-CIS-1.0.0"), "application/zip")})
+        self.seen = []
+        from securitas import scan_compliance as scm
+
+        def fake(targets, say):
+            self.seen = targets
+            by, _ = scm.parse_goss(GOSS_OUT)
+            out = {}
+            for t in targets:
+                if t["host"] == "rocky2":
+                    out[t["host"]] = RuntimeError("sudo refused: no rule")
+                else:
+                    rules, n = scm.evaluate(t["rules"], by)
+                    out[t["host"]] = {"os": "Rocky Linux 9.9", "rules": rules, "counts": n}
+            return out
+        self.jobs.compliance_scanners = {"linux": fake}
+
+    def run_scan(self):
+        r = self.c.post("/compliance/scans", data={"csrf": csrf(self.c, "/compliance/scans"), "platform": "linux"},
+                        follow_redirects=False)
+        self.assertEqual(r.headers["location"], "/compliance/scans/1?ok=queued")
+        cid = self.jobs._claim_compliance()
+        self.jobs.run_compliance(cid)
+        return cid
+
+    def test_scan_results_pages(self):
+        cid = self.run_scan()
+        self.assertEqual([(t["host"], t["key"], [r["id"] for r in t["rules"]]) for t in self.seen],
+                         [("rocky1", "RHEL9-CIS-1.0.0", ["1.1.1", "2.10.1"]), ("rocky2", "RHEL9-CIS-1.0.0", ["1.1.1", "2.10.1"])])
+        from securitas.db import ComplianceResult, ComplianceScan
+        with self.db.Session() as s:
+            self.assertEqual(s.get(ComplianceScan, cid).status, "partial")
+            res = {r.host: r for r in s.scalars(select(ComplianceResult)).all()}
+        self.assertEqual((res["rocky1"].status, res["rocky1"].counts["score"]), ("done", 50.0))
+        self.assertEqual(res["rocky2"].status, "failed")
+        self.assertEqual((res["ubu1"].status, res["ubu1"].error), ("skipped", "no active benchmark for Ubuntu 22.04.4 LTS"))
+        page = self.c.get("/compliance/scans/%d" % cid).text
+        self.assertIn("sudo refused", page)
+        self.assertIn("50.0%", page)
+        host = self.c.get("/compliance/scans/%d/hosts/%d" % (cid, res["rocky1"].id)).text
+        self.assertIn("patterns not found", host)                     # the failed test's message
+        self.assertLess(host.index("1.1.1"), host.index("2.10.1"))      # failed first
+        self.assertNotIn("2.10.1", self.c.get("/compliance/scans/%d/hosts/%d?status=fail" % (cid, res["rocky1"].id)).text)
+        summary = self.c.get("/compliance").text
+        self.assertIn("50.0%", summary)
+        self.assertIn("Checked", summary)
+        report = self.c.get("/compliance/report").text
+        self.assertIn("/compliance/scans/%d/hosts/%d" % (cid, res["rocky1"].id), report)
+        hist = self.c.get("/compliance/scans").text
+        self.assertIn("1 of 3", hist)
+
+    def test_result_survives_benchmark_removal(self):
+        cid = self.run_scan()
+        from securitas.db import Benchmark, ComplianceResult
+        with self.db.Session() as s:
+            bid = s.scalar(select(Benchmark.id))
+            rid = s.scalar(select(ComplianceResult.id).where(ComplianceResult.host == "rocky1"))
+        self.c.post("/compliance/benchmarks/%d" % bid, data={"csrf": csrf(self.c, "/compliance/benchmarks/%d" % bid),
+                                                             "action": "delete", "confirm": "on"})
+        page = self.c.get("/compliance/scans/%d/hosts/%d" % (cid, rid)).text
+        self.assertIn("since removed", page)
+        self.assertIn("Ensure cramfs is not available", page)          # rule titles kept with the result
+
+    def test_viewer_cannot_run_and_schedule_runs(self):
+        from securitas.db import ComplianceSchedule, ComplianceScan
+        import datetime as dt
+        with self.db.Session() as s, s.begin():
+            s.add(ComplianceSchedule(platform="linux", cron="0 6 * * 0", enabled=True,
+                                     next_run=dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=1)))
+            s.add(ComplianceSchedule(platform="windows", cron="0 6 * * 0", enabled=True,
+                                     next_run=dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=1)))
+        self.jobs.run_due()
+        with self.db.Session() as s:
+            self.assertEqual([x.platforms for x in s.scalars(select(ComplianceScan)).all()], [["linux"]])   # windows: no checker
+        self.c.post("/settings/users", data={"csrf": csrf(self.c), "username": "vic", "password": "a-long-password-1", "role": "viewer"})
+        v = client(self.app)
+        login(v, "vic", "a-long-password-1")
+        r = v.post("/compliance/scans", data={"csrf": csrf(v, "/compliance/scans"), "platform": "linux"}, follow_redirects=False)
+        self.assertEqual(r.status_code, 403)

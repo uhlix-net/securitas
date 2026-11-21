@@ -45,7 +45,11 @@ serves the results as web pages with an **Export to PDF** button.
   are read from the role: rule ID, title, profile levels, NIST 800-53 mappings and the role's on/off default.
   Several versions can be loaded side by side; one per operating system is active. Pick a profile (Level 1
   Server by default), switch single rules on or off, download the original zip, or remove a benchmark.
-  Nothing in an uploaded zip is run. Checking hosts against the active benchmark comes in a later release.
+  Nothing in an uploaded zip is run.
+- **Linux compliance checks.** Compliance scans check each Linux host against its active benchmark with Goss and
+  the benchmark's Ansible-Lockdown audit content, through one root-owned wrapper the scan account may run with
+  sudo (nothing else). Per host: rules passed, failed, not applicable and without an automated check, a score,
+  and every rule's tests. Windows and Kubernetes compliance come later.
 - **Sign-in and roles.**
   - Sign-in: local accounts, LDAP (Active Directory) and OpenID Connect single sign-on.
   - Three roles: Viewer, Operator and Admin. LDAP and SSO users get their role from their groups.

@@ -241,6 +241,46 @@ class BenchmarkFile(Base):
     uploaded_by: Mapped[str] = mapped_column(String(255), default="")
 
 
+class ComplianceScan(Base):
+    """One compliance scan: every enabled target of the chosen platforms checked against its active benchmark."""
+    __tablename__ = "compliance_scans"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(TZDateTime(), default=utcnow, index=True)
+    started_at: Mapped[datetime.datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    finished_at: Mapped[datetime.datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)  # queued running done partial failed
+    trigger: Mapped[str] = mapped_column(String(16))                # schedule | manual
+    requested_by: Mapped[str] = mapped_column(String(255), default="")
+    platforms: Mapped[list] = mapped_column(JSONType, default=list)
+    log: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    results: Mapped[list["ComplianceResult"]] = relationship(back_populates="scan", cascade="all, delete-orphan",
+                                                             passive_deletes=True, order_by="ComplianceResult.host")
+
+
+class ComplianceResult(Base):
+    """One host in a compliance scan. Keeps a copy of the benchmark's name, version and rule titles, so the result
+    stays readable after the benchmark is removed (benchmark_id is then cleared)."""
+    __tablename__ = "compliance_results"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scan_id: Mapped[int] = mapped_column(ForeignKey("compliance_scans.id", ondelete="CASCADE"), index=True)
+    platform: Mapped[str] = mapped_column(String(16), index=True)
+    host: Mapped[str] = mapped_column(String(255), index=True)
+    label: Mapped[str] = mapped_column(String(255), default="")
+    os: Mapped[str] = mapped_column(String(255), default="")
+    benchmark_id: Mapped[int | None] = mapped_column(ForeignKey("benchmarks.id", ondelete="SET NULL"), nullable=True)
+    benchmark_key: Mapped[str] = mapped_column(String(128), default="")
+    benchmark_name: Mapped[str] = mapped_column(String(255), default="")   # 'RHEL9-CIS 2.4.2 · uploaded 2026-11-20'
+    profile: Mapped[str] = mapped_column(String(32), default="")
+    status: Mapped[str] = mapped_column(String(16))                 # done | failed | skipped
+    error: Mapped[str] = mapped_column(Text, default="")
+    scanned_at: Mapped[datetime.datetime] = mapped_column(TZDateTime(), default=utcnow, index=True)
+    seconds: Mapped[int] = mapped_column(Integer, default=0)
+    counts: Mapped[dict] = mapped_column(JSONType, default=dict)    # pass, fail, skip, notest, checked, score
+    rules: Mapped[list] = mapped_column(JSONType, default=list)     # [{id, title, kind, status, tests: [...]}]
+    scan: Mapped[ComplianceScan] = relationship(back_populates="results")
+
+
 class Database:
     def __init__(self, url):
         kw = {"pool_pre_ping": True, "future": True}
@@ -301,4 +341,4 @@ def audit(s, user, ip, action, detail=""):
 
 
 __all__ = ["Database", "User", "Session", "LoginState", "RoleMapping", "Target", "Schedule", "Scan", "PlatformResult",
-           "ResultStats", "AuditEvent", "Setting", "Benchmark", "BenchmarkRule", "BenchmarkFile", "ComplianceSchedule", "get_setting", "set_setting", "audit", "utcnow", "select", "func"]
+           "ResultStats", "AuditEvent", "Setting", "Benchmark", "BenchmarkRule", "BenchmarkFile", "ComplianceSchedule", "ComplianceScan", "ComplianceResult", "get_setting", "set_setting", "audit", "utcnow", "select", "func"]

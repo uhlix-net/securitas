@@ -2,7 +2,7 @@
 
 ## 0.5.0 (unreleased)
 
-The first part of compliance: a library of CIS benchmarks. Checking hosts against them comes next.
+Compliance: a library of CIS benchmarks, and Linux hosts checked against them.
 
 ### New
 
@@ -27,15 +27,31 @@ The first part of compliance: a library of CIS benchmarks. Checking hosts agains
 - Linux and Windows CIS roles are read (Windows roles such as `Windows-2022-CIS`); STIG roles are refused for
   now. Kubernetes compliance will come from Trivy Operator's CIS report, so it needs no upload.
 
+- **Linux compliance checks.** *Compliance → Scans → Run compliance scan* checks each enabled Linux target
+  against the active benchmark for its OS (matched by the OS its latest vulnerability scan saw) with
+  [Goss](https://github.com/goss-org/goss) and the benchmark's Ansible-Lockdown audit content (for
+  `RHEL9-CIS-2.4.2`: `RHEL9-CIS-Audit`, branch `benchmark_v2.0.0`). Over SSH, as the scan account, Securitas runs
+  `sudo -n /usr/local/sbin/securitas-cis-audit <benchmark> server|workstation`. Ansible installs that wrapper,
+  Goss and the audit content root-owned on each host, with a sudo rule for the wrapper only, so the scan account
+  cannot change what runs as root. Goss changes nothing on the host.
+  - Every rule the benchmark checks (its profile and the rules switched on or off) gets a result: *Passed*,
+    *Failed*, *Not applicable* (all its tests skipped) or *No automated check* (manual review). A rule fails when
+    any of its tests fails; the audit content's "Manual Check Required" placeholders do not count.
+  - The score is passed / (passed + failed).
+  - Each scan has a page with every host's counts and score, its log, and per host every rule with its tests
+    (failed first, with Goss's message), filterable by result.
+  - Results keep the benchmark's name, version, profile and rule titles, so they stay readable after the
+    benchmark is removed.
+  - Compliance schedules now start Linux compliance scans. Compliance scans have their own worker, so they
+    run alongside vulnerability scans.
 - **Compliance summary.** *Compliance → Summary* (`/compliance`) has one row per platform: systems, how many
   are matched to an active benchmark, which benchmark, the check results (empty until a checker exists) and the
   schedule, plus the active benchmarks.
 - **Compliance schedules.** *Compliance → Schedules* sets a cron schedule per platform for compliance scans,
   stored apart from the vulnerability scan schedules. They are saved but start nothing until a checker exists.
-- **Compliance report and scans.** *Compliance → Report* (`/compliance/report`) lists the active benchmark per operating system and
-  every enabled target with the OS its latest vulnerability scan saw and the benchmark it will be checked
-  against. *Compliance → Scans* is where compliance scans will run; no platform has a checker yet, so both pages
-  say so.
+- **Compliance report.** *Compliance → Report* (`/compliance/report`) lists the active benchmark per operating
+  system and every enabled target with its OS, its benchmark and its newest check (passed, failed, score).
+  Windows and Kubernetes have no checker yet.
 
 ### Changed
 
@@ -52,7 +68,10 @@ The first part of compliance: a library of CIS benchmarks. Checking hosts agains
 
 ### Upgrading from 0.4.0
 
-- Four new tables (`benchmarks`, `benchmark_rules`, `benchmark_files`, `compliance_schedules`) are created at startup. No change to
+- Six new tables (`benchmarks`, `benchmark_rules`, `benchmark_files`, `compliance_schedules`, `compliance_scans`,
+  `compliance_results`) are created at startup.
+- Linux compliance checks need Goss, the audit content, the wrapper and its sudo rule on each host. uhlix-net/ansible
+  `Linux_Securitas_CIS_Audit.yml` installs them; the wrapper's interface is described in `securitas/scan_compliance.py`. No change to
   existing data.
 - New dependency: PyYAML.
 - Uploads are up to 25 MB; if an ingress in front of Securitas limits request bodies, allow at least that.

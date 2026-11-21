@@ -21,7 +21,7 @@ from sqlalchemy import String, cast, delete, func, select
 from . import __version__, auth, charts, compliance, render, report, scan_linux, scan_windows, sources
 from .config import PLATFORMS
 from .settings import FIELDS, SettingsError
-from .db import (AuditEvent, Benchmark, BenchmarkFile, ComplianceSchedule, LoginState, PlatformResult, ResultStats, RoleMapping,
+from .db import (AuditEvent, Benchmark, BenchmarkFile, ComplianceResult, ComplianceScan, ComplianceSchedule, LoginState, PlatformResult, ResultStats, RoleMapping,
                  Scan, Schedule, Session, Target, User, audit, get_setting, set_setting, utcnow)
 from .jobs import STATUS_LABEL, fmt_time, next_run, valid_cron
 
@@ -1194,47 +1194,44 @@ def create_app(cfg, db, jobs):
         return Response(data, media_type="application/zip",
                         headers={**HEADERS, "Content-Disposition": 'attachment; filename="%s"' % safe})
 
-    # ------------------------------------------------------------ compliance: report and scans
+    # ------------------------------------------------------------ compliance: summary, report and scans
 
     COMPLIANCE_CHECKER = {
-        "linux": "Linux hosts are not checked yet: the checker (Goss with the benchmark's audit content) comes in a later release.",
+        "linux": "Checked over SSH with Goss and the benchmark's Ansible-Lockdown audit content. Ansible installs both on "
+                 "each host, root-owned, with one sudo rule that lets the scan account run only "
+                 "/usr/local/sbin/securitas-cis-audit.",
         "windows": "Windows hosts are not checked yet: the checker comes in a later release.",
         "kubernetes": "The cluster is not checked yet: results will come from Trivy Operator's CIS report (k8s-cis), "
                       "which needs compliance reports turned on in the operator.",
     }
+    from . import scan_compliance
+    a.env.globals.update(CSTATUS_LABEL=scan_compliance.STATUS_LABEL)
 
     def compliance_systems(s):
-        """Each enabled target with the OS its latest vulnerability scan saw and the active benchmark for that OS."""
-        from sqlalchemy.orm import selectinload
-        active = {b.os_key: b for b in s.scalars(select(Benchmark).options(selectinload(Benchmark.rules))
-                                                .where(Benchmark.active.is_(True))).all()}
-        seen = {}
-        for p in ("linux", "windows"):
-            r = jobs._latest(s, p)
-            for row in ((r.raw or {}).get("systems") or []) if r else []:
-                if row.get("os"):
-                    seen[(p, row.get("name", ""))] = (row["os"], r.scanned_at)
-        out = {"linux": [], "windows": []}
-        for t in s.scalars(select(Target).where(Target.enabled.is_(True)).order_by(Target.host)).all():
-            os_name, when = seen.get((t.platform, t.host), ("", None))
-            key = compliance.os_key_for(os_name)
-            b = active.get(key)
-            out.setdefault(t.platform, []).append({
-                "host": t.host, "label": t.label, "os": os_name, "seen": when, "key": key, "bench": b,
-                "rules": compliance.counts(b)["on"] if b else 0})
-        return out, active
+        """Enabled targets matched to active benchmarks, each with its newest compliance result."""
+        plan, active = jobs.compliance_plan(s)
+        for p, lst in plan.items():
+            latest = jobs.latest_compliance(s, p)
+            for x in lst:
+                x["result"] = latest.get(x["host"])
+        return plan, active
+
+    def platform_row(p, lst):
+        res = [x["result"] for x in lst if x.get("result")]
+        scores = [r.counts.get("score") for r in res if r.counts.get("score") is not None]
+        return {"id": p, "title": PLATFORM_LABEL[p], "systems": len(lst) if p != "kubernetes" else None,
+                "matched": sum(1 for x in lst if x["bench"]), "checked": len(res),
+                "benchmarks": sorted({x["bench"].key for x in lst if x["bench"]}),
+                "passed": sum(r.counts.get("pass", 0) for r in res), "failed": sum(r.counts.get("fail", 0) for r in res),
+                "score": round(sum(scores) / len(scores), 1) if scores else None,
+                "last": max((r.scanned_at for r in res), default=None), "checker": p in jobs.compliance_scanners,
+                "note": COMPLIANCE_CHECKER[p]}
 
     @api.get("/compliance")
     def compliance_summary(request: Request, user=Depends(V)):
         with db.Session() as s:
             systems, active = compliance_systems(s)
-            rows = []
-            for p in ("linux", "windows", "kubernetes"):
-                lst = systems.get(p, [])
-                rows.append({"id": p, "title": PLATFORM_LABEL[p], "systems": len(lst) if p != "kubernetes" else None,
-                             "matched": sum(1 for x in lst if x["bench"]),
-                             "benchmarks": sorted({x["bench"].key for x in lst if x["bench"]}) if p != "kubernetes" else [],
-                             "note": COMPLIANCE_CHECKER[p]})
+            rows = [platform_row(p, systems.get(p, [])) for p in ("linux", "windows", "kubernetes")]
             sched = {x.platform: x for x in s.scalars(select(ComplianceSchedule)).all()}
             ctx = {"user": user, "sess": request.state.sess, "title": "Compliance summary", "rows": rows,
                    "active": sorted(active.values(), key=lambda b: (b.platform, b.os_key)),
@@ -1254,13 +1251,78 @@ def create_app(cfg, db, jobs):
             return a.page(request, "compliance_report.html", ctx)
 
     @api.get("/compliance/scans")
-    def compliance_scans(request: Request, user=Depends(V)):
+    def compliance_scans(request: Request, page: int = 1, user=Depends(V)):
+        page = max(1, page)
         with db.Session() as s:
-            systems, active = compliance_systems(s)
+            systems, _ = jobs.compliance_plan(s)
             ntargets = {p: len(v) for p, v in systems.items()}
             matched = {p: sum(1 for x in v if x["bench"]) for p, v in systems.items()}
-        return a.page(request, "compliance_scans.html", {"user": user, "sess": request.state.sess, "title": "Compliance scans",
-                                                         "ntargets": ntargets, "matched": matched, "checker": COMPLIANCE_CHECKER})
+            total = s.scalar(select(func.count(ComplianceScan.id)))
+            rows = s.scalars(select(ComplianceScan).order_by(ComplianceScan.id.desc()).offset((page - 1) * 50).limit(50)).all()
+            stats = {}
+            for r in s.scalars(select(ComplianceResult).where(ComplianceResult.scan_id.in_([x.id for x in rows]))).all() if rows else []:
+                d = stats.setdefault(r.scan_id, {"hosts": 0, "done": 0, "pass": 0, "fail": 0, "scores": []})
+                d["hosts"] += 1
+                if r.status == "done":
+                    d["done"] += 1
+                    d["pass"] += r.counts.get("pass", 0)
+                    d["fail"] += r.counts.get("fail", 0)
+                    if r.counts.get("score") is not None:
+                        d["scores"].append(r.counts["score"])
+            s.expunge_all()
+        busy = any(r.status in ("queued", "running") for r in rows)
+        return a.page(request, "compliance_scans.html", {
+            "user": user, "sess": request.state.sess, "title": "Compliance scans", "ntargets": ntargets, "matched": matched,
+            "checker": COMPLIANCE_CHECKER, "has_checker": {p: p in jobs.compliance_scanners for p in PLATFORMS},
+            "scans": rows, "stats": stats, "page": page, "pages": max(1, (total + 49) // 50), "busy": busy},
+            refresh=15 if busy else None)
+
+    @api.post("/compliance/scans")
+    async def compliance_scan_run(request: Request, user=Depends(OP)):
+        form = await a.csrf(request)
+        plats = [p for p in PLATFORMS if p in form.getlist("platform") and p in jobs.compliance_scanners]
+        if not plats:
+            return go("/compliance/scans", err="noplat")
+        with db.Session() as s, s.begin():
+            scan = jobs.enqueue_compliance(s, plats, "manual", user.username)
+            a.audit(s, request, "compliance_scan.run", "#%d %s" % (scan.id, ", ".join(plats)))
+            sid = scan.id
+        return go("/compliance/scans/%d" % sid, ok="queued")
+
+    def cscan_or_404(s, sid):
+        scan = s.get(ComplianceScan, sid)
+        if scan is None:
+            raise HTTPException(404, "There is no compliance scan #%d." % sid)
+        return scan
+
+    @api.get("/compliance/scans/{sid}")
+    def compliance_scan_view(request: Request, sid: int, user=Depends(V)):
+        with db.Session() as s:
+            scan = cscan_or_404(s, sid)
+            results = list(scan.results)
+            s.expunge_all()
+        active = scan.status in ("queued", "running")
+        return a.page(request, "compliance_scan.html", {"user": user, "sess": request.state.sess,
+                                                        "title": "Compliance scan #%d" % sid, "scan": scan, "results": results},
+                      refresh=5 if active else None)
+
+    @api.get("/compliance/scans/{sid}/hosts/{rid}")
+    def compliance_host_view(request: Request, sid: int, rid: int, user=Depends(V)):
+        st = request.query_params.get("status", "")
+        q = request.query_params.get("q", "").strip()[:100]
+        with db.Session() as s:
+            r = s.get(ComplianceResult, rid)
+            if r is None or r.scan_id != sid:
+                raise HTTPException(404, "No such result.")
+            s.expunge(r)
+        rules = [x for x in r.rules or [] if (not st or x.get("status") == st)
+                 and (not q or q.lower() in (x.get("id", "") + " " + x.get("title", "")).lower())]
+        order = {k: i for i, k in enumerate(scan_compliance.STATUSES)}
+        if not st:
+            rules.sort(key=lambda x: (order.get(x.get("status"), 9), compliance.sort_key(x["id"]) if x.get("id") else ""))
+        return a.page(request, "compliance_host.html", {"user": user, "sess": request.state.sess,
+                                                        "title": "%s · compliance scan #%d" % (r.host, sid), "r": r,
+                                                        "rules": rules, "st": st, "q": q, "statuses": scan_compliance.STATUSES})
 
     @api.get("/compliance/schedules")
     def compliance_schedules(request: Request, user=Depends(a.need("schedule.edit"))):
@@ -1268,7 +1330,8 @@ def create_app(cfg, db, jobs):
             rows = {x.platform: x for x in s.scalars(select(ComplianceSchedule)).all()}
         return a.page(request, "schedules.html", {"user": user, "sess": request.state.sess, "title": "Compliance schedules",
                                                   "rows": rows, "base": "/compliance/schedules", "kind": "compliance",
-                                                  "checker": COMPLIANCE_CHECKER})
+                                                  "checker": COMPLIANCE_CHECKER,
+                                                  "has_checker": {p: p in jobs.compliance_scanners for p in PLATFORMS}})
 
     @api.post("/compliance/schedules/{platform}")
     async def compliance_schedule_save(request: Request, platform: str, user=Depends(a.need("schedule.edit"))):
