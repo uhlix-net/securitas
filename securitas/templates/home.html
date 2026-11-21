@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+  <h2>Home</h2>
+  <p class="sub">Vulnerabilities and compliance at a glance. Open <a href="/vulnerabilities">Vulnerabilities</a> or <a href="/compliance">Compliance</a> for the details.</p>
+  <div class="stats">
+    <a class="stat" href="/vulnerabilities" style="text-decoration:none;color:inherit"><div class="v">{{ "{:,}".format(vtot.priority) }}</div><div class="k">Priority CVEs</div></a>
+    <a class="stat" href="/report" style="text-decoration:none;color:inherit"><div class="v{% if vtot.kev %} hot{% endif %}">{{ "{:,}".format(vtot.kev) }}</div><div class="k">Known exploited (CISA KEV)</div></a>
+    <a class="stat" href="/report" style="text-decoration:none;color:inherit"><div class="v">{{ "{:,}".format(vtot.critical) }}</div><div class="k">Critical</div></a>
+    <a class="stat" href="/vulnerabilities" style="text-decoration:none;color:inherit"><div class="v">{{ "{:,}".format(vtot.systems) }}</div><div class="k">Systems scanned for CVEs</div></a>
+    <a class="stat" href="/compliance" style="text-decoration:none;color:inherit"><div class="v">{% if ctot.score is not none %}{{ ctot.score }}%{% else %}–{% endif %}</div><div class="k">Compliance score</div></a>
+    <a class="stat" href="/compliance/report" style="text-decoration:none;color:inherit"><div class="v">{{ ctot.checked }} of {{ ctot.systems }}</div><div class="k">Systems checked for compliance</div></a>
+    <a class="stat" href="/compliance/report" style="text-decoration:none;color:inherit"><div class="v">{{ "{:,}".format(ctot.failed) }}</div><div class="k">Compliance rules failed</div></a>
+  </div>
+</section>
+<section>
+  <h2>Vulnerabilities</h2>
+  <p class="sub">Priority CVEs per platform from the latest report (in the CISA KEV catalog, or EPSS {{ "%.2f"|format(model.epss_min) }} or higher).</p>
+  {% if not vrows %}<p class="muted">No scan has finished yet. Operators and admins can start one on the <a href="/scans">Scans</a> page.</p>{% else %}
+  <div class="scroll"><table class="summary">
+    <thead><tr><th>Platform</th><th>Status</th><th>Last scanned</th><th class="n">Systems</th><th class="n">Priority CVEs</th><th class="n">Known exploited</th><th class="n">Critical</th><th class="n">High</th></tr></thead>
+    <tbody>
+    {% for r in vrows %}
+    <tr>
+      <td><a href="/report#{{ r.id }}"><strong>{{ r.title }}</strong></a></td>
+      <td>{% if r.status == "off" %}<span class="badge b-off">Turned off</span>{% elif r.status in ("failed", "partial") %}<span class="badge b-{{ r.status }}" title="{{ r.failure }}">{{ "Scan failed" if r.status == "failed" else "Partial scan" }}</span>{% else %}<span class="badge b-done">OK</span>{% endif %}</td>
+      <td class="date">{{ r.scanned or "" }}</td>
+      {% if r.no_results %}<td class="muted" colspan="5">No results</td>{% else %}
+      <td class="n">{{ "{:,}".format(r.systems) }}</td><td class="n">{{ "{:,}".format(r.priority) }}</td>
+      <td class="n{% if r.kev %} hot{% endif %}">{{ "{:,}".format(r.kev) }}</td><td class="n{% if r.critical %} hot{% endif %}">{{ "{:,}".format(r.critical) }}</td>
+      <td class="n">{{ "{:,}".format(r.high) }}</td>{% endif %}
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+  {% endif %}
+</section>
+{% if vrows %}
+<section class="chartcard" id="history">
+  <h2>CVEs over time {{ range_switch|safe }}</h2>
+  <p class="sub">Distinct CVEs per platform, every severity level, from the newest successful scan at the end of each {{ {"day": "day", "week": "week", "month": "month"}[range] }}.</p>
+  {{ history|safe }}
+</section>
+<section class="chartcard">
+  <h2>CVEs by severity</h2>
+  {{ vpies|safe }}
+</section>
+{% endif %}
+<section>
+  <h2>Compliance</h2>
+  <p class="sub">Each system's newest compliance check against the active benchmark for its OS. The score is passed / (passed + failed) rules.</p>
+  <div class="scroll"><table class="summary">
+    <thead><tr><th>Platform</th><th>Status</th><th>Last checked</th><th class="n">Systems</th><th class="n">Checked</th><th>Benchmark</th><th class="n">Rules passed</th><th class="n">Rules failed</th><th class="n">Score</th></tr></thead>
+    <tbody>
+    {% for r in crows %}
+    <tr>
+      <td><a href="/compliance/report#{{ r.id }}"><strong>{{ r.title }}</strong></a></td>
+      <td>{% if not r.checker %}<span class="badge b-off">No checker yet</span>{% elif r.checked %}<span class="badge b-done">Checked</span>{% else %}<span class="badge b-off">Not checked</span>{% endif %}</td>
+      <td class="date">{% if r.last %}{{ fmt(r.last) }}{% else %}<span class="muted">Never</span>{% endif %}</td>
+      <td class="n">{% if r.systems is none %}<span class="muted">cluster</span>{% else %}{{ r.systems }}{% endif %}</td>
+      <td class="n">{% if r.systems is not none %}{{ r.checked }}{% endif %}</td>
+      <td class="small mono">{% if r.systems is none %}<span class="muted">Trivy k8s-cis</span>{% elif r.benchmarks %}{{ r.benchmarks|join(", ") }}{% else %}<span class="muted">none</span>{% endif %}</td>
+      <td class="n">{% if r.checked %}{{ "{:,}".format(r.passed) }}{% endif %}</td>
+      <td class="n{% if r.failed %} hot{% endif %}">{% if r.checked %}{{ "{:,}".format(r.failed) }}{% endif %}</td>
+      <td class="n">{% if r.score is not none %}<strong>{{ r.score }}%</strong>{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+</section>
+{% if cbars %}
+<section class="chartcard">
+  <h2>Compliance score per host</h2>
+  <p class="sub">Passed and failed rules of each host's newest check, lowest score first. Select a host for its rules.</p>
+  {{ cbars|safe }}
+</section>
+<section class="chartcard">
+  <h2>Compliance rule results</h2>
+  <p class="sub">All rule results of the newest checks, per platform.</p>
+  {{ cpies|safe }}
+</section>
+{% endif %}
+{% endblock %}

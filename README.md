@@ -18,7 +18,7 @@ serves the results as web pages with an **Export to PDF** button.
 - **Severity filter.** The report, past scans and the PDF can be narrowed to one or more severity levels
   (Critical, High / Important, Medium / Moderate, Low, Unknown) and to priority CVEs only. The filter is in
   the address, so a filtered view can be bookmarked or shared; Export to PDF uses the same filter.
-- **Summary first.** After sign-in, a summary page lists each platform with its scan status, when it was
+- **Vulnerability summary.** *Vulnerabilities → Summary* lists each platform with its scan status, when it was
   last scanned, and its counts: systems, priority CVEs, known exploited, critical and high. Each platform
   name links to its section of the full report at `/report`. The same table opens the report and the PDF.
   Below it, a graph of distinct CVEs per platform over time (daily for 7 days, weekly for 3 months or
@@ -33,10 +33,28 @@ serves the results as web pages with an **Export to PDF** button.
   WinRM password), targets, schedules, users and vulnerability sources on the Settings pages. Changes
   apply immediately; secrets are encrypted in the database and never shown again. Anything not set
   there comes from the Helm values, so a plain Helm install still works unchanged.
-- **Transparent sources.** The Sources page explains every data source (CISA KEV, EPSS, Trivy, dnf
+- **Home page and two sections.** *Home* sums up vulnerabilities and compliance with charts. The top menu then
+  has *Vulnerabilities* (summary, report, scans, schedules, sources) and *Compliance* (summary, report, scans,
+  schedules, benchmarks), then *Targets*, *Audit log*, *Settings* and *About*.
+- **Transparent sources.** The Sources page (Vulnerabilities → Sources) explains every data source (CISA KEV, EPSS, Trivy, dnf
   advisories, Microsoft release data), when it was last fetched, what turning it off changes, and shows
   the exact script each scanner runs on a host. KEV and EPSS can be turned off; each platform can be
   turned off.
+- **Compliance benchmark library.** Admins upload [Ansible-Lockdown](https://github.com/ansible-lockdown)
+  CIS roles (the release zip, for example `RHEL9-CIS-2.4.2.zip`) on Compliance → Benchmarks. Each upload is stored
+  under its role name and version with the upload date, the uploader and the file's SHA-256, and its rules
+  are read from the role: rule ID, title, profile levels, NIST 800-53 mappings and the role's on/off default.
+  Several versions can be loaded side by side; one per operating system is active. Pick a profile (Level 1
+  Server by default), switch single rules on or off, download the original zip, or remove a benchmark.
+  Nothing in an uploaded zip is run.
+- **Linux compliance checks.** Compliance scans check each Linux host against its active benchmark with Goss and
+  the benchmark's Ansible-Lockdown audit content, through one root-owned wrapper the scan account may run with
+  sudo (nothing else). Per host: rules passed, failed, not applicable and without an automated check, a score,
+  and every rule's tests.
+- **Windows compliance checks.** The same for Windows Server, with syver (the Goss fork for Windows) and the
+  benchmark's audit content, run as SYSTEM by a scheduled task the scan account may only start. Domain
+  controllers get the domain controller rules, member servers the member server rules. Kubernetes compliance
+  comes later.
 - **Sign-in and roles.**
   - Sign-in: local accounts, LDAP (Active Directory) and OpenID Connect single sign-on.
   - Three roles: Viewer, Operator and Admin. LDAP and SSO users get their role from their groups.
@@ -55,6 +73,8 @@ What's new in each version: [CHANGELOG.md](CHANGELOG.md). Upgrading? See the upg
 | Run scans now | | Yes | Yes |
 | Change schedules | | Yes | Yes |
 | See the Sources page (data sources and how each platform is scanned) | Yes | Yes | Yes |
+| Browse compliance benchmarks and their rules | Yes | Yes | Yes |
+| Upload, activate, configure, download and remove compliance benchmarks | | | Yes |
 | Change scan targets | | | Yes |
 | Scan credentials (SSH key, WinRM account) and connection tests | | | Yes |
 | Turn sources on or off, EPSS threshold | | | Yes |
@@ -62,7 +82,9 @@ What's new in each version: [CHANGELOG.md](CHANGELOG.md). Upgrading? See the upg
 | Authentication settings (LDAP, single sign-on) and group-to-role mappings | | | Yes |
 | Audit log | | | Yes |
 
-Everything administrative is under **Settings**; each user sees only the pages their role allows.
+Users, authentication and scan credentials are under **Settings**; **Targets** and **Audit log** have their own
+menus; schedules and sources are under **Vulnerabilities**, and compliance schedules and the benchmark library
+under **Compliance**. Each user sees only the pages their role allows.
 
 ## Install
 
@@ -137,6 +159,12 @@ Users are looked up with a service account and then verified by binding as the u
 from `memberOf`. With `groupBase` set, nested groups are found with the Active Directory
 in-chain matching rule. Configure it in **Settings > Authentication > LDAP** or with `auth.ldap.*`. On the
 same page, admins can look a user up to see their DN, groups and the resulting role.
+
+### Preparing targets
+
+[docs/target-setup.md](docs/target-setup.md) walks through preparing Linux and Windows hosts: the scan accounts for
+vulnerability scans, and Goss/syver, the audit content and the limited sudo rule or scheduled task for compliance
+checks. Ready-made files and example Ansible playbooks are in [`contrib/`](contrib).
 
 ### Linux scans
 

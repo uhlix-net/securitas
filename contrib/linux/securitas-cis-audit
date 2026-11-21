@@ -1,0 +1,26 @@
+#!/bin/bash
+# Securitas compliance check for Linux. Install as /usr/local/sbin/securitas-cis-audit, owner root, mode 0755.
+# Runs Goss read-only against the audit content installed under /opt/securitas-cis/<benchmark key>/ and prints
+# Goss's JSON. The scan account may run only this, through one sudo rule (see sudoers.securitas-cis).
+# Usage: securitas-cis-audit <benchmark key> [server|workstation]
+set -u
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
+CIS_ROOT=/opt/securitas-cis
+key="${1:-}"
+kind="${2:-server}"
+if ! [[ "$key" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]; then echo '{"error":"bad benchmark key"}'; exit 2; fi
+case "$kind" in server) st=Server ;; workstation) st=Workstation ;; *) echo '{"error":"bad system type"}'; exit 2 ;; esac
+dir="$CIS_ROOT/$key"
+if [ ! -f "$dir/goss.yml" ] || [ ! -f "$dir/vars/CIS.yml" ]; then
+  echo "{\"error\":\"benchmark $key is not installed on this host\"}"; exit 3
+fi
+clean() { printf '%s' "$1" | tr -cd 'A-Za-z0-9._ -'; }
+os_name=$(. /etc/os-release 2>/dev/null; echo "${NAME:-unknown}" | cut -d' ' -f1)
+os_ver=$(. /etc/os-release 2>/dev/null; echo "${VERSION_ID:-unknown}")
+uuid=$(cat /sys/class/dmi/id/product_uuid 2>/dev/null || echo unknown)
+inline=$(printf '{"benchmark_type":"CIS","benchmark_os":"%s","machine_uuid":"%s","epoch":"%s","os_locale":"%s","os_release":"%s","os_distribution":"%s","os_hostname":"%s","auto_group":"securitas","system_type":"%s"}' \
+  "$(clean "${key%%-*}")" "$(clean "$uuid")" "$(date +%s)" "$(clean "$(date +%Z)")" "$(clean "$os_ver")" \
+  "$(clean "$os_name")" "$(clean "$(hostname)")" "$st")
+cd "$dir" || exit 3
+exec nice -n 10 /usr/local/bin/goss -g "$dir/goss.yml" --vars "$dir/vars/CIS.yml" --vars-inline "$inline" \
+  validate --max-concurrent 10 -f json

@@ -3,7 +3,7 @@
 <section>
   <h2>Vulnerability sources</h2>
   <p class="sub">Everything Securitas reports comes from the sources below. Ranking sources decide which CVEs are priorities; platform sources are what each platform's scan is built on, so turning one off stops scanning that platform. {% if not can(user.role, "sources.edit") %}Only admins can change these settings.{% endif %}</p>
-  <form method="post" action="/settings/sources"><input type="hidden" name="csrf" value="{{ sess.csrf }}">
+  <form method="post" action="/vulnerabilities/sources"><input type="hidden" name="csrf" value="{{ sess.csrf }}">
   {% set editable = can(user.role, "sources.edit") %}
   {% for s in sources %}{% set d = f[s.setting] %}{% set st = status.get(s.id, {}) %}
   <div class="scroll" style="margin-bottom:14px"><table>

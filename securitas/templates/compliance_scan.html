@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+  <p class="small"><a href="/compliance/scans">← All compliance scans</a></p>
+  <h2>Compliance scan #{{ scan.id }} <span class="badge b-{{ scan.status }}">{{ STATUS_LABEL[scan.status] }}</span></h2>
+  <p class="sub">{{ "Scheduled" if scan.trigger == "schedule" else "Manual" }}{% if scan.requested_by %} by {{ scan.requested_by }}{% endif %} · {% for p in scan.platforms %}{{ PLATFORM_LABEL[p] }}{% if not loop.last %}, {% endif %}{% endfor %}{% if scan.hosts %} (only {{ scan.hosts|join(", ") }}){% endif %} · queued {{ fmt(scan.created_at) }}{% if scan.started_at %}, started {{ fmt(scan.started_at) }}{% endif %}{% if scan.finished_at %}, finished {{ fmt(scan.finished_at) }}{% endif %}{% if scan.status in ("queued", "running") %}. This page refreshes until the scan finishes; a Linux check takes a few minutes per host.{% endif %}</p>
+  {% if scan.error %}<div class="fail"><p>{{ scan.error }}</p></div>{% endif %}
+  {% if results %}
+  <div class="scroll"><table>
+    <thead><tr><th>System</th><th>Role</th><th>Operating system</th><th>Benchmark</th><th>Status</th><th class="n">Passed</th><th class="n">Failed</th><th class="n">Not applicable</th><th class="n">No automated check</th><th class="n">Score</th></tr></thead>
+    <tbody>
+    {% for r in results %}
+    <tr>
+      <td class="mono">{% if r.status == "done" %}<a href="/compliance/scans/{{ scan.id }}/hosts/{{ r.id }}">{{ r.host }}</a>{% else %}{{ r.host }}{% endif %}</td>
+      <td>{{ r.label }}</td>
+      <td class="small">{{ r.os }}</td>
+      <td class="small">{% if r.benchmark_id %}<a class="mono" href="/compliance/benchmarks/{{ r.benchmark_id }}">{{ r.benchmark_key }}</a>{% else %}<span class="mono">{{ r.benchmark_key }}</span>{% endif %}{% if r.profile %}<br><span class="muted">{{ r.profile }}</span>{% endif %}</td>
+      <td>{% if r.status == "done" %}<span class="badge b-done">Checked</span>{% elif r.status == "skipped" %}<span class="badge b-off">Skipped</span>{% else %}<span class="badge b-failed">Failed</span>{% endif %}</td>
+      {% if r.status == "done" %}
+      <td class="n">{{ r.counts.pass }}</td><td class="n{% if r.counts.fail %} hot{% endif %}">{{ r.counts.fail }}</td>
+      <td class="n">{{ r.counts.skip }}</td><td class="n">{{ r.counts.notest }}</td>
+      <td class="n">{% if r.counts.score is not none %}<strong>{{ r.counts.score }}%</strong>{% endif %}</td>
+      {% else %}<td colspan="5" class="small{% if r.status == 'failed' %} hot{% else %} muted{% endif %}">{{ r.error }}</td>{% endif %}
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+  {% elif scan.status not in ("queued", "running") %}<p class="muted">No hosts were checked.</p>{% endif %}
+</section>
+{% if scan.log %}
+<section>
+  <h2>Log</h2>
+  <pre class="log">{{ scan.log }}</pre>
+</section>
+{% endif %}
+{% endblock %}

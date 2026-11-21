@@ -17,6 +17,8 @@ cryptography==50.0.2
 paramiko==5.1.0
 pypsrp==0.9.1
 croniter==7.0.0
+# Compliance benchmark import (Ansible role YAML)
+pyyaml==6.0.3
 tzdata==2026.6
 # PDF
 weasyprint==70.0

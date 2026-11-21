@@ -1,5 +1,120 @@
 # Changelog
 
+## 0.5.0 (2026-11-21)
+
+Compliance: a library of CIS benchmarks, and Linux and Windows hosts checked against them.
+
+### New
+
+- **Compliance → Benchmarks.** Upload an [Ansible-Lockdown](https://github.com/ansible-lockdown) CIS role as the
+  zip GitHub offers on its release page (for example `RHEL9-CIS-2.4.2.zip`, one folder `<role>-<version>`).
+  Securitas reads it without running anything and stores:
+  - the benchmark under its role name and version (`RHEL9-CIS-2.4.2`), shown as
+    `RHEL9-CIS 2.4.2 · uploaded 2026-11-20`, with who uploaded it, the file name, size and SHA-256;
+  - the CIS document version (`v2.0.0`), the operating system it is for (RHEL 9 family) and the role's metadata;
+  - every rule: ID, title, automated (PATCH) or manual (AUDIT), profile level tags, NIST 800-53 mappings, the
+    role's on/off variable and its default;
+  - the original zip, which admins can download again.
+- **Several versions side by side.** Loading the same role/version twice is refused; a different version is
+  added next to the old one. One benchmark per operating system is *active* (the first one loaded becomes it);
+  admins can switch.
+- **Which rules are checked.** Each benchmark has a profile: Level 1 or Level 2, Server or Workstation (Level 1
+  Server by default; Level 2 includes Level 1). Single rules can be switched on or off; those choices are marked
+  *Set here* and can be cleared. The rule list can be searched and filtered by section, level, type and state.
+- **Remove a benchmark** from the benchmark list (tick *Confirm*, then *Remove*, as on the Targets page) or from
+  its own page: its rules, choices and stored zip go with it.
+- Viewers and operators can browse benchmarks and rules; only admins change them. Every upload, change,
+  download and removal is in the audit log.
+- Linux and Windows CIS roles are read (Windows roles such as `Windows-2022-CIS`, with member-server and
+  domain-controller levels); STIG roles are refused for now. Kubernetes compliance will come from Trivy Operator's CIS report, so it needs no upload.
+
+- Chart text is a little smaller, and the compliance score bars are thinner (charts are drawn at the page width).
+- **Home page** (`/`): vulnerabilities and compliance at a glance: headline numbers (priority CVEs, known
+  exploited, critical, systems, compliance score, systems checked, rules failed), both platform tables, the CVE
+  history graph and severity pies, a compliance score bar per host (passed and failed rules, lowest score
+  first) and a pie of rule results per platform.
+- **About page** (top menu): version, what is scanned and how, data sources, database, time zone, your
+  account, source code and licence.
+- **Scan only some hosts.** On *Compliance → Scans*, tick one or more hosts to check just those; leave them all
+  unticked to check every matched host of the platforms ticked. The scan history and the scan page show the
+  selection.
+- **Linux compliance checks.** *Compliance → Scans → Run compliance scan* checks each enabled Linux target
+  against the active benchmark for its OS (matched by the OS its latest vulnerability scan saw) with
+  [Goss](https://github.com/goss-org/goss) and the benchmark's Ansible-Lockdown audit content (for
+  `RHEL9-CIS-2.4.2`: `RHEL9-CIS-Audit`, branch `benchmark_v2.0.0`). Over SSH, as the scan account, Securitas runs
+  `sudo -n /usr/local/sbin/securitas-cis-audit <benchmark> server|workstation`. Ansible installs that wrapper,
+  Goss and the audit content root-owned on each host, with a sudo rule for the wrapper only, so the scan account
+  cannot change what runs as root. Goss changes nothing on the host.
+  - Every rule the benchmark checks (its profile and the rules switched on or off) gets a result: *Passed*,
+    *Failed*, *Not applicable* (all its tests skipped) or *No automated check* (manual review). A rule fails when
+    any of its tests fails; the audit content's "Manual Check Required" placeholders do not count.
+  - The score is passed / (passed + failed).
+  - Each scan has a page with every host's counts and score, its log, and per host every rule with its tests
+    (failed first, with Goss's message), filterable by result.
+  - Results keep the benchmark's name, version, profile and rule titles, so they stay readable after the
+    benchmark is removed.
+  - Compliance schedules now start Linux compliance scans. Compliance scans have their own worker, so they
+    run alongside vulnerability scans.
+- **Windows compliance checks.** Windows Server hosts are checked against the active Windows benchmark for
+  their OS (for example `Windows-2022-CIS-4.2.0`, `Windows-2025-CIS-1.2.2`) with
+  [syver](https://github.com/krameff/syver), the Goss fork the Ansible-Lockdown Windows audits are written for, and
+  the benchmark's audit content (`Windows-2022-CIS-Audit` branch `benchmark_v4.0.0`, `Windows-2025-CIS-Audit`
+  branch `benchmark_v1.0.0`). Over WinRM, as the scan account, Securitas starts the scheduled task
+  `\Securitas\CIS Audit <benchmark>`, which runs the audit as SYSTEM, waits for it and reads its JSON result from
+  `C:\ProgramData\Securitas\CIS`. Ansible installs syver (pinned, checksum- and signature-checked), the content,
+  the wrapper and the task. The scan account may only start the task and read its output, so it cannot change
+  what runs as SYSTEM.
+  - Windows benchmarks tag rules for **member servers** or **domain controllers**. The default Windows profile
+    is *Level 1, by each host's role*: a domain controller gets the domain controller rules, a member server
+    the member server rules (the role is read from the host when it is checked). Fixed member-server and
+    domain-controller profiles, and Level 2, can be chosen per benchmark.
+  - The CIS *Next Generation Windows Security* rules (tagged `ngws-*`) are in neither Level 1 nor Level 2.
+    They can be switched on one by one.
+  - Each result records the role the host was checked as.
+  - The task is started and watched through the Task Scheduler COM API, which honours the task's own permissions.
+    `Get-ScheduledTask` reads a WMI namespace that a non-admin scan account cannot read.
+- **Compliance summary.** *Compliance → Summary* (`/compliance`) has one row per platform: systems, how many
+  are matched to an active benchmark, which benchmark, the check results (empty until a checker exists) and the
+  schedule, plus the active benchmarks.
+- **Compliance schedules.** *Compliance → Schedules* sets a cron schedule per platform for compliance scans,
+  stored apart from the vulnerability scan schedules. They are saved but start nothing until a checker exists.
+- **Compliance report.** *Compliance → Report* (`/compliance/report`) lists the active benchmark per operating
+  system and every enabled target with its OS, its benchmark and its newest check (passed, failed, score).
+  Kubernetes has no checker yet.
+
+### Changed
+
+- **New menus.** The top menu is *Home*, *Vulnerabilities*, *Compliance*, *Targets*, *Audit log*, *Settings* and
+  *About*. The vulnerability summary moved from `/` to `/vulnerabilities`; `/` is now the Home page.
+  - *Vulnerabilities*: Summary, Report, Scans, **Schedules** (moved from Settings to `/vulnerabilities/schedules`;
+    they are vulnerability scan schedules) and **Sources** (moved to `/vulnerabilities/sources`).
+  - *Compliance*: Summary, Report, Scans, Schedules and Benchmarks.
+  - **Targets** (`/targets`) and **Audit log** (`/audit`) moved out of Settings to the top menu (admins only).
+  - The menu bar's subtitle reads *Vulnerabilities and Compliance*; the cluster name moved to the About page.
+  - Settings keeps Users, Authentication and Scan credentials. Users whose role has no settings pages
+    (viewers, operators) no longer see the Settings menu.
+  - The vulnerability Report and Scans addresses (`/report`, `/scans`) are unchanged. The old addresses
+    (`/settings/sources`, `/settings/schedules`, `/settings/targets`, `/settings/audit`, `/settings/compliance`)
+    redirect to the new ones.
+
+- **Target setup guide.** [docs/target-setup.md](docs/target-setup.md) explains how to prepare Linux and Windows
+  hosts for vulnerability scans and compliance checks. [`contrib/`](contrib) has the wrapper scripts, the sudo rule,
+  the scheduled-task installer and example Ansible playbooks.
+
+### Upgrading from 0.4.0
+
+- Six new tables (`benchmarks`, `benchmark_rules`, `benchmark_files`, `compliance_schedules`, `compliance_scans`,
+  `compliance_results`) are created at startup.
+- A column is added to `compliance_scans` (`hosts`) at startup if a 0.5.0 release candidate created the table
+  without it.
+- Windows compliance checks need syver, the audit content, the wrapper and the scheduled task on each host:
+  uhlix-net/ansible `Windows_Securitas_CIS_Audit.yml`; the interface is described in `securitas/scan_compliance.py`.
+- Linux compliance checks need Goss, the audit content, the wrapper and its sudo rule on each host. uhlix-net/ansible
+  `Linux_Securitas_CIS_Audit.yml` installs them; the wrapper's interface is described in `securitas/scan_compliance.py`. No change to
+  existing data.
+- New dependency: PyYAML.
+- Uploads are up to 25 MB; if an ingress in front of Securitas limits request bodies, allow at least that.
+
 ## 0.4.0 (2026-11-19)
 
 The report shows every CVE, not only priority ones, and the Summary page shows how the counts change.

@@ -6,14 +6,18 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='%231f4e79' d='M8 1l6 2v4c0 4-2.6 6.9-6 8-3.4-1.1-6-4-6-8V3z'/%3E%3C/svg%3E">
 <style>{{ css|safe }}</style></head>
 <body>
+{% set section = "home" if path == "/" else "about" if path == "/about" else "settings" if path.startswith("/settings") else "compliance" if path.startswith("/compliance") else "" if path.startswith(("/account", "/targets", "/audit")) else "vulnerabilities" %}
+{% set settings_any = user and settings_for(user.role) %}
 {% if user %}
 <div class="top">
-  <div class="brand">{{ cfg.title }}<small>CVE report{% if cfg.cluster_name %}, {{ cfg.cluster_name }}{% endif %}</small></div>
+  <div class="brand">{{ cfg.title }}<small>Vulnerabilities and Compliance</small></div>
   <nav class="nav" aria-label="Main">
-    <a href="/"{% if path == "/" %} class="on"{% endif %}>Summary</a>
-    <a href="/report"{% if path == "/report" %} class="on"{% endif %}>Report</a>
-    <a href="/scans"{% if path.startswith("/scans") %} class="on"{% endif %}>Scans</a>
-    <a href="/settings"{% if path.startswith("/settings") %} class="on"{% endif %}>Settings</a>
+    <a href="/"{% if section == "home" %} class="on"{% endif %}>Home</a>
+    <a href="/vulnerabilities"{% if section == "vulnerabilities" %} class="on"{% endif %}>Vulnerabilities</a>
+    <a href="/compliance"{% if section == "compliance" %} class="on"{% endif %}>Compliance</a>
+    {% for href, label, perm in TOP_PAGES %}{% if can(user.role, perm) %}<a href="{{ href }}"{% if path.startswith(href) %} class="on"{% endif %}>{{ label }}</a>{% endif %}{% endfor %}
+    {% if settings_any %}<a href="/settings"{% if section == "settings" %} class="on"{% endif %}>Settings</a>{% endif %}
+    <a href="/about"{% if section == "about" %} class="on"{% endif %}>About</a>
   </nav>
   <div class="right">
     <form method="post" action="/account/theme" class="seg" aria-label="Theme">
@@ -28,7 +32,12 @@
 </div>
 {% endif %}
 <main>
-{% if user and path.startswith("/settings") %}
+{% if user and section in SECTIONS %}
+<nav class="subnav" aria-label="{{ section|capitalize }}">
+  {% for href, label, perm in SECTIONS[section] %}{% if can(user.role, perm) %}<a href="{{ href }}"{% if path == href or (href not in ("/vulnerabilities", "/compliance") and path.startswith(href)) %} class="on"{% endif %}>{{ label }}</a>{% endif %}{% endfor %}
+</nav>
+{% endif %}
+{% if user and section == "settings" %}
 <nav class="subnav" aria-label="Settings">
   <a href="/settings"{% if path == "/settings" %} class="on"{% endif %}>Overview</a>
   {% for key, label, perm, _ in SETTINGS_PAGES %}{% if can(user.role, perm) %}<a href="/settings/{{ key }}"{% if path.startswith("/settings/" ~ key) %} class="on"{% endif %}>{{ label }}</a>{% endif %}{% endfor %}

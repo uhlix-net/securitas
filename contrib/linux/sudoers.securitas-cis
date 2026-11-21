@@ -1,0 +1,5 @@
+# Install as /etc/sudoers.d/securitas-cis (owner root, mode 0440; check with: visudo -cf <file>).
+# Replace "securitas" with your scan account's name. It may run the read-only CIS audit wrapper as root,
+# nothing else.
+Defaults:securitas !requiretty
+securitas ALL=(root) NOPASSWD: /usr/local/sbin/securitas-cis-audit

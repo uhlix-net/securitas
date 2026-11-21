@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+{% set editable = can(user.role, "compliance.edit") %}
+<section>
+  <h2>Compliance benchmarks</h2>
+  <p class="sub">The benchmarks hosts will be checked against. Each one is an <a href="https://github.com/ansible-lockdown" rel="noopener noreferrer">Ansible-Lockdown</a> role, stored under its name and version (for example <span class="mono">RHEL9-CIS-2.4.2</span>) with the date it was uploaded. Several versions can be loaded side by side; one per operating system is <strong>active</strong> and is the one used for checks. The first benchmark loaded for an operating system becomes its active one. Removing a benchmark removes its rules and the stored zip.{% if not editable %} Only admins can upload, change or remove benchmarks.{% endif %}</p>
+  {% if editable %}
+  <form method="post" action="/compliance/benchmarks" enctype="multipart/form-data"><input type="hidden" name="csrf" value="{{ sess.csrf }}">
+    <div class="row">
+      <div><label for="bf">Benchmark zip</label><input id="bf" type="file" name="file" accept=".zip,application/zip" required></div>
+      <div><button class="btn primary">Upload and import</button></div>
+    </div>
+    <p class="hint">The zip GitHub offers for a release of an Ansible-Lockdown CIS role, for example <span class="mono">RHEL9-CIS-2.4.2.zip</span> (one folder named <span class="mono">&lt;role&gt;-&lt;version&gt;</span>). Up to {{ max_mb }} MB. Nothing in it is run; Securitas reads the rule names, profile levels and on/off defaults.</p>
+  </form>
+  {% endif %}
+</section>
+{% for plat in platforms %}
+<section>
+  <h2>{{ PLATFORM_LABEL[plat] }}</h2>
+  {% set list = rows|selectattr("platform", "equalto", plat)|list %}
+  {% if plat == "kubernetes" %}
+  <p class="muted">Kubernetes compliance will come from Trivy Operator's CIS report (<span class="mono">k8s-cis</span>) in the cluster, so there is nothing to upload.</p>
+  {% elif not list %}<p class="muted">No {{ PLATFORM_LABEL[plat] }} benchmarks loaded.</p>
+  {% else %}
+  <div class="scroll"><table>
+    <thead><tr><th>Benchmark</th><th>Operating system</th><th>CIS version</th><th>Rules checked</th><th>Profile</th><th>Uploaded</th><th>Status</th>{% if editable %}<th>Remove</th>{% endif %}</tr></thead>
+    <tbody>
+    {% for b in list %}{% set c = counts[b.id] %}
+    <tr>
+      <td><a href="/compliance/benchmarks/{{ b.id }}"><strong class="mono">{{ b.key }}</strong></a><br><span class="small muted">{{ name(b) }}</span></td>
+      <td>{{ b.os_label }}</td>
+      <td class="mono">{{ b.benchmark_version or "—" }}</td>
+      <td>{% if b.platform == "windows" %}{{ c.on }} member server, {{ c.on_dc }} DC, of {{ c.total }}{% else %}{{ c.on }} of {{ c.total }}{% endif %}{% if c.overrides %} <span class="small muted">({{ c.overrides }} set here)</span>{% endif %}</td>
+      <td class="small">{{ profiles[b.profile] }}</td>
+      <td class="small">{{ fmt(b.uploaded_at) }}<br><span class="muted">by {{ b.uploaded_by or "unknown" }}</span></td>
+      <td>{% if b.active %}<span class="badge b-done">Active</span>{% else %}<span class="badge b-off">Inactive</span>{% endif %}</td>
+      {% if editable %}<td><form method="post" action="/compliance/benchmarks/{{ b.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="delete">
+        <div class="row"><label class="inline"><input type="checkbox" name="confirm" required aria-label="Confirm removing {{ b.key }}"> Confirm</label><button class="btn small danger">Remove</button></div></form></td>{% endif %}
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+  {% endif %}
+</section>
+{% endfor %}
+{% endblock %}

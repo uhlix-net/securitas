@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block content %}
+{% if can(user.role, "scan.run") %}
+<section>
+  <h2>Run a compliance scan</h2>
+  <p class="sub">Checks each enabled target against the active benchmark for its operating system and adds the result to the history. Compliance scans are separate from vulnerability scans. A host is matched to a benchmark by the OS its latest vulnerability scan saw.</p>
+  <form method="post" action="/compliance/scans">
+    <input type="hidden" name="csrf" value="{{ sess.csrf }}">
+    <div class="row" style="align-items:center">
+    {% for p in PLATFORMS %}
+      {% set usable = has_checker[p] and matched.get(p, 0) %}
+      <label class="inline"><input type="checkbox" name="platform" value="{{ p }}"{% if usable %} checked{% else %} disabled{% endif %}>
+        {{ PLATFORM_LABEL[p] }}{% if not has_checker[p] %} <span class="muted">(no checker yet)</span>{% else %} <span class="muted">({{ matched.get(p, 0) }} of {{ ntargets.get(p, 0) }} target{{ "" if ntargets.get(p) == 1 else "s" }} matched to a benchmark)</span>{% endif %}</label>
+    {% endfor %}
+      <button class="btn primary">Run compliance scan</button>
+    </div>
+    {% set any_hosts = pickable.values()|map("length")|sum %}
+    {% if any_hosts %}
+    <fieldset style="border:0;margin:10px 0 0;padding:0">
+      <legend class="small"><strong>Only some hosts?</strong> Tick them to scan just those (the platform boxes are then ignored). Leave all unticked to scan every matched host of the platforms ticked above.</legend>
+      {% for p in PLATFORMS %}{% if pickable.get(p) and has_checker[p] %}
+      <div class="row" style="align-items:center;gap:4px 0">
+        <span class="small muted" style="min-width:70px">{{ PLATFORM_LABEL[p] }}</span>
+        {% for h in pickable[p] %}<label class="inline"><input type="checkbox" name="host" value="{{ h.host }}"> <span class="mono">{{ h.host }}</span>{% if h.label %} <span class="muted small">({{ h.label }})</span>{% endif %}</label>{% endfor %}
+      </div>
+      {% endif %}{% endfor %}
+    </fieldset>
+    {% endif %}
+  </form>
+  <p class="hint">{{ checker.linux }}</p>
+</section>
+{% endif %}
+<section>
+  <h2>History</h2>
+  <p class="sub">Every scheduled and manual compliance scan. Open one for its hosts and their rule results.{% if busy %} This page refreshes while a scan is running.{% endif %}</p>
+  {% if not scans %}<p class="muted">No compliance scans yet.</p>{% else %}
+  <div class="scroll"><table>
+    <thead><tr><th>Scan</th><th>Started</th><th>Platforms</th><th>Trigger</th><th>Status</th><th class="n">Hosts checked</th><th class="n">Rules passed</th><th class="n">Rules failed</th><th class="n">Score</th><th class="n">Duration</th></tr></thead>
+    <tbody>
+    {% for s in scans %}{% set c = stats.get(s.id) %}
+    <tr>
+      <td class="mono"><a href="/compliance/scans/{{ s.id }}">#{{ s.id }}</a></td>
+      <td class="date">{{ fmt(s.started_at or s.created_at) }}</td>
+      <td>{% for p in s.platforms %}{{ PLATFORM_LABEL[p] }}{% if not loop.last %}, {% endif %}{% endfor %}{% if s.hosts %}<br><span class="small muted">only {{ s.hosts|join(", ") }}</span>{% endif %}</td>
+      <td>{{ "Scheduled" if s.trigger == "schedule" else "Manual" }}{% if s.requested_by %} <span class="muted">by {{ s.requested_by }}</span>{% endif %}</td>
+      <td><span class="badge b-{{ s.status }}">{{ STATUS_LABEL[s.status] }}</span></td>
+      <td class="n">{% if c %}{{ c.done }} of {{ c.hosts }}{% endif %}</td>
+      <td class="n">{% if c %}{{ c.pass }}{% endif %}</td>
+      <td class="n{% if c and c.fail %} hot{% endif %}">{% if c %}{{ c.fail }}{% endif %}</td>
+      <td class="n">{% if c and c.scores %}{{ (c.scores|sum / c.scores|length)|round(1) }}%{% endif %}</td>
+      <td class="n">{% if s.finished_at and s.started_at %}{{ ((s.finished_at - s.started_at).total_seconds())|round|int }} s{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+  {% if pages > 1 %}<div class="pager">{% if page > 1 %}<a class="btn small" href="?page={{ page - 1 }}">Newer</a>{% endif %}<span class="muted">Page {{ page }} of {{ pages }}</span>{% if page < pages %}<a class="btn small" href="?page={{ page + 1 }}">Older</a>{% endif %}</div>{% endif %}
+  {% endif %}
+</section>
+{% endblock %}

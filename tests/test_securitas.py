@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from securitas import auth, feeds, render, report, scan_linux, scan_windows  # noqa: E402
 from securitas.config import Config, LdapConfig, OidcConfig  # noqa: E402
-from securitas.db import PlatformResult, ResultStats, Scan, select  # noqa: E402
+from securitas.db import PlatformResult, ResultStats, Scan, func, select  # noqa: E402
 
 
 def pri(sec):
@@ -443,28 +443,28 @@ class Web(unittest.TestCase):
         self.assertEqual(v.get("/scans").status_code, 200)
         self.assertNotIn("Run scan", v.get("/scans").text)
         self.assertEqual(v.post("/scans", data={"csrf": csrf(v), "platform": "kubernetes"}).status_code, 403)
-        for p in ("/settings/schedules", "/settings/targets", "/settings/users", "/settings/authentication", "/settings/audit"):
+        for p in ("/vulnerabilities/schedules", "/targets", "/settings/users", "/settings/authentication", "/audit"):
             self.assertEqual(v.get(p).status_code, 403, p)
         o = client(self.app)
         login(o, "otto", "a-long-password-1")
         self.assertEqual(o.post("/scans", data={"csrf": csrf(o), "platform": "kubernetes"}, follow_redirects=False).status_code, 303)
-        self.assertEqual(o.get("/settings/schedules").status_code, 200)
-        r = o.post("/settings/schedules/linux", data={"csrf": csrf(o), "cron": "15 3 * * 1", "enabled": "on"}, follow_redirects=False)
+        self.assertEqual(o.get("/vulnerabilities/schedules").status_code, 200)
+        r = o.post("/vulnerabilities/schedules/linux", data={"csrf": csrf(o), "cron": "15 3 * * 1", "enabled": "on"}, follow_redirects=False)
         self.assertIn("ok=saved", r.headers["location"])
-        self.assertIn("err=cron", o.post("/settings/schedules/linux", data={"csrf": csrf(o), "cron": "bad"}, follow_redirects=False).headers["location"])
-        for p in ("/settings/targets", "/settings/users", "/settings/authentication", "/settings/audit"):
+        self.assertIn("err=cron", o.post("/vulnerabilities/schedules/linux", data={"csrf": csrf(o), "cron": "bad"}, follow_redirects=False).headers["location"])
+        for p in ("/targets", "/settings/users", "/settings/authentication", "/audit"):
             self.assertEqual(o.get(p).status_code, 403, p)
-        audit = self.c.get("/settings/audit").text
+        audit = self.c.get("/audit").text
         self.assertIn("scan.run", audit)
         self.assertIn("schedule.saved", audit)
 
     def test_targets(self):
         login(self.c, "admin", ADMIN_PW)
         tok = csrf(self.c)
-        self.c.post("/settings/targets", data={"csrf": tok, "platform": "linux", "host": "web1.example.com", "label": "Web"})
-        self.assertIn("err=host", self.c.post("/settings/targets", data={"csrf": tok, "platform": "linux", "host": "bad host;rm"},
+        self.c.post("/targets", data={"csrf": tok, "platform": "linux", "host": "web1.example.com", "label": "Web"})
+        self.assertIn("err=host", self.c.post("/targets", data={"csrf": tok, "platform": "linux", "host": "bad host;rm"},
                                               follow_redirects=False).headers["location"])
-        self.assertIn("web1.example.com", self.c.get("/settings/targets").text)
+        self.assertIn("web1.example.com", self.c.get("/targets").text)
         self.assertIn("1 target)", self.c.get("/scans").text)
 
     def test_last_admin_and_self(self):
@@ -507,9 +507,10 @@ class Web(unittest.TestCase):
 
     def test_summary_landing_page(self):
         login(self.c, "admin", ADMIN_PW)
-        self.assertIn("No scan has finished yet", self.c.get("/").text)
+        self.assertIn("No scan has finished yet", self.c.get("/vulnerabilities").text)
+        self.assertIn("No scan has finished yet", self.c.get("/").text)                 # Home says so too
         self._scan(["kubernetes"])
-        page = self.c.get("/").text
+        page = self.c.get("/vulnerabilities").text
         self.assertIn("<title>Summary", page)
         self.assertIn('href="/report#kubernetes"', page)
         m = self.jobs.current_model()
@@ -525,14 +526,14 @@ class Web(unittest.TestCase):
         with self.db.Session() as s, s.begin():
             self.jobs.enqueue(s, ["kubernetes"], "manual", "admin")
         self.jobs.run_scan(self.jobs._claim())
-        page = self.c.get("/").text
+        page = self.c.get("/vulnerabilities").text
         self.assertIn('id="history"', page)
-        self.assertIn('class="on" aria-current="true" href="/?range=week#history"', page)   # default: weekly
+        self.assertIn('class="on" aria-current="true" href="/vulnerabilities?range=week#history"', page)   # default: weekly
         self.assertIn("<title>Kubernetes,", page)
-        self.assertIn('id="pie-kubernetes"', page)
+        self.assertIn('id="pie-lv-kubernetes"', page)
         self.assertNotIn("<script", page)
-        self.assertIn('aria-current="true" href="/?range=month#history"', self.c.get("/?range=month").text)
-        self.assertIn('aria-current="true" href="/?range=week#history"', self.c.get("/?range=bogus").text)
+        self.assertIn('aria-current="true" href="/vulnerabilities?range=month#history"', self.c.get("/vulnerabilities?range=month").text)
+        self.assertIn('aria-current="true" href="/vulnerabilities?range=week#history"', self.c.get("/vulnerabilities?range=bogus").text)
         rep_ = self.c.get("/report").text
         self.assertIn("CVE-2099-0003", rep_)                       # low, not a priority: listed now
         self.assertIn('name="sev" value="low" checked', rep_)
@@ -855,7 +856,7 @@ class SettingsUI(unittest.TestCase):
         self.assertNotIn("/login/oidc", client(self.app).get("/login").text)
 
     def test_platform_switch(self):
-        self.post("/settings/sources", "/settings/sources", kev_enabled="on", epss_enabled="on", epss_min="0.10",
+        self.post("/vulnerabilities/sources", "/vulnerabilities/sources", kev_enabled="on", epss_enabled="on", epss_min="0.10",
                   platform_kubernetes="on", platform_linux="on")      # windows off
         self.assertFalse(self.jobs.settings.effective().platform_on("windows"))
         page = self.c.get("/scans").text
@@ -876,7 +877,7 @@ class SettingsUI(unittest.TestCase):
         with self.db.Session() as s, s.begin():
             self.jobs.enqueue(s, ["windows"], "manual", "admin")
         self.jobs.run_scan(self.jobs._claim())
-        self.post("/settings/sources", "/settings/sources", kev_enabled="on", epss_enabled="on", epss_min="0.10",
+        self.post("/vulnerabilities/sources", "/vulnerabilities/sources", kev_enabled="on", epss_enabled="on", epss_min="0.10",
                   platform_kubernetes="on", platform_linux="on")
         page = self.c.get("/report").text
         self.assertIn("Turned off", page)
@@ -890,15 +891,15 @@ class SettingsUI(unittest.TestCase):
         self.jobs.run_scan(self.jobs._claim())
         cves = lambda: pri(self.jobs.current_model()["platforms"][0])
         self.assertIn("CVE-2099-0002", cves())                    # KEV
-        self.post("/settings/sources", "/settings/sources", epss_enabled="on", epss_min="0.10", platform_kubernetes="on",
+        self.post("/vulnerabilities/sources", "/vulnerabilities/sources", epss_enabled="on", epss_min="0.10", platform_kubernetes="on",
                   platform_linux="on", platform_windows="on")      # KEV off
         self.assertNotIn("CVE-2099-0002", cves())
         self.assertIn("The CISA KEV catalog is turned off", self.c.get("/report").text)
-        self.post("/settings/sources", "/settings/sources", epss_min="0.10", platform_kubernetes="on", platform_linux="on",
+        self.post("/vulnerabilities/sources", "/vulnerabilities/sources", epss_min="0.10", platform_kubernetes="on", platform_linux="on",
                   platform_windows="on")                           # both off: everything listed
         self.assertEqual(sorted(cves()), ["CVE-2099-0001", "CVE-2099-0002", "CVE-2099-0003", "CVE-2099-0004"])
         self.assertIn("every CVE is listed, unranked", self.c.get("/report").text)
-        r = self.post("/settings/sources", "/settings/sources", kev_enabled="on", epss_enabled="on", epss_min="1.5",
+        r = self.post("/vulnerabilities/sources", "/vulnerabilities/sources", kev_enabled="on", epss_enabled="on", epss_min="1.5",
                       platform_kubernetes="on", platform_linux="on", platform_windows="on")
         self.assertEqual(r.status_code, 400)
 
@@ -912,7 +913,7 @@ class SettingsUI(unittest.TestCase):
             f = jobsmod.Feeds(self.jobs.settings)
             f.get()
             self.assertEqual(calls, ["kev", "epss"])
-            self.post("/settings/sources", "/settings/sources", epss_enabled="on", epss_min="0.10",
+            self.post("/vulnerabilities/sources", "/vulnerabilities/sources", epss_enabled="on", epss_min="0.10",
                       platform_kubernetes="on", platform_linux="on", platform_windows="on")
             calls.clear()
             _, _, src, _ = f.get()
@@ -922,7 +923,7 @@ class SettingsUI(unittest.TestCase):
             feeds.kev, feeds.epss = old
 
     def test_sources_page_documents_scanners(self):
-        page = self.c.get("/settings/sources").text
+        page = self.c.get("/vulnerabilities/sources").text
         for s in ("CISA Known Exploited", "EPSS", "Trivy Operator", "dnf", "MSRC", "updateinfo list --security",
                   "Win32_OperatingSystem", "How Windows is scanned"):
             self.assertIn(s, page)
@@ -940,10 +941,13 @@ class SettingsUI(unittest.TestCase):
 
     def test_menu_redirects_and_permissions(self):
         page = self.c.get("/settings").text
-        for label in ("Users", "Authentication", "Scan credentials", "Targets", "Schedules", "Sources", "Audit log"):
+        for label in ("Users", "Authentication", "Scan credentials"):
             self.assertIn(label, page)
+        for moved in ('href="/targets"><h3>', 'href="/audit"><h3>', 'href="/vulnerabilities/schedules"><h3>'):
+            self.assertNotIn(moved, page)                                    # 0.5.0: own menus now
+        self.assertNotIn('href="/vulnerabilities/sources"><h3>', page)        # 0.5.0: Sources moved to Vulnerabilities
         for old, new in (("/admin/users", "/settings/users"), ("/admin/auth", "/settings/authentication"),
-                         ("/schedules", "/settings/schedules")):
+                         ("/schedules", "/vulnerabilities/schedules")):
             r = self.c.get(old, follow_redirects=False)
             self.assertEqual((r.status_code, r.headers["location"]), (301, new))
         self.assertIn("Add a local user", self.c.get("/settings/users").text)
@@ -951,12 +955,13 @@ class SettingsUI(unittest.TestCase):
         self.c.post("/settings/users", data={"csrf": tok, "username": "vic", "password": "a-long-password-1", "role": "viewer"})
         v = client(self.app)
         login(v, "vic", "a-long-password-1")
-        page = v.get("/settings").text
-        self.assertIn("Sources", page)
-        self.assertNotIn("Scan credentials", page)
-        self.assertEqual(v.get("/settings/sources").status_code, 200)
+        page = v.get("/vulnerabilities/sources").text
+        self.assertIn('href="/vulnerabilities/sources" class="on">Sources', page)
+        self.assertNotIn('href="/settings"', page)          # a viewer has no settings pages, so no Settings menu
+        self.assertNotIn("Scan credentials", v.get("/settings").text)
+        self.assertEqual(v.get("/vulnerabilities/sources").status_code, 200)
         self.assertEqual(v.get("/settings/credentials").status_code, 403)
-        r = v.post("/settings/sources", data={"csrf": csrf(v, "/settings/sources")}, follow_redirects=False)
+        r = v.post("/vulnerabilities/sources", data={"csrf": csrf(v, "/vulnerabilities/sources")}, follow_redirects=False)
         self.assertEqual(r.status_code, 403)
 
 
@@ -972,3 +977,630 @@ ED25519_KEY = _ed25519_key()
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ------------------------------------------------------------------ 0.5.0: compliance benchmark library
+
+def role_zip(top="TEST9-CIS-1.2.3", extra=None, defaults=None, platform="EL"):
+    """A small Ansible-Lockdown-shaped role: three task styles (plain, multi-rule literal block, nested block)."""
+    import io
+    import zipfile
+    tasks = '''---
+- name: "1.1.1 | PATCH | Ensure cramfs is not available"
+  when: test9cis_rule_1_1_1
+  tags: [level1-server, level1-workstation, patch, rule_1.1.1, NIST800-53R5_CM-7]
+  block:
+    - name: "1.1.1 | PATCH | Ensure cramfs is not available | Edit modprobe config"
+      ansible.builtin.lineinfile: {path: /etc/x, line: y}
+- name: |
+    "1.1.2 | PATCH | Ensure 'audit log' mode is configured"
+    "1.1.3 | AUDIT | Ensure audit log owner is configured"
+  when: [test9cis_rule_1_1_2 or test9cis_rule_1_1_3]
+  tags: [level2-server, level2-workstation, rule_1.1.2, rule_1.1.3]
+  ansible.builtin.file: {path: /x}
+- name: Outer block
+  block:
+    - name: "2.10.1 | PATCH | Ensure ssh is configured"
+      when: test9cis_rule_2_10_1
+      tags: [level1-server, rule_2.10.1, NIST800-53R5_AC-17]
+      ansible.builtin.debug: {msg: !unsafe "{{ x }}"}
+'''
+    files = {
+        "meta/main.yml": "galaxy_info:\n  author: Tester\n  description: Apply the TEST 9 CIS\n  license: MIT\n"
+                         "  role_name: test9_cis\n  namespace: ansible-lockdown\n  platforms:\n    - name: %s\n"
+                         "      versions: ['9']\n" % platform,
+        "defaults/main/main.yml": defaults if defaults is not None else
+            "benchmark_version: 'v3.1.0'\ntest9cis_rule_1_1_1: true\ntest9cis_rule_1_1_2: true\n"
+            "test9cis_rule_1_1_3: false\ntest9cis_rule_2_10_1: true\n",
+        "tasks/section_1/cis_1.1.x.yml": tasks,
+        "tasks/main.yml": "- name: not a rule\n  ansible.builtin.debug: {}\n",
+        "Changelog.md": "# Changes\n",
+    }
+    files.update(extra or {})
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for k, v in files.items():
+            z.writestr(top + "/" + k, v)
+    return buf.getvalue()
+
+
+REAL_ZIP = os.environ.get("SECURITAS_TEST_RHEL9_CIS", "/mnt/c/Users/huhl/Downloads/RHEL9-CIS-2.4.2.zip")
+
+
+class ComplianceImport(unittest.TestCase):
+    def test_parse(self):
+        from securitas import compliance
+        b = compliance.parse_zip(role_zip(), "upload.zip")
+        self.assertEqual((b["key"], b["name"], b["version"], b["benchmark_version"], b["platform"], b["os_key"]),
+                         ("TEST9-CIS-1.2.3", "TEST9-CIS", "1.2.3", "v3.1.0", "linux", "test9"))
+        self.assertEqual([r["rule_id"] for r in b["rules"]], ["1.1.1", "1.1.2", "1.1.3", "2.10.1"])
+        r = {x["rule_id"]: x for x in b["rules"]}
+        self.assertEqual(r["1.1.1"]["title"], "Ensure cramfs is not available")
+        self.assertEqual(r["1.1.2"]["title"], "Ensure 'audit log' mode is configured")    # inner quotes kept
+        self.assertEqual((r["1.1.3"]["kind"], r["1.1.3"]["default_on"], r["1.1.3"]["toggle"]),
+                         ("AUDIT", False, "test9cis_rule_1_1_3"))
+        self.assertEqual(r["1.1.1"]["refs"], ["NIST800-53R5_CM-7"])
+        self.assertEqual(r["2.10.1"]["section"], "2")
+        self.assertEqual(b["meta"]["toggle_prefix"], "test9cis")
+        self.assertEqual(len(b["sha256"]), 64)
+
+    def test_profiles(self):
+        from securitas.compliance import in_profile
+        self.assertTrue(in_profile(["level1-server", "level1-workstation"], "level1-server"))
+        self.assertFalse(in_profile(["level2-server"], "level1-server"))
+        self.assertTrue(in_profile(["level2-server"], "level2-server"))
+        self.assertTrue(in_profile(["level1-server"], "level2-server"))
+        self.assertFalse(in_profile(["level1-workstation"], "level2-server"))
+
+    def test_rejects(self):
+        import io
+        import zipfile
+        from securitas.compliance import BenchmarkError, parse_zip
+        with self.assertRaisesRegex(BenchmarkError, "not a zip"):
+            parse_zip(b"hello")
+        with self.assertRaisesRegex(BenchmarkError, "Download a release"):
+            parse_zip(role_zip(top="TEST9-CIS-devel"))
+        with self.assertRaisesRegex(BenchmarkError, "STIG"):
+            parse_zip(role_zip(top="TEST9-STIG-1.0.0"))
+        with self.assertRaisesRegex(BenchmarkError, "not valid YAML"):
+            parse_zip(role_zip(extra={"tasks/section_9/bad.yml": "- name: [unclosed"}))
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("A-CIS-1.0.0/meta/main.yml", "x: 1")
+            z.writestr("B-CIS-1.0.0/meta/main.yml", "x: 1")
+        with self.assertRaisesRegex(BenchmarkError, "one folder"):
+            parse_zip(buf.getvalue())
+        with self.assertRaisesRegex(BenchmarkError, "No CIS rules"):
+            parse_zip(role_zip(extra={"tasks/section_1/cis_1.1.x.yml": "- name: nothing\n  debug: {}\n"}))
+
+    def test_windows_platform(self):
+        from securitas import compliance
+        b = compliance.parse_zip(role_zip(top="Windows-2022-CIS-3.0.0", platform="Windows"))
+        self.assertEqual((b["platform"], b["os_key"], b["os_label"]), ("windows", "windows2022", "Windows Server 2022"))
+
+    @unittest.skipUnless(os.path.exists(REAL_ZIP), "real RHEL9-CIS-2.4.2.zip not available")
+    def test_real_rhel9_cis(self):
+        import yaml
+        import zipfile
+        from securitas import compliance
+        data = open(REAL_ZIP, "rb").read()
+        b = compliance.parse_zip(data)
+        self.assertEqual((b["key"], b["benchmark_version"], b["os_key"]), ("RHEL9-CIS-2.4.2", "v2.0.0", "rhel9"))
+        d = yaml.safe_load(zipfile.ZipFile(REAL_ZIP).read("RHEL9-CIS-2.4.2/defaults/main/main.yml"))
+        toggles = {k for k in d if k.startswith("rhel9cis_rule_")}
+        self.assertEqual({r["toggle"] for r in b["rules"]}, toggles)      # every switch in the role has its rule
+        self.assertTrue(all(r["levels"] for r in b["rules"]))
+
+
+class ComplianceUI(unittest.TestCase):
+    def setUp(self):
+        self.app, self.db, self.jobs, self.cfg = make_app()
+        self.c = client(self.app)
+        login(self.c, "admin", ADMIN_PW)
+
+    def upload(self, data, name="TEST9-CIS-1.2.3.zip", c=None):
+        c = c or self.c
+        return c.post("/compliance/benchmarks", data={"csrf": csrf(c, "/compliance/benchmarks")},
+                      files={"file": (name, data, "application/zip")}, follow_redirects=False)
+
+    def act(self, bid, **data):
+        return self.c.post("/compliance/benchmarks/%d" % bid, data={"csrf": csrf(self.c, "/compliance/benchmarks/%d" % bid), **data},
+                           follow_redirects=False)
+
+    def bench(self, key):
+        from securitas.db import Benchmark
+        with self.db.Session() as s:
+            b = s.scalar(select(Benchmark).where(Benchmark.key == key))
+            return b and (b.id, b.active, b.profile, {r.rule_id: r.override for r in b.rules})
+
+    def test_upload_list_and_details(self):
+        data = role_zip()                    # built once: the zip records file times, so a rebuild can differ
+        r = self.upload(data)
+        self.assertEqual(r.status_code, 303, r.text[:500])
+        bid, active, profile, _ = self.bench("TEST9-CIS-1.2.3")
+        self.assertEqual(r.headers["location"], "/compliance/benchmarks/%d?ok=imported" % bid)
+        self.assertTrue(active)                          # first one for its OS
+        self.assertEqual(profile, "level1-server")
+        page = self.c.get("/compliance/benchmarks").text
+        self.assertIn("TEST9-CIS-1.2.3", page)
+        self.assertIn("TEST9-CIS 1.2.3 · uploaded ", page)  # name, version and upload date
+        self.assertIn("2 of 4", page)                    # level 1 server: 1.1.1 and 2.10.1
+        detail = self.c.get("/compliance/benchmarks/%d" % bid).text
+        self.assertIn("Ensure &#39;audit log&#39; mode is configured", detail)
+        self.assertIn("v3.1.0", detail)
+        self.assertIn("off in role", detail)             # 1.1.3 is off in the role's defaults
+        self.assertEqual(self.c.get("/compliance/benchmarks/%d/download" % bid).content, data)
+        from securitas.db import AuditEvent
+        with self.db.Session() as s:
+            self.assertIn("benchmark.uploaded", s.scalars(select(AuditEvent.action)).all())
+
+    def test_duplicate_and_bad_upload(self):
+        self.upload(role_zip())
+        r = self.upload(role_zip())
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("already loaded", r.text)
+        r = self.upload(b"not a zip", "x.zip")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("not a zip file", r.text)
+
+    def test_versions_side_by_side_and_activate(self):
+        self.upload(role_zip())
+        self.upload(role_zip(top="TEST9-CIS-1.3.0"))
+        old, new = self.bench("TEST9-CIS-1.2.3"), self.bench("TEST9-CIS-1.3.0")
+        self.assertTrue(old[1])
+        self.assertFalse(new[1])                         # the first one stays active
+        r = self.act(new[0], action="activate")
+        self.assertIn("ok=activated", r.headers["location"])
+        self.assertFalse(self.bench("TEST9-CIS-1.2.3")[1])
+        self.assertTrue(self.bench("TEST9-CIS-1.3.0")[1])
+
+    def test_profile_rules_and_reset(self):
+        self.upload(role_zip())
+        bid = self.bench("TEST9-CIS-1.2.3")[0]
+        self.act(bid, action="profile", profile="level2-server")
+        self.assertEqual(self.bench("TEST9-CIS-1.2.3")[2], "level2-server")
+        # filtered page: only section 1 shown; turn 1.1.1 off and 1.1.3 on (off in the role)
+        r = self.c.post("/compliance/benchmarks/%d" % bid, data={
+            "csrf": csrf(self.c, "/compliance/benchmarks/%d" % bid), "action": "rules", "query": "section=1",
+            "shown": ["1.1.1", "1.1.2", "1.1.3"], "rule": ["1.1.2", "1.1.3"]}, follow_redirects=False)
+        self.assertEqual(r.headers["location"], "/compliance/benchmarks/%d?section=1&ok=saved" % bid)
+        ov = self.bench("TEST9-CIS-1.2.3")[3]
+        self.assertEqual(ov, {"1.1.1": False, "1.1.2": None, "1.1.3": True, "2.10.1": None})   # 2.10.1 not shown: untouched
+        self.assertIn("Set here", self.c.get("/compliance/benchmarks/%d?state=override" % bid).text)
+        self.act(bid, action="reset")
+        self.assertEqual(set(self.bench("TEST9-CIS-1.2.3")[3].values()), {None})
+
+    def test_delete(self):
+        self.upload(role_zip())
+        bid = self.bench("TEST9-CIS-1.2.3")[0]
+        self.assertIn("err=csrf", self.act(bid, action="delete").headers["location"])     # needs the confirm box
+        r = self.act(bid, action="delete", confirm="on")
+        self.assertEqual(r.headers["location"], "/compliance/benchmarks?ok=deleted")
+        self.assertIsNone(self.bench("TEST9-CIS-1.2.3"))
+        from securitas.db import BenchmarkFile, BenchmarkRule
+        with self.db.Session() as s:
+            self.assertEqual(s.scalar(select(func.count(BenchmarkRule.id))), 0)
+            self.assertEqual(s.scalar(select(func.count(BenchmarkFile.id))), 0)
+        self.assertEqual(self.c.get("/compliance/benchmarks/%d" % bid).status_code, 404)
+
+    def test_remove_from_list(self):
+        self.upload(role_zip())
+        bid = self.bench("TEST9-CIS-1.2.3")[0]
+        page = self.c.get("/compliance/benchmarks").text
+        self.assertIn('<form method="post" action="/compliance/benchmarks/%d">' % bid, page)
+        self.assertIn('name="confirm" required', page)
+        tok = csrf(self.c, "/compliance/benchmarks")
+        r = self.c.post("/compliance/benchmarks/%d" % bid, data={"csrf": tok, "action": "delete"}, follow_redirects=False)
+        self.assertIn("err=csrf", r.headers["location"])                      # unticked: nothing removed
+        self.assertIsNotNone(self.bench("TEST9-CIS-1.2.3"))
+        r = self.c.post("/compliance/benchmarks/%d" % bid, data={"csrf": tok, "action": "delete", "confirm": "on"},
+                        follow_redirects=False)
+        self.assertEqual(r.headers["location"], "/compliance/benchmarks?ok=deleted")
+        self.assertIsNone(self.bench("TEST9-CIS-1.2.3"))
+
+    def test_menu_bar_subtitle(self):
+        page = self.c.get("/compliance/benchmarks").text
+        self.assertIn("<small>Vulnerabilities and Compliance</small>", page)
+
+    def test_viewer_can_browse_not_change(self):
+        self.upload(role_zip())
+        bid = self.bench("TEST9-CIS-1.2.3")[0]
+        tok = csrf(self.c)
+        self.c.post("/settings/users", data={"csrf": tok, "username": "vic", "password": "a-long-password-1", "role": "viewer"})
+        v = client(self.app)
+        login(v, "vic", "a-long-password-1")
+        page = v.get("/compliance/benchmarks/%d" % bid)
+        self.assertEqual(page.status_code, 200)
+        self.assertNotIn("Remove benchmark", page.text)
+        self.assertNotIn('type="file"', v.get("/compliance/benchmarks").text)
+        self.assertEqual(self.upload(role_zip(top="TEST9-CIS-9.9.9"), c=v).status_code, 403)
+        r = v.post("/compliance/benchmarks/%d" % bid, data={"csrf": csrf(v, "/compliance/benchmarks/%d" % bid), "action": "delete",
+                                                          "confirm": "on"}, follow_redirects=False)
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(v.get("/compliance/benchmarks/%d/download" % bid).status_code, 403)
+
+    @unittest.skipUnless(os.path.exists(REAL_ZIP), "real RHEL9-CIS-2.4.2.zip not available")
+    def test_real_upload(self):
+        r = self.upload(open(REAL_ZIP, "rb").read(), "RHEL9-CIS-2.4.2.zip")
+        self.assertEqual(r.status_code, 303, r.text[:800])
+        page = self.c.get("/compliance/benchmarks").text
+        self.assertIn("RHEL9-CIS-2.4.2", page)
+        self.assertIn("237 of 297", page)
+
+
+class Menus(unittest.TestCase):
+    """0.5.0: Vulnerabilities and Compliance are top-level menus; Sources and Benchmarks moved under them."""
+
+    def setUp(self):
+        self.app, self.db, self.jobs, self.cfg = make_app()
+        self.c = client(self.app)
+        login(self.c, "admin", ADMIN_PW)
+
+    def test_top_and_sub_menus(self):
+        page = self.c.get("/report").text
+        self.assertIn('<a href="/">Home</a>', page)
+        self.assertLess(page.index('>Home</a>'), page.index('>Vulnerabilities</a>'))        # Home left of Vulnerabilities
+        self.assertIn('<a href="/vulnerabilities" class="on">Vulnerabilities</a>', page)
+        self.assertIn('<a href="/about">About</a>', page)
+        self.assertIn('<a href="/compliance">Compliance</a>', page)
+        self.assertIn('<a href="/report" class="on">Report</a>', page)
+        for href in ("/scans", "/vulnerabilities/sources"):
+            self.assertIn('href="%s"' % href, page)
+        page = self.c.get("/compliance/scans").text
+        self.assertIn('<a href="/compliance" class="on">Compliance</a>', page)
+        self.assertIn('<a href="/compliance/scans" class="on">Scans</a>', page)
+        self.assertIn('<a href="/compliance">Summary</a>', page)             # the Summary tab is not on for /compliance/scans
+        self.assertIn('<a href="/compliance/report">Report</a>', page)
+        self.assertIn('<a href="/compliance/schedules">Schedules</a>', page)
+        page = self.c.get("/vulnerabilities").text
+        self.assertIn('<a href="/vulnerabilities" class="on">Summary</a>', page)
+        self.assertIn('<a href="/vulnerabilities/schedules">Schedules</a>', page)
+        self.assertIn('<a href="/targets">Targets</a>', page)                # top level for admins
+        self.assertIn('<a href="/audit">Audit log</a>', page)
+        self.assertIn('<a href="/targets" class="on">Targets</a>', self.c.get("/targets").text)
+        self.assertNotIn('class="subnav"', self.c.get("/audit").text)
+        self.assertIn('href="/compliance/benchmarks"', self.c.get("/compliance/scans").text)
+        self.assertNotIn('aria-label="Vulnerabilities"', self.c.get("/account").text)
+
+    def test_old_addresses_redirect(self):
+        for old, new in (("/settings/sources", "/vulnerabilities/sources"), ("/settings/compliance", "/compliance/benchmarks"),
+                         ("/settings/compliance/7", "/compliance/benchmarks/7"),
+                         ("/settings/schedules", "/vulnerabilities/schedules"), ("/settings/targets", "/targets"),
+                         ("/settings/audit", "/audit"), ("/admin/targets", "/targets")):
+            r = self.c.get(old, follow_redirects=False)
+            self.assertEqual((r.status_code, r.headers["location"]), (301, new), old)
+
+    def test_compliance_report_matches_hosts_to_benchmarks(self):
+        from securitas.db import PlatformResult, Scan, Target
+        with self.db.Session() as s, s.begin():
+            s.add_all([Target(platform="linux", host="rocky1"), Target(platform="linux", host="ubu1"),
+                       Target(platform="linux", host="new1"), Target(platform="windows", host="win1")])
+            sc = Scan(trigger="manual", platforms=["linux"], status="done")
+            s.add(sc)
+            s.flush()
+            s.add(PlatformResult(scan_id=sc.id, platform="linux", status="done",
+                                 raw={"systems": [{"name": "rocky1", "os": "Rocky Linux 9.6"},
+                                                  {"name": "ubu1", "os": "Ubuntu 22.04.4 LTS"}]}))
+        page = self.c.get("/compliance/report").text
+        self.assertIn("No benchmark is active", page)
+        self.c.post("/compliance/benchmarks", data={"csrf": csrf(self.c, "/compliance/benchmarks")},
+                    files={"file": ("r.zip", role_zip(top="RHEL9-CIS-1.0.0"), "application/zip")})
+        page = self.c.get("/compliance/report").text
+        row = lambda host: re.search(r'<td class="mono">%s</td>(.*?)</tr>' % host, page, re.S).group(1)
+        self.assertIn("RHEL9-CIS-1.0.0", row("rocky1"))
+        self.assertIn("no active benchmark for this OS (ubuntu22)", row("ubu1"))
+        self.assertIn("run a vulnerability scan", row("new1"))
+        self.assertIn("Not checked", row("win1"))
+        self.assertIn("(no checker yet)", self.c.get("/compliance/scans").text)
+        summary = self.c.get("/compliance").text
+        linux = re.search(r'compliance/report#linux"><strong>Linux</strong></a></td>(.*?)</tr>', summary, re.S).group(1)
+        self.assertEqual(re.findall(r'<td class="n">(\d+)</td>', linux), ["3", "1", "0"])   # 3 systems, 1 matched, 0 checked
+        self.assertIn("RHEL9-CIS-1.0.0", linux)
+
+    def test_compliance_schedules_are_separate(self):
+        from securitas.db import ComplianceSchedule, Schedule
+        r = self.c.post("/compliance/schedules/linux", data={"csrf": csrf(self.c, "/compliance/schedules"), "cron": "0 6 * * 0",
+                                                             "enabled": "on"}, follow_redirects=False)
+        self.assertEqual(r.headers["location"], "/compliance/schedules?ok=saved")
+        self.assertIn("err=cron", self.c.post("/compliance/schedules/linux", data={"csrf": csrf(self.c, "/compliance/schedules"),
+                                                                                    "cron": "bad"}, follow_redirects=False).headers["location"])
+        with self.db.Session() as s:
+            self.assertEqual(s.scalar(select(ComplianceSchedule.cron).where(ComplianceSchedule.platform == "linux")), "0 6 * * 0")
+            self.assertEqual(s.scalar(select(Schedule.cron).where(Schedule.platform == "linux")), "0 5 * * *")   # untouched
+        page = self.c.get("/compliance/schedules").text
+        self.assertIn("start nothing: Kubernetes.", page)
+        self.assertIn("0 6 * * 0", self.c.get("/compliance").text)
+        self.assertIn('action="/vulnerabilities/schedules/linux"', self.c.get("/vulnerabilities/schedules").text)
+
+    def test_viewer_menus(self):
+        self.c.post("/settings/users", data={"csrf": csrf(self.c), "username": "vic", "password": "a-long-password-1", "role": "viewer"})
+        v = client(self.app)
+        login(v, "vic", "a-long-password-1")
+        page = v.get("/compliance").text
+        for hidden in ('href="/targets"', 'href="/audit"', 'href="/compliance/schedules"', 'href="/settings"'):
+            self.assertNotIn(hidden, page)
+        self.assertEqual(v.get("/compliance/schedules").status_code, 403)
+        self.assertEqual(v.get("/targets").status_code, 403)
+
+    def test_os_keys(self):
+        from securitas.compliance import os_key_for
+        self.assertEqual([os_key_for(x) for x in ("Rocky Linux 9.6", "AlmaLinux 8.10", "Windows Server 2022 Standard", "")],
+                         ["rhel9", "rhel8", "windows2022", ""])
+
+
+GOSS_OUT = json.dumps({"results": [
+    {"title": "1.1.1 | Ensure cramfs is not available | disabled", "successful": True, "skipped": False, "result": 0,
+     "meta": {"CIS_ID": "1.1.1"}, "summary-line": "ok"},
+    {"title": "1.1.1 | Ensure cramfs is not available | blacklist", "successful": False, "skipped": False, "result": 1,
+     "meta": {"CIS_ID": "1.1.1"}, "summary-line": "Command: blacklist_cramfs: stdout: patterns not found: [/blacklist cramfs/]"},
+    {"title": "2.10.1 | Ensure ssh is configured", "successful": True, "skipped": False, "result": 0, "meta": {"CIS_ID": ["2.10.1"]}},
+    {"title": "2.10.1 | Ensure ssh is configured | Manual Check Required", "successful": False, "skipped": False, "result": 1,
+     "meta": {"CIS_ID": ["2.10.1"]}},
+    {"title": "9.9 | Something | Manual Check Required", "successful": False, "skipped": False, "result": 1, "meta": {"CIS_ID": ["9.9"]}},
+    {"title": "1.1.2 | Ensure audit log mode", "successful": False, "skipped": True, "result": 2, "meta": {"CIS_ID": "1.1.2, 1.1.3"}},
+    {"title": "Benchmark meta", "successful": True, "skipped": False, "result": 0, "meta": {}},
+], "summary": {"test-count": 7, "failed-count": 3, "skipped-count": 1, "total-duration": 1000}})
+
+
+class ComplianceChecker(unittest.TestCase):
+    def test_parse_and_evaluate(self):
+        from securitas import scan_compliance as sc
+        by, summary = sc.parse_goss("some banner\n" + GOSS_OUT)
+        self.assertEqual(sorted(by), ["1.1.1", "1.1.2", "1.1.3", "2.10.1", "9.9"])     # list and string CIS_IDs
+        self.assertEqual(summary["test-count"], 7)
+        rules, n = sc.evaluate([{"id": "1.1.1", "title": "a", "kind": "PATCH"}, {"id": "2.10.1", "title": "b", "kind": "PATCH"},
+                                {"id": "1.1.2", "title": "c", "kind": "PATCH"}, {"id": "9.9", "title": "d", "kind": "AUDIT"}], by)
+        # 2.10.1 passes although its manual placeholder "fails"; 9.9 has only a placeholder: no automated check
+        self.assertEqual([r["status"] for r in rules], ["fail", "pass", "skip", "notest"])
+        self.assertEqual((n["pass"], n["fail"], n["skip"], n["notest"], n["checked"], n["score"]), (1, 1, 1, 1, 4, 50.0))
+
+    def test_parse_errors(self):
+        from securitas import scan_compliance as sc
+        with self.assertRaisesRegex(RuntimeError, "sudo refused"):
+            sc.parse_goss("sudo: a password is required\n")
+        with self.assertRaisesRegex(RuntimeError, "not installed"):
+            sc.parse_goss("sudo: /usr/local/sbin/securitas-cis-audit: command not found")
+        with self.assertRaisesRegex(RuntimeError, "not installed on"):
+            sc.parse_goss('{"error": "benchmark RHEL9-CIS-9.9.9 is not installed on this host"}')
+
+    def test_remote_command_is_quoted(self):
+        from securitas import scan_compliance as sc
+        self.assertEqual(sc.remote_command("RHEL9-CIS-2.4.2"), "sudo -n /usr/local/sbin/securitas-cis-audit RHEL9-CIS-2.4.2 server")
+        with self.assertRaises(ValueError):
+            sc.remote_command("x; rm -rf /")
+
+
+class ComplianceScans(unittest.TestCase):
+    def setUp(self):
+        self.app, self.db, self.jobs, self.cfg = make_app()
+        self.c = client(self.app)
+        login(self.c, "admin", ADMIN_PW)
+        from securitas.db import PlatformResult, Scan, Target
+        with self.db.Session() as s, s.begin():
+            s.add_all([Target(platform="linux", host="rocky1", label="Web"), Target(platform="linux", host="rocky2"),
+                       Target(platform="linux", host="ubu1")])
+            sc = Scan(trigger="manual", platforms=["linux"], status="done")
+            s.add(sc)
+            s.flush()
+            s.add(PlatformResult(scan_id=sc.id, platform="linux", status="done", raw={
+                "id": "linux", "title": "Linux", "totals": {}, "findings": [], "system_columns": [], "warnings": [], "failed": 0,
+                "systems": [{"name": "rocky1", "os": "Rocky Linux 9.9"}, {"name": "rocky2", "os": "Rocky Linux 9.9"},
+                            {"name": "ubu1", "os": "Ubuntu 22.04.4 LTS"}]}))
+        self.c.post("/compliance/benchmarks", data={"csrf": csrf(self.c, "/compliance/benchmarks")},
+                    files={"file": ("r.zip", role_zip(top="RHEL9-CIS-1.0.0"), "application/zip")})
+        self.seen = []
+        from securitas import scan_compliance as scm
+
+        def fake(targets, say):
+            self.seen = targets
+            by, _ = scm.parse_goss(GOSS_OUT)
+            out = {}
+            for t in targets:
+                if t["host"] == "rocky2":
+                    out[t["host"]] = RuntimeError("sudo refused: no rule")
+                else:
+                    rules, n = scm.evaluate(t["rules"], by)
+                    out[t["host"]] = {"os": "Rocky Linux 9.9", "rules": rules, "counts": n}
+            return out
+        self.jobs.compliance_scanners = {"linux": fake}
+
+    def run_scan(self):
+        r = self.c.post("/compliance/scans", data={"csrf": csrf(self.c, "/compliance/scans"), "platform": "linux"},
+                        follow_redirects=False)
+        self.assertEqual(r.headers["location"], "/compliance/scans/1?ok=queued")
+        cid = self.jobs._claim_compliance()
+        self.jobs.run_compliance(cid)
+        return cid
+
+    def test_scan_results_pages(self):
+        cid = self.run_scan()
+        self.assertEqual([(t["host"], t["key"], [r["id"] for r in t["rules"]]) for t in self.seen],
+                         [("rocky1", "RHEL9-CIS-1.0.0", ["1.1.1", "2.10.1"]), ("rocky2", "RHEL9-CIS-1.0.0", ["1.1.1", "2.10.1"])])
+        from securitas.db import ComplianceResult, ComplianceScan
+        with self.db.Session() as s:
+            self.assertEqual(s.get(ComplianceScan, cid).status, "partial")
+            res = {r.host: r for r in s.scalars(select(ComplianceResult)).all()}
+        self.assertEqual((res["rocky1"].status, res["rocky1"].counts["score"]), ("done", 50.0))
+        self.assertEqual(res["rocky2"].status, "failed")
+        self.assertEqual((res["ubu1"].status, res["ubu1"].error), ("skipped", "no active benchmark for Ubuntu 22.04.4 LTS"))
+        page = self.c.get("/compliance/scans/%d" % cid).text
+        self.assertIn("sudo refused", page)
+        self.assertIn("50.0%", page)
+        host = self.c.get("/compliance/scans/%d/hosts/%d" % (cid, res["rocky1"].id)).text
+        self.assertIn("patterns not found", host)                     # the failed test's message
+        self.assertLess(host.index("1.1.1"), host.index("2.10.1"))      # failed first
+        self.assertNotIn("2.10.1", self.c.get("/compliance/scans/%d/hosts/%d?status=fail" % (cid, res["rocky1"].id)).text)
+        summary = self.c.get("/compliance").text
+        self.assertIn("50.0%", summary)
+        self.assertIn("Checked", summary)
+        report = self.c.get("/compliance/report").text
+        self.assertIn("/compliance/scans/%d/hosts/%d" % (cid, res["rocky1"].id), report)
+        hist = self.c.get("/compliance/scans").text
+        self.assertIn("1 of 3", hist)
+
+    def test_selected_hosts_only(self):
+        page = self.c.get("/compliance/scans").text
+        self.assertIn('name="host" value="rocky1"', page)
+        self.assertNotIn('name="host" value="ubu1"', page)            # not matched to a benchmark: not offered
+        r = self.c.post("/compliance/scans", data={"csrf": csrf(self.c, "/compliance/scans"), "host": ["rocky1", "nope"]},
+                        follow_redirects=False)                       # no platform ticked: the hosts decide
+        self.assertEqual(r.headers["location"], "/compliance/scans/1?ok=queued")
+        self.jobs.run_compliance(self.jobs._claim_compliance())
+        self.assertEqual([t["host"] for t in self.seen], ["rocky1"])
+        from securitas.db import ComplianceResult, ComplianceScan
+        with self.db.Session() as s:
+            self.assertEqual(s.get(ComplianceScan, 1).hosts, ["rocky1"])
+            self.assertEqual(s.get(ComplianceScan, 1).status, "done")
+            self.assertEqual(s.scalars(select(ComplianceResult.host)).all(), ["rocky1"])   # ubu1 not even skipped
+        self.assertIn("only rocky1", self.c.get("/compliance/scans").text)
+        self.assertIn("noplat", self.c.post("/compliance/scans", data={"csrf": csrf(self.c, "/compliance/scans"), "host": "ubu1"},
+                                            follow_redirects=False).headers["location"])
+
+    def test_home_and_about(self):
+        self.run_scan()
+        home = self.c.get("/").text
+        self.assertIn("<title>Home", home)
+        self.assertIn("Compliance score per host", home)
+        self.assertIn('id="pie-cr-linux"', home)
+        self.assertIn("50.0%", home)
+        about = self.c.get("/about").text
+        self.assertIn("About Securitas", about)
+        self.assertIn('<a href="/about" class="on">About</a>', about)
+        self.assertIn("Apache License 2.0", about)
+
+    def test_result_survives_benchmark_removal(self):
+        cid = self.run_scan()
+        from securitas.db import Benchmark, ComplianceResult
+        with self.db.Session() as s:
+            bid = s.scalar(select(Benchmark.id))
+            rid = s.scalar(select(ComplianceResult.id).where(ComplianceResult.host == "rocky1"))
+        self.c.post("/compliance/benchmarks/%d" % bid, data={"csrf": csrf(self.c, "/compliance/benchmarks/%d" % bid),
+                                                             "action": "delete", "confirm": "on"})
+        page = self.c.get("/compliance/scans/%d/hosts/%d" % (cid, rid)).text
+        self.assertIn("since removed", page)
+        self.assertIn("Ensure cramfs is not available", page)          # rule titles kept with the result
+
+    def test_viewer_cannot_run_and_schedule_runs(self):
+        from securitas.db import ComplianceSchedule, ComplianceScan
+        import datetime as dt
+        with self.db.Session() as s, s.begin():
+            s.add(ComplianceSchedule(platform="linux", cron="0 6 * * 0", enabled=True,
+                                     next_run=dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=1)))
+            s.add(ComplianceSchedule(platform="windows", cron="0 6 * * 0", enabled=True,
+                                     next_run=dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=1)))
+        self.jobs.run_due()
+        with self.db.Session() as s:
+            self.assertEqual([x.platforms for x in s.scalars(select(ComplianceScan)).all()], [["linux"]])   # windows: no checker
+        self.c.post("/settings/users", data={"csrf": csrf(self.c), "username": "vic", "password": "a-long-password-1", "role": "viewer"})
+        v = client(self.app)
+        login(v, "vic", "a-long-password-1")
+        r = v.post("/compliance/scans", data={"csrf": csrf(v, "/compliance/scans"), "platform": "linux"}, follow_redirects=False)
+        self.assertEqual(r.status_code, 403)
+
+
+WIN_ZIPS = {k: os.environ.get("SECURITAS_TEST_" + k.replace("-", "_").upper(), "/mnt/c/Users/huhl/Downloads/%s.zip" % k)
+            for k in ("Windows-2022-CIS-4.2.0", "Windows-2025-CIS-1.2.2")}
+
+
+def win_zip(top="Windows-2022-CIS-9.0.0"):
+    """A Windows-shaped role: member server / domain controller level tags."""
+    tasks = """---
+- name: "1.1.1 | PATCH | Ensure 'Enforce password history' is set to '24 or more password(s)'"
+  when: win22cis_rule_1_1_1
+  tags: [level1-domaincontroller, level1-memberserver, rule_1.1.1, NIST800-53R5_IA-5]
+  ansible.windows.win_security_policy: {section: System Access, key: PasswordHistorySize, value: 24}
+- name: "2.3.5.4 | PATCH | Ensure 'Domain controller: LDAP server signing requirements' is set to 'Require signing' (DC only)"
+  when: win22cis_rule_2_3_5_4
+  tags: [level1-domaincontroller, rule_2.3.5.4]
+  ansible.windows.win_regedit: {path: HKLM:\\x, name: y, data: 2}
+- name: "2.3.10.1 | PATCH | Ensure network access is restricted (MS only)"
+  when: win22cis_rule_2_3_10_1
+  tags: [level1-memberserver, rule_2.3.10.1]
+  ansible.windows.win_regedit: {path: HKLM:\\x, name: z, data: 1}
+- name: "18.1.1 | PATCH | Ensure a level 2 setting"
+  when: win22cis_rule_18_1_1
+  tags: [level2-domaincontroller, level2-memberserver, rule_18.1.1]
+  ansible.windows.win_regedit: {path: HKLM:\\x, name: w, data: 1}
+"""
+    return role_zip(top=top, platform="Windows", extra={"tasks/section_1/cis_1.1.x.yml": tasks},   # replaces the Linux sample
+                    defaults="benchmark_version: 'v4.0.0'\nwin22cis_rule_1_1_1: true\nwin22cis_rule_2_3_5_4: true\n"
+                             "win22cis_rule_2_3_10_1: true\nwin22cis_rule_18_1_1: true\n")
+
+
+class WindowsCompliance(unittest.TestCase):
+    def test_profiles_by_role(self):
+        from securitas import compliance
+        b = compliance.parse_zip(win_zip())
+        r = {x["rule_id"]: x for x in b["rules"]}
+        self.assertEqual(r["2.3.5.4"]["levels"], ["level1-domaincontroller"])
+        self.assertEqual(compliance.default_profile("windows"), "level1-auto")
+        ms = [x for x in b["rules"] if compliance.in_profile(x["levels"], "level1-auto", "memberserver")]
+        dc = [x for x in b["rules"] if compliance.in_profile(x["levels"], "level1-auto", "domaincontroller")]
+        self.assertEqual(sorted(x["rule_id"] for x in ms), ["1.1.1", "2.3.10.1"])
+        self.assertEqual(sorted(x["rule_id"] for x in dc), ["1.1.1", "2.3.5.4"])
+        self.assertEqual(len([x for x in b["rules"] if compliance.in_profile(x["levels"], "level2-auto", "domaincontroller")]), 3)
+
+    @unittest.skipUnless(all(os.path.exists(p) for p in WIN_ZIPS.values()), "real Windows CIS zips not available")
+    def test_real_windows_zips(self):
+        import yaml
+        import zipfile
+        from securitas import compliance
+        for key, path in WIN_ZIPS.items():
+            b = compliance.parse_zip(open(path, "rb").read())
+            self.assertEqual((b["key"], b["platform"]), (key, "windows"))
+            self.assertTrue(all(r["levels"] for r in b["rules"]), key)          # every rule has a level tag
+            z = zipfile.ZipFile(path)
+            d = yaml.safe_load(z.read(key + "/defaults/main/main.yml"))
+            toggles = {k for k in d if re.fullmatch(r"win\d\dcis_rule_\d+(_\d+)+", k)}
+            self.assertEqual({r["toggle"] for r in b["rules"]}, toggles, key)
+
+    def test_parse_windows_output(self):
+        from securitas import scan_compliance as sc
+        role, osn, payload = sc.parse_windows("##ROLE 5\n##OS Microsoft Windows Server 2022 Standard\n##RESULT 0\n##JSON\n" + GOSS_OUT)
+        self.assertEqual((role, sc.host_kind(role), osn), (5, "domaincontroller", "Microsoft Windows Server 2022 Standard"))
+        self.assertEqual(sc.host_kind(3), "memberserver")
+        with self.assertRaisesRegex(RuntimeError, "may not start"):
+            sc.parse_windows("##ROLE 3\n##ERROR this account may not start the scheduled task: Access is denied\n")
+        self.assertIn("'Windows-2022-CIS-4.2.0'", sc.windows_script("Windows-2022-CIS-4.2.0"))
+        with self.assertRaises(ValueError):
+            sc.windows_script("x' ; Remove-Item C:\\")
+
+    def test_scan_uses_rules_for_each_role(self):
+        app, db, jobs, cfg = make_app()
+        c = client(app)
+        login(c, "admin", ADMIN_PW)
+        from securitas.db import ComplianceResult, PlatformResult, Scan, Target
+        with db.Session() as s, s.begin():
+            s.add_all([Target(platform="windows", host="dc1"), Target(platform="windows", host="ms1")])
+            sc_ = Scan(trigger="manual", platforms=["windows"], status="done")
+            s.add(sc_)
+            s.flush()
+            s.add(PlatformResult(scan_id=sc_.id, platform="windows", status="done", raw={
+                "id": "windows", "title": "Windows", "totals": {}, "findings": [], "system_columns": [], "warnings": [], "failed": 0,
+                "systems": [{"name": "dc1", "os": "Windows Server 2022 Standard"}, {"name": "ms1", "os": "Windows Server 2022 Datacenter"}]}))
+        r = c.post("/compliance/benchmarks", data={"csrf": csrf(c, "/compliance/benchmarks")},
+                   files={"file": ("w.zip", win_zip(top="Windows-2022-CIS-9.0.0"), "application/zip")}, follow_redirects=False)
+        self.assertEqual(r.status_code, 303)
+        from securitas import scan_compliance as scm
+        seen = {}
+
+        def fake(targets, say):
+            out = {}
+            for t in targets:
+                kind = "domaincontroller" if t["host"] == "dc1" else "memberserver"
+                rules, n = scm.evaluate(t["rules_by_kind"][kind], {})
+                seen[t["host"]] = [x["id"] for x in rules]
+                out[t["host"]] = {"os": "Windows Server 2022", "rules": rules, "counts": n, "host_kind": kind}
+            return out
+        jobs.compliance_scanners["windows"] = fake
+        page = c.get("/compliance/scans").text
+        self.assertIn('name="platform" value="windows" checked', page)
+        c.post("/compliance/scans", data={"csrf": csrf(c, "/compliance/scans"), "platform": "windows"})
+        jobs.run_compliance(jobs._claim_compliance())
+        self.assertEqual(seen, {"dc1": ["1.1.1", "2.3.5.4"], "ms1": ["1.1.1", "2.3.10.1"]})
+        with db.Session() as s:
+            prof = {r.host: r.profile for r in s.scalars(select(ComplianceResult)).all()}
+        self.assertEqual(prof, {"dc1": "level1-auto (domaincontroller)", "ms1": "level1-auto (memberserver)"})
+        detail = c.get("/compliance/benchmarks/1").text
+        self.assertIn("2 of 4 on member servers, 2 of 4 on domain controllers", detail)
+        self.assertIn("by each host&#39;s role", detail)

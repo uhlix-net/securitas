@@ -10,7 +10,7 @@
     {% for p in PLATFORMS %}
       {% set usable = plat_on[p] and (p == "kubernetes" or ntargets.get(p)) %}
       <label class="inline"><input type="checkbox" name="platform" value="{{ p }}"{% if usable %} checked{% else %} disabled{% endif %}>
-        {{ PLATFORM_LABEL[p] }}{% if not plat_on[p] %} <span class="muted">(turned off in <a href="/settings/sources">Sources</a>)</span>{% elif p != "kubernetes" %} <span class="muted">({{ ntargets.get(p, 0) }} target{{ "" if ntargets.get(p) == 1 else "s" }})</span>{% endif %}</label>
+        {{ PLATFORM_LABEL[p] }}{% if not plat_on[p] %} <span class="muted">(turned off in <a href="/vulnerabilities/sources">Sources</a>)</span>{% elif p != "kubernetes" %} <span class="muted">({{ ntargets.get(p, 0) }} target{{ "" if ntargets.get(p) == 1 else "s" }})</span>{% endif %}</label>
     {% endfor %}
       <button class="btn primary">Run scan</button>
     </div>

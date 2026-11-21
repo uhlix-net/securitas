@@ -1,0 +1,254 @@
+---
+#---
+# Securitas CIS audit for Windows (syver) - example playbook, see docs/target-setup.md
+#
+# Prepares a Windows Server for Securitas compliance scans (Compliance > Scans), the Windows counterpart of
+# linux-cis-audit.yml. Installs, under C:\Program Files\Securitas\CIS (writable by Administrators only):
+#   - syver: the Goss fork with Windows support that the Ansible-Lockdown Windows audits are written for
+#     (github.com/krameff/syver). Pinned version; the SHA256 below was taken from the release's
+#     syver_<v>_SHA256SUMS after checking its signature against the release signing key
+#     (Krameff Solutions Limited - Syver Signing Key, ed25519 CD21 8D52 9C95 DC65 A71F 18D8 4C9E 5095 CABE 5092).
+#     Bump it on purpose: download the new SHA256SUMS + .sig, verify, then change syver_version/syver_sha256.
+#   - the Ansible-Lockdown audit content for the host's benchmark, at a pinned commit, checksum-checked, staged clean
+#     at C:\Program Files\Securitas\CIS\<benchmark key>\<OS>-CIS-Audit (the key is the Securitas benchmark name)
+#   - the wrapper securitas-cis-audit.ps1: runs the content's run_audit.ps1 and writes
+#     C:\ProgramData\Securitas\CIS\<benchmark key>.json (+ .log)
+#   - a scheduled task "\Securitas\CIS Audit <benchmark key>" that runs the wrapper as SYSTEM with that fixed key.
+#     The scan account may only start it (read + execute on the task) and read C:\ProgramData\Securitas\CIS.
+# The scan account cannot change what runs as SYSTEM (the Windows counterpart of the Linux sudo rule).
+# syver only reads (secedit/auditpol exports to a SYSTEM-only temp folder, registry and WMI reads).
+#
+# Downloads happen on the Ansible controller (checksum-checked) and are copied to the hosts, so the servers
+# need no internet access. Set scan_account and the WinRM connection settings for your environment (these
+# defaults use WinRM over HTTPS with NTLM and a CA file); use --check --diff first.
+#---
+
+- name: Windows - Securitas CIS Audit (syver)
+  hosts: all
+  gather_facts: true
+
+  vars:
+    ansible_connection: winrm
+    ansible_port: 5986
+    ansible_winrm_scheme: https
+    ansible_winrm_transport: ntlm
+    ansible_winrm_server_cert_validation: validate
+    ansible_winrm_ca_trust_path: "{{ playbook_dir }}/ca.pem"     # the CA that issued the hosts' WinRM certificates
+    ansible_winrm_read_timeout_sec: 120
+    ansible_winrm_operation_timeout_sec: 110
+
+    scan_account: 'DOMAIN\securitas'        # the Securitas scan account (DOMAIN\user)
+    cis_root: 'C:\Program Files\Securitas\CIS'
+    cis_out: 'C:\ProgramData\Securitas\CIS'
+    controller_cache: /tmp/securitas-cis-cache
+
+    syver_version: "0.20.0"
+    syver_sha256: "0b231b736926df43cdc56f2f63928e09cee7aa595f9269a656a68af00cc8ebb2"   # syver-windows-amd64.exe
+
+    # One entry per Securitas benchmark key; match = text in the OS name (ansible_facts['distribution']).
+    securitas_cis_benchmarks:
+      # Windows-2022-CIS role 4.2.0 implements CIS Windows Server 2022 v4.0.0 -> audit branch benchmark_v4.0.0
+      - key: Windows-2022-CIS-4.2.0
+        match: "Server 2022"
+        repo: Windows-2022-CIS-Audit
+        commit: fed5857c5d0a9cfa93451937e7236678b46681d4
+        sha256: "1e96e21f05233e0f791ba1a2b7e10548dc4e4b54b33394d96efeac7c0c0eae53"
+        content_dir: Windows-2022-CIS-Audit
+      # Windows-2025-CIS role 1.2.2 implements CIS Windows Server 2025 v1.0.0 -> audit branch benchmark_v1.0.0
+      - key: Windows-2025-CIS-1.2.2
+        match: "Server 2025"
+        repo: Windows-2025-CIS-Audit
+        commit: 59620023f3ef6459ff0bca2bfa53b77488db4251
+        sha256: "ef44d02efa8ca4d56904a5774be4cc7e2822e0a00b8b55db6400bfa0651c1673"
+        content_dir: Windows-2025-CIS-Audit
+
+    host_benchmarks: "{{ securitas_cis_benchmarks | selectattr('match', 'in', ansible_facts['distribution']) | list }}"
+
+  tasks:
+
+  - name: Securitas CIS Audit | A benchmark exists for this OS
+    ansible.builtin.assert:
+      that: host_benchmarks | length > 0
+      fail_msg: "No Securitas CIS benchmark is configured for {{ ansible_facts['distribution'] }}."
+
+  #---
+  # Downloads on the controller (checksum-checked)
+  #---
+  - name: Securitas CIS Audit | Controller cache
+    ansible.builtin.file:
+      path: "{{ controller_cache }}"
+      state: directory
+      mode: "0700"
+    delegate_to: localhost
+    run_once: true
+    check_mode: false
+    vars:
+      ansible_connection: local        # the play's WinRM settings do not apply on the controller
+      ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+  - name: Securitas CIS Audit | Download syver {{ syver_version }}
+    ansible.builtin.get_url:
+      url: "https://github.com/krameff/syver/releases/download/v{{ syver_version }}/syver-windows-amd64.exe"
+      dest: "{{ controller_cache }}/syver-{{ syver_version }}-windows-amd64.exe"
+      checksum: "sha256:{{ syver_sha256 }}"
+      mode: "0600"
+    delegate_to: localhost
+    run_once: true
+    check_mode: false
+    vars:
+      ansible_connection: local        # the play's WinRM settings do not apply on the controller
+      ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+  - name: Securitas CIS Audit | Download audit content
+    ansible.builtin.get_url:
+      url: "https://github.com/ansible-lockdown/{{ item.repo }}/archive/{{ item.commit }}.zip"
+      dest: "{{ controller_cache }}/{{ item.key }}-{{ item.commit[:12] }}.zip"
+      checksum: "sha256:{{ item.sha256 }}"
+      mode: "0600"
+    loop: "{{ securitas_cis_benchmarks }}"
+    loop_control: {label: "{{ item.key }}"}
+    delegate_to: localhost
+    run_once: true
+    check_mode: false
+    vars:
+      ansible_connection: local        # the play's WinRM settings do not apply on the controller
+      ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+  #---
+  # Folders and ACLs
+  #---
+  - name: Securitas CIS Audit | Program folder
+    ansible.windows.win_file:
+      path: "{{ cis_root }}\\syver"
+      state: directory
+
+  - name: Securitas CIS Audit | Output folder
+    ansible.windows.win_file:
+      path: "{{ cis_out }}"
+      state: directory
+
+  # ProgramData lets Users create files; the output folder must not: SYSTEM and Administrators write, the scan
+  # account reads, nobody else.
+  - name: Securitas CIS Audit | Output folder ACL
+    ansible.windows.win_shell: |
+      $p = '{{ cis_out }}'
+      $want = 'SYSTEM:(OI)(CI)F', 'BUILTIN\Administrators:(OI)(CI)F', '{{ scan_account }}:(OI)(CI)RX'
+      & icacls.exe $p /inheritance:r /grant:r @want | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "icacls failed ($LASTEXITCODE)" }
+      (Get-Acl $p).Access | ForEach-Object { '{0} {1}' -f $_.IdentityReference, $_.FileSystemRights }
+    register: out_acl
+    changed_when: false
+
+  #---
+  # syver
+  #---
+  - name: Securitas CIS Audit | Install syver
+    ansible.windows.win_copy:
+      src: "{{ controller_cache }}/syver-{{ syver_version }}-windows-amd64.exe"
+      dest: "{{ cis_root }}\\syver\\syver.exe"
+
+  - name: Securitas CIS Audit | syver checksum on the host
+    ansible.windows.win_stat:
+      path: "{{ cis_root }}\\syver\\syver.exe"
+      get_checksum: true
+      checksum_algorithm: sha256
+    register: syver_stat
+    failed_when: syver_stat.stat.checksum | lower != syver_sha256
+
+  #---
+  # Audit content (staged clean: the README warns that leftovers from an older version abort the whole run)
+  #---
+  - name: Securitas CIS Audit | Copy audit content archive
+    ansible.windows.win_copy:
+      src: "{{ controller_cache }}/{{ item.key }}-{{ item.commit[:12] }}.zip"
+      dest: "{{ cis_root }}\\{{ item.key }}.zip"
+    loop: "{{ host_benchmarks }}"
+    loop_control: {label: "{{ item.key }}"}
+
+  - name: Securitas CIS Audit | Unpack audit content
+    ansible.windows.win_shell: |
+      $ErrorActionPreference = 'Stop'
+      $dir = '{{ cis_root }}\{{ item.key }}'
+      $marker = Join-Path $dir '.securitas-commit'
+      if ((Test-Path $marker) -and ((Get-Content $marker -Raw).Trim() -eq '{{ item.commit }}')) { 'unchanged'; return }
+      if (Test-Path $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
+      New-Item -ItemType Directory -Path $dir | Out-Null
+      Expand-Archive -LiteralPath '{{ cis_root }}\{{ item.key }}.zip' -DestinationPath $dir
+      Rename-Item -LiteralPath (Join-Path $dir '{{ item.repo }}-{{ item.commit }}') -NewName '{{ item.content_dir }}'
+      Set-Content -LiteralPath $marker -Value '{{ item.commit }}'
+      'unpacked'
+    loop: "{{ host_benchmarks }}"
+    loop_control: {label: "{{ item.key }}"}
+    register: unpack
+    changed_when: "'unpacked' in unpack.stdout"
+
+  #---
+  # Wrapper and scheduled task
+  #---
+  - name: Securitas CIS Audit | Wrapper
+    ansible.windows.win_copy:
+      dest: "{{ cis_root }}\\securitas-cis-audit.ps1"
+      content: |
+        # Managed by Ansible (Securitas contrib/ansible/windows-cis-audit.yml). Do not edit by hand.
+        # Securitas compliance check, run as SYSTEM by the scheduled task "\Securitas\CIS Audit <key>".
+        # Runs the benchmark's run_audit.ps1 (syver, read-only) and writes <key>.json and <key>.log to {{ cis_out }}.
+        param([Parameter(Mandatory = $true)][ValidatePattern('^[A-Za-z0-9][A-Za-z0-9.-]*$')][string]$Key)
+        $ErrorActionPreference = 'Stop'
+        $root = '{{ cis_root }}'
+        $outDir = '{{ cis_out }}'
+        $log = Join-Path $outDir ($Key + '.log')
+        $tmp = Join-Path $outDir ($Key + '.json.tmp')
+        $out = Join-Path $outDir ($Key + '.json')
+        $dir = Join-Path $root $Key
+        $content = Get-ChildItem -LiteralPath $dir -Directory -Filter '*-CIS-Audit' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $content) { "benchmark $Key is not installed on this host" | Set-Content -LiteralPath $log; exit 3 }
+        $env:AUDIT_CONTENT_LOCATION = $dir
+        $env:AUDIT_BIN = Join-Path $root 'syver\syver.exe'
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        try {
+          & (Join-Path $content.FullName 'run_audit.ps1') -Format json -SystemType Server -OutFile $tmp *> $log
+          Move-Item -LiteralPath $tmp -Destination $out -Force
+        } catch {
+          $_ | Out-String | Add-Content -LiteralPath $log
+          exit 1
+        }
+
+  - name: Securitas CIS Audit | Scheduled task (SYSTEM; the scan account may only start it)
+    ansible.windows.win_shell: |
+      $ErrorActionPreference = 'Stop'
+      $sid = (New-Object System.Security.Principal.NTAccount('{{ scan_account }}')).Translate([System.Security.Principal.SecurityIdentifier]).Value
+      $svc = New-Object -ComObject Schedule.Service
+      $svc.Connect()
+      try { $folder = $svc.GetFolder('\Securitas') } catch {
+        $rootFolder = $svc.GetFolder([string][char]92)   # the root task folder
+        $folder = $rootFolder.CreateFolder('Securitas', "D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;GR;;;$sid)")
+      }
+      $def = $svc.NewTask(0)
+      $def.RegistrationInfo.Description = 'Securitas compliance check {{ item.key }} (read-only; managed by Ansible)'
+      $def.Settings.Enabled = $true
+      $def.Settings.AllowDemandStart = $true
+      $def.Settings.MultipleInstances = 2          # ignore a start while it runs
+      $def.Settings.ExecutionTimeLimit = 'PT1H'
+      $def.Settings.DisallowStartIfOnBatteries = $false
+      $def.Principal.RunLevel = 1
+      $a = $def.Actions.Create(0)
+      $a.Path = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+      $a.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{{ cis_root }}\securitas-cis-audit.ps1" -Key {{ item.key }}'
+      # SYSTEM and Administrators full control; the scan account read + execute (= may run it, not change it)
+      $sddl = "D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;GRGX;;;$sid)"
+      $null = $folder.RegisterTaskDefinition('CIS Audit {{ item.key }}', $def, 6, 'SYSTEM', $null, 5, $sddl)
+      $t = $folder.GetTask('CIS Audit {{ item.key }}')
+      '{0} | {1} | {2}' -f $t.Path, $t.Definition.Principal.UserId, $t.GetSecurityDescriptor(4)
+    loop: "{{ host_benchmarks }}"
+    loop_control: {label: "{{ item.key }}"}
+    register: task_reg
+    changed_when: false
+
+  - name: Securitas CIS Audit | Summary
+    ansible.builtin.debug:
+      msg:
+        os: "{{ ansible_facts['distribution'] }}"
+        benchmarks: "{{ host_benchmarks | map(attribute='key') | list }}"
+        syver_sha256: "{{ syver_stat.stat.checksum }}"
+        tasks: "{{ task_reg.results | map(attribute='stdout') | map('trim') | list }}"
+        output_acl: "{{ out_acl.stdout_lines }}"
