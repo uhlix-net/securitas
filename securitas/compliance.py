@@ -336,6 +336,31 @@ HOST_OS = [
 ]
 
 
+def audit_settings_ctx(s, b):
+    """(audit file row or None, [(name, value, source, audit default)]) for a benchmark's page."""
+    from . import audit_bundle
+    from .db import BenchmarkFile, select
+    af = s.scalar(select(BenchmarkFile).where(BenchmarkFile.benchmark_id == b.id, BenchmarkFile.kind == "audit"))
+    if af is None:
+        return None, []
+    rf = s.scalar(select(BenchmarkFile).where(BenchmarkFile.benchmark_id == b.id, BenchmarkFile.kind == "role"))
+    return af, audit_bundle.settings(audit_bundle.audit_defaults(af.data), audit_bundle.role_defaults(rf.data) if rf else {},
+                                     (b.meta or {}).get("audit_settings") or {})
+
+
+def audit_bundle(s, b):
+    """(bundle bytes, sha256) for a benchmark with uploaded audit content, or None."""
+    from . import audit_bundle as ab
+    from .db import BenchmarkFile, select
+    af = s.scalar(select(BenchmarkFile).where(BenchmarkFile.benchmark_id == b.id, BenchmarkFile.kind == "audit"))
+    if af is None:
+        return None
+    rf = s.scalar(select(BenchmarkFile).where(BenchmarkFile.benchmark_id == b.id, BenchmarkFile.kind == "role"))
+    v = ab.effective_vars(ab.audit_defaults(af.data), ab.role_defaults(rf.data) if rf else {},
+                          (b.meta or {}).get("audit_settings") or {})
+    return ab.build(af.data, v)
+
+
 def os_key_for(os_name):
     """'Rocky Linux 9.6' -> 'rhel9'; 'Windows Server 2022 Standard' -> 'windows2022'; '' when not known."""
     for rx, key in HOST_OS:

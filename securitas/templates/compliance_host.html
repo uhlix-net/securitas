@@ -1,9 +1,10 @@
 {% extends "base.html" %}
+{% from "_content.html" import content %}
 {% block content %}
 <section>
   <p class="small"><a href="/compliance/scans/{{ r.scan_id }}">← Compliance scan #{{ r.scan_id }}</a></p>
   <h2><span class="mono">{{ r.host }}</span>{% if r.counts.score is not none %} <span class="badge b-done">{{ r.counts.score }}%</span>{% endif %}</h2>
-  <p class="sub">{{ r.os }} · checked {{ fmt(r.scanned_at) }} against {% if r.benchmark_id %}<a class="mono" href="/compliance/benchmarks/{{ r.benchmark_id }}">{{ r.benchmark_key }}</a>{% else %}<span class="mono">{{ r.benchmark_key }}</span> (since removed){% endif %} ({{ r.benchmark_name }}, profile {{ r.profile }}). {{ r.counts.checked }} rules checked: {{ r.counts.pass }} passed, {{ r.counts.get("accepted", 0) }} accepted (failed, with an exception), {{ r.counts.fail }} failed, {{ r.counts.skip }} not applicable, {{ r.counts.notest }} without an automated check (manual review).</p>
+  <p class="sub">{{ r.os }} · checked {{ fmt(r.scanned_at) }} against {% if r.benchmark_id %}<a class="mono" href="/compliance/benchmarks/{{ r.benchmark_id }}">{{ r.benchmark_key }}</a>{% else %}<span class="mono">{{ r.benchmark_key }}</span> (since removed){% endif %} ({{ r.benchmark_name }}, profile {{ r.profile }}). {{ r.counts.checked }} rules checked: {{ r.counts.pass }} passed, {{ r.counts.get("accepted", 0) }} accepted (failed, with an exception), {{ r.counts.fail }} failed, {{ r.counts.skip }} not applicable, {{ r.counts.notest }} without an automated check (manual review).{% if r.content %} Audit content: {{ content(r.content) }}.{% endif %}</p>
 {% include "_comprules.html" %}
 </section>
 {% endblock %}

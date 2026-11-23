@@ -1863,3 +1863,186 @@ class Certificates(unittest.TestCase):
         self.assertEqual(o.get("/settings/certificates").status_code, 403)
         self.assertNotIn("/settings/certificates", o.get("/settings").text)
         self.assertEqual(o.post("/settings/certificates", data={"csrf": csrf(o)}).status_code, 403)
+
+
+def audit_zip(top="RHEL9-CIS-Audit-d9c0f2ce3be6", cis="rhel9cis_nfs_server: true\nrhel9cis_rpc_server: true\n"
+              "rhel9cis_rule_2_1_9: true\nrhel9cis_level_1: true\nbenchmark_version: v1.0.0\nrhel9cis_motd: 'hello'\n",
+              extra=None):
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr(top + "/goss.yml", "gossfile:\n  section_1/*.yml: {}\n")
+        z.writestr(top + "/vars/CIS.yml", cis)
+        z.writestr(top + "/section_1/cis_1.1.1.yml", "file: {}\n")
+        z.writestr(top + "/.github/workflows/x.yml", "x: 1\n")
+        for k, v in (extra or {}).items():
+            z.writestr(top + "/" + k, v)
+    return buf.getvalue()
+
+
+class AuditBundle(unittest.TestCase):
+    def test_settings_and_bundle(self):
+        import io
+        import tarfile
+        import yaml
+        from securitas import audit_bundle as ab
+        data = audit_zip()
+        audit = ab.audit_defaults(data)
+        role = {"rhel9cis_rpc_server": False, "rhel9cis_rule_2_1_9": False, "rhel9cis_level_1": False, "rhel9cis_motd": "role"}
+        s = {k: (v, src) for k, v, src, _ in ab.settings(audit, role, {"rhel9cis_nfs_server": False})}
+        self.assertEqual(s, {"rhel9cis_nfs_server": (False, "here"), "rhel9cis_rpc_server": (False, "role")})  # no rule/level
+        v = ab.effective_vars(audit, role, {"rhel9cis_nfs_server": False, "nope": True})
+        self.assertEqual((v["rhel9cis_nfs_server"], v["rhel9cis_rpc_server"], v["rhel9cis_rule_2_1_9"], v["rhel9cis_level_1"],
+                          v["rhel9cis_motd"]), (False, False, True, True, "role"))      # rule/level switches never from the role
+        self.assertNotIn("nope", v)
+        b1, h1 = ab.build(data, v)
+        b2, h2 = ab.build(data, v)
+        self.assertEqual((b1, h1), (b2, h2))                                             # deterministic
+        self.assertNotEqual(h1, ab.build(data, audit)[1])
+        with tarfile.open(fileobj=io.BytesIO(b1)) as t:
+            members = t.getmembers()
+            names = sorted(m.name for m in members)
+            self.assertTrue(all(m.isfile() or m.isdir() for m in members))
+            self.assertTrue(all(n.startswith("./") and ".." not in n for n in names))
+            self.assertIn("./goss.yml", names)
+            self.assertFalse(any(".github" in n for n in names))
+            self.assertFalse(yaml.safe_load(t.extractfile("./vars/CIS.yml").read())["rhel9cis_nfs_server"])
+
+    def test_bad_audit_zips(self):
+        from securitas import audit_bundle as ab
+        from securitas.compliance import BenchmarkError
+
+        class B:
+            name = "RHEL9-CIS"
+        self.assertEqual(ab.parse_audit_zip(audit_zip(), B)["commit"], "d9c0f2ce3be6")
+        import io
+        import zipfile
+        for bad in (b"not a zip", audit_zip(cis="other_setting: 1\n")):
+            self.assertRaises(BenchmarkError, ab.parse_audit_zip, bad, B)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("A/goss.yml", "x")
+            z.writestr("A/vars/CIS.yml", "rhel9cis_x: true")
+            i = zipfile.ZipInfo("A/evil")
+            i.external_attr = (0o120777 << 16)
+            z.writestr(i, "/etc/shadow")
+        self.assertRaises(BenchmarkError, ab.parse_audit_zip, buf.getvalue(), B)       # symlink refused
+
+    def test_run_host_copies_and_runs(self):
+        from securitas import scan_compliance as scm
+
+        class Chan:
+            def __init__(self, log):
+                self.log, self.data = log, b""
+            def settimeout(self, t): pass
+            def exec_command(self, c): self.log.append(("exec", c))
+            def sendall(self, d): self.data += d
+            def shutdown_write(self): self.log.append(("sent", self.data))
+            def recv_exit_status(self): return 0
+            def recv_stderr_ready(self): return False
+            def close(self): pass
+
+        class Out:
+            def __init__(self, text): self.text, self.channel = text, self
+            def read(self): return self.text.encode()
+            def recv_exit_status(self): return 0
+
+        class Client:
+            def __init__(self, reply):
+                self.log, self.reply = [], reply
+            def get_transport(self):
+                c = self
+                class T:
+                    def open_session(self, timeout=None): return Chan(c.log)
+                return T()
+            def exec_command(self, cmd, timeout=None):
+                self.log.append(("run", cmd))
+                return None, Out(self.reply if "securitas-cis-audit" in cmd else ""), None
+            def close(self): pass
+
+        orig = scm.scan_linux.connect
+        try:
+            cl = Client("##OS Rocky Linux 9.6\n" + GOSS_OUT)
+            scm.scan_linux.connect = lambda cfg, t, rk: cl
+            cfg = type("C", (), {"host_timeout": 60})()
+            t = {"host": "h", "key": "RHEL9-CIS-1.0.0", "system_type": "server", "bundle": (b"BUNDLE", "ab" * 32),
+                 "rules": [{"id": "1.1.1", "title": "x", "kind": "PATCH"}]}
+            r = scm.run_host(cfg, t, None)
+            self.assertEqual(r["content"], "bundle:" + "ab" * 32)
+            up = [c for k, c in cl.log if k == "exec"][0]
+            path = re.search(r"cat > (\S+)", up).group(1)
+            self.assertRegex(path, r"^/tmp/\.securitas-[A-Za-z0-9]{24}\.tar\.gz$")
+            self.assertIn("noclobber", up)
+            self.assertIn(("sent", b"BUNDLE"), cl.log)
+            run = [c for k, c in cl.log if k == "run" and "securitas-cis-audit" in c][0]
+            self.assertIn("RHEL9-CIS-1.0.0 server " + path, run)
+            self.assertTrue(any(k == "run" and c == "rm -f " + path for k, c in cl.log))   # cleanup
+            cl = Client('##OS Rocky\n{"error":"benchmark RHEL9-CIS-1.0.0: no audit content (goss.yml, vars/CIS.yml)"}\n')
+            with self.assertRaisesRegex(RuntimeError, "update the agent"):
+                scm.run_host(cfg, t, None)
+            with self.assertRaisesRegex(RuntimeError, "could not be built"):
+                scm.run_host(cfg, {**t, "bundle": ValueError("bad zip")}, None)
+            self.assertRaises(ValueError, scm.remote_command, "K", "server", "/etc/passwd")
+        finally:
+            scm.scan_linux.connect = orig
+
+
+class AuditUploadAndAgent(unittest.TestCase):
+    def setUp(self):
+        T = ComplianceScans("run_scan")
+        T.setUp()
+        self.t = T
+        from securitas.db import Benchmark
+        with T.db.Session() as s:
+            self.bid = s.scalar(select(Benchmark.id))
+        self.url = "/compliance/benchmarks/%d" % self.bid
+
+    def test_upload_settings_and_scan_uses_bundle(self):
+        c = self.t.c
+        page = c.get(self.url).text
+        self.assertIn("Not uploaded", page)
+        r = c.post(self.url + "/audit", data={"csrf": csrf(c, self.url)}, files={"file": ("x.zip", b"junk")},
+                   follow_redirects=False)
+        self.assertIn("err=audit", r.headers["location"])
+        r = c.post(self.url + "/audit", data={"csrf": csrf(c, self.url)}, files={"file": ("a.zip", audit_zip())},
+                   follow_redirects=False)
+        self.assertIn("ok=audit", r.headers["location"])
+        page = c.get(self.url).text
+        self.assertIn("RHEL9-CIS-Audit-d9c0f2ce3be6", page)
+        self.assertIn("rhel9cis_nfs_server", page)
+        self.assertNotIn("rhel9cis_rule_2_1_9<", page)
+        c.post(self.url, data={"csrf": csrf(c, self.url), "action": "audit_settings", "shown": ["rhel9cis_nfs_server"],
+                               "set_rhel9cis_nfs_server": "off"})
+        from securitas.db import Benchmark, ComplianceResult
+        with self.t.db.Session() as s:
+            self.assertEqual(s.get(Benchmark, self.bid).meta["audit_settings"], {"rhel9cis_nfs_server": False})
+        cid = self.t.run_scan()
+        self.assertTrue(all(isinstance(x["bundle"], tuple) for x in self.t.seen))       # the scanner got the bundle
+        with self.t.db.Session() as s:
+            from securitas import compliance
+            b = s.get(Benchmark, self.bid)
+            want = compliance.audit_bundle(s, b)[1]
+        self.assertEqual(self.t.seen[0]["bundle"][1], want)
+        self.assertIn("benchmark.audit_uploaded", c.get("/audit").text)
+        self.assertIn("benchmark.audit_settings", c.get("/audit").text)
+
+    def test_agent_page_and_script(self):
+        c = self.t.c
+        anon = client(self.t.app)
+        s = anon.get("/agent/install.sh")                                              # public: no secrets in it
+        self.assertEqual(s.status_code, 200)
+        self.assertIn("securitas-agent-setup --user", s.text)
+        self.assertIn("SCAN_USER=svc-securitas", s.text)
+        self.assertIn("BASE=http://testserver", s.text)
+        self.assertNotIn("PRIVATE", s.text)
+        self.assertIn(anon.get("/agent/securitas-agent.rpm").status_code, (200, 404))
+        self.assertIn(anon.get("/settings/agent", follow_redirects=False).status_code, (303, 401, 403))
+        page = c.get("/settings/agent").text
+        self.assertIn("curl -fsS http://testserver/agent/install.sh | sudo bash", page)
+        r = c.post("/settings/agent", data={"csrf": csrf(c, "/settings/agent"), "allowed": "192.168.11.42, 192.168.11.43"},
+                   follow_redirects=False)
+        self.assertIn("ok=saved", r.headers["location"])
+        self.assertIn("SCAN_FROM=192.168.11.42,192.168.11.43", anon.get("/agent/install.sh").text)
+        self.assertIn("err=agentfrom", c.post("/settings/agent", data={"csrf": csrf(c, "/settings/agent"),
+                                                                      "allowed": "x; rm -rf /"}, follow_redirects=False).headers["location"])

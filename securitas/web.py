@@ -38,6 +38,7 @@ MESSAGES = {
     "hostkey": "Host key cleared; the next scan records the key the host presents.",
     "loggedout": "You are signed out.",
     "imported": "Benchmark imported.", "activated": "Active benchmark changed.",
+    "audit": "Audit content saved. The next Linux compliance scan copies it to the hosts.",
     "cert": "Certificate replaced. The ingress serves it within a minute; reload the page to see it.",
     "exception": "Exception saved. The rule shows as Accepted from the next compliance scan.",
     "unexcepted": "Exception removed. The rule shows as Failed again from the next compliance scan.",
@@ -48,6 +49,7 @@ ERRORS = {
     "exists": "That name is already in use.", "pw": "", "self": "You cannot change or remove your own account here.",
     "lastadmin": "At least one admin must remain.", "host": "Enter a host name.", "group": "Enter a group name.",
     "managed": "This account's password is managed by the deployment (SECURITAS_ADMIN_PASSWORD).",
+    "audit": "", "agentfrom": "Enter IP addresses or networks separated by commas (e.g. 192.168.11.42,10.42.0.0/16).",
     "builtin": "The built-in admin account always keeps the Admin role and cannot be disabled.",
     "reason": "Give a reason for the exception.", "scope": "Pick BASELINE EXCEPTION or SERVER EXCEPTION.",
 }
@@ -110,7 +112,8 @@ class App:
         q = request.query_params
         base = {"request": request, "title": ctx.get("title", ""), "css": self.css, "refresh": refresh,
                 "theme": (u.theme if u else "system"), "ok": MESSAGES.get(q.get("ok", ""), ""),
-                "err": ERRORS.get(q.get("err", ""), "") or ctx.pop("error", ""), "path": request.url.path}
+                "err": ERRORS.get(q.get("err", ""), "") or (q.get("msg", "")[:300] if q.get("err") == "audit" else "")
+                or ctx.pop("error", ""), "path": request.url.path}
         body = self.env.get_template(name).render({**base, **ctx})
         return HTMLResponse(body, status_code=status, headers=HEADERS)
 
@@ -279,6 +282,53 @@ def create_app(cfg, db, jobs):
         return resp
 
     # ------------------------------------------------------------ health
+
+    # ------------------------------------------------------------ Linux agent (public: no secrets in either)
+
+    def agent_params(request):
+        from . import agent
+        eff = a.eff()
+        with db.Session() as s:
+            allowed = get_setting(s, "agent_ssh_from", "") or ""
+        base = (cfg.base_url or str(request.base_url)).rstrip("/")
+        return base, eff.ssh_user or "svc-securitas", agent.public_key(eff), allowed
+
+    @api.get("/agent/install.sh")
+    def agent_install_script(request: Request):
+        from . import agent
+        base, u, k, allowed = agent_params(request)
+        return PlainTextResponse(agent.install_script(base, u, k, allowed), headers=HEADERS)
+
+    @api.get("/agent/securitas-agent.rpm")
+    def agent_rpm():
+        from . import agent
+        p = agent.rpm_path()
+        if not p:
+            raise HTTPException(404, "This Securitas image has no agent RPM.")
+        with open(p, "rb") as f:
+            data = f.read()
+        return Response(data, media_type="application/x-rpm", headers={
+            **HEADERS, "Content-Disposition": 'attachment; filename="%s"' % os.path.basename(p)})
+
+    @api.get("/settings/agent")
+    def agent_page(request: Request, user=Depends(a.need("agent.manage"))):
+        from . import agent
+        base, u, k, allowed = agent_params(request)
+        p = agent.rpm_path()
+        return a.page(request, "agent.html", {"user": user, "sess": request.state.sess, "title": "Agent", "base": base,
+                                              "scan_user": u, "pubkey": k, "allowed": allowed,
+                                              "rpm": os.path.basename(p) if p else ""})
+
+    @api.post("/settings/agent")
+    async def agent_save(request: Request, user=Depends(a.need("agent.manage"))):
+        form = await a.csrf(request)
+        allowed = ",".join(x.strip() for x in str(form.get("allowed", "")).replace("\n", ",").split(",") if x.strip())
+        if allowed and not re.fullmatch(r"[0-9a-fA-F.:/*,-]+", allowed):
+            return go("/settings/agent", err="agentfrom")
+        with db.Session() as s, s.begin():
+            set_setting(s, "agent_ssh_from", allowed)
+            a.audit(s, request, "agent.allowed_from", allowed or "(any address)")
+        return go("/settings/agent", ok="saved")
 
     @api.get("/healthz")
     def healthz():
@@ -918,6 +968,7 @@ def create_app(cfg, db, jobs):
         ("users", "Users", "user.manage", "Local accounts (add, reset passwords, disable), and LDAP and SSO users with their roles."),
         ("authentication", "Authentication", "auth.manage", "Local sign-in, LDAP and single sign-on settings, group to role mappings."),
         ("credentials", "Scan credentials", "credentials.edit", "The SSH account and key for Linux scans and the WinRM account for Windows scans, with a connection test."),
+        ("agent", "Agent", "agent.manage", "Install the Securitas agent on Linux hosts for compliance checks: the one-line installer, the RPM and the addresses allowed to connect."),
         ("certificates", "Certificates", "tls.manage", "The web site's TLS certificate: see the one in use and replace it with a new certificate and key (PEM or PFX)."),
     ]
     a.env.globals["SETTINGS_PAGES"] = SETTINGS_PAGES
@@ -1255,7 +1306,11 @@ def create_app(cfg, db, jobs):
                 shown.append((r, on))
             others = s.scalars(select(Benchmark).where(Benchmark.os_key == b.os_key, Benchmark.id != b.id)
                                .order_by(Benchmark.uploaded_at.desc())).all()
+            af, asettings = compliance.audit_settings_ctx(s, b)
+            aq = q.get("aq", "").strip()[:80]
             ctx = {"user": user, "sess": request.state.sess, "title": b.key, "b": b, "c": compliance.counts(b),
+                   "audit": af, "asettings": [x for x in asettings if not aq or aq.lower() in x[0].lower()],
+                   "asettings_total": len(asettings), "aq": aq, "audit_meta": (b.meta or {}).get("audit") or {},
                    "shown": shown, "f": f, "sections": sections, "profiles": compliance.profiles_for(b.platform),
                    "level_tags": [t for t in compliance.LEVEL_TAGS if any(t in (r.levels or []) for r in b.rules)], "states": RULE_STATES, "others": others,
                    "name": lambda b: compliance.display_name(b, cfg.timezone),
@@ -1304,6 +1359,34 @@ def create_app(cfg, db, jobs):
                 if n:
                     a.audit(s, request, "benchmark.rules_reset", "%s: %d override(s) removed" % (b.key, n))
                 msg = "saved" if n else "nochange"
+            elif action == "audit_settings":
+                shown = [k for k in form.getlist("shown") if re.fullmatch(r"[A-Za-z0-9_]{1,120}", k)]
+                meta = dict(b.meta or {})
+                cur = dict(meta.get("audit_settings") or {})
+                changed = []
+                for k in shown:
+                    v = str(form.get("set_" + k, ""))
+                    new = True if v == "on" else False if v == "off" else None
+                    if cur.get(k) != new:
+                        changed.append("%s=%s" % (k, {True: "on", False: "off", None: "default"}[new]))
+                        if new is None:
+                            cur.pop(k, None)
+                        else:
+                            cur[k] = new
+                meta["audit_settings"] = cur
+                b.meta = meta
+                if changed:
+                    a.audit(s, request, "benchmark.audit_settings", "%s: %s" % (b.key, ", ".join(changed)[:3000]))
+                msg = "saved" if changed else "nochange"
+                return go(back + "#audit", ok=msg)
+            elif action == "audit_remove":
+                f_ = s.scalar(select(BenchmarkFile).where(BenchmarkFile.benchmark_id == b.id, BenchmarkFile.kind == "audit"))
+                if f_ is None:
+                    return go(back, ok="nochange")
+                a.audit(s, request, "benchmark.audit_removed", "%s: %s (sha256 %s)" % (b.key, f_.filename, f_.sha256[:16]))
+                s.delete(f_)
+                meta = dict(b.meta or {}); meta.pop("audit", None); b.meta = meta
+                return go(back + "#audit", ok="deleted")
             elif action == "delete":
                 if form.get("confirm") != "on":
                     return go(back, err="csrf")
@@ -1317,6 +1400,55 @@ def create_app(cfg, db, jobs):
         q = urllib.parse.parse_qs(nxt)
         safe = urllib.parse.urlencode({k: v[0] for k, v in q.items() if k in ("q", "section", "level", "kind", "state")})
         return go(back + ("?" + safe if safe else ""), ok=msg)
+
+    @api.post("/compliance/benchmarks/{bid}/audit")
+    async def benchmark_audit_upload(request: Request, bid: int, user=Depends(CE)):
+        """Upload (or replace) the benchmark's audit content zip (Ansible-Lockdown *-CIS-Audit)."""
+        from . import audit_bundle
+        await request.form(max_files=1, max_fields=6, max_part_size=compliance.MAX_ZIP + 1)
+        form = await a.csrf(request)
+        up = form.get("file")
+        back = "/compliance/benchmarks/%d" % bid
+        data, fname = b"", ""
+        if up is not None and hasattr(up, "read"):
+            fname = os.path.basename(str(up.filename or ""))[:255]
+            try:
+                data = await up.read(compliance.MAX_ZIP + 1)
+            finally:
+                await up.close()
+        with db.Session() as s, s.begin():
+            b = bench_or_404(s, bid)
+            try:
+                if not data:
+                    raise compliance.BenchmarkError("Choose the audit zip to upload.")
+                info = audit_bundle.parse_audit_zip(data, b)
+                audit_bundle.build(data, audit_bundle.audit_defaults(data))     # it must make a valid bundle
+            except compliance.BenchmarkError as e:
+                return go(back + "#audit", err="audit", msg=str(e)[:300])
+            import hashlib
+            sha = hashlib.sha256(data).hexdigest()
+            old = s.scalar(select(BenchmarkFile).where(BenchmarkFile.benchmark_id == b.id, BenchmarkFile.kind == "audit"))
+            if old is not None:
+                s.delete(old)
+                s.flush()
+            s.add(BenchmarkFile(benchmark_id=b.id, kind="audit", filename=fname or (info["top"] + ".zip"), sha256=sha,
+                                size=len(data), data=data, uploaded_by=user.username))
+            meta = dict(b.meta or {})
+            meta["audit"] = info
+            b.meta = meta
+            a.audit(s, request, "benchmark.audit_uploaded", "%s: %s (%s, %d files, sha256 %s)%s" % (
+                b.key, fname, info["top"], info["files"], sha[:16], "; replaced the previous one" if old else ""))
+        return go(back + "#audit", ok="audit")
+
+    @api.get("/compliance/benchmarks/{bid}/audit/download")
+    def benchmark_audit_download(request: Request, bid: int, user=Depends(CE)):
+        with db.Session() as s:
+            f_ = s.scalar(select(BenchmarkFile).where(BenchmarkFile.benchmark_id == bid, BenchmarkFile.kind == "audit"))
+            if f_ is None:
+                raise HTTPException(404, "No audit content is stored for this benchmark.")
+            data, fname = f_.data, f_.filename
+        return Response(data, media_type="application/zip", headers={
+            **HEADERS, "Content-Disposition": 'attachment; filename="%s"' % fname.replace('"', "")})
 
     @api.get("/compliance/benchmarks/{bid}/download")
     def benchmark_download(request: Request, bid: int, user=Depends(CE)):

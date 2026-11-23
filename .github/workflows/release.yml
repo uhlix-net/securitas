@@ -72,9 +72,12 @@ jobs:
           v=${{ steps.v.outputs.version }}
           sed -i "s/^version:.*/version: $v/; s/^appVersion:.*/appVersion: \"$v\"/" charts/securitas/Chart.yaml
           helm package charts/securitas -d dist-chart
-          gh release upload "v$v" dist-chart/securitas-$v.tgz --clobber 2>/dev/null \
-            || gh release create "v$v" dist-chart/securitas-$v.tgz --title "Securitas $v" --generate-notes \
-               $([ "${{ steps.v.outputs.pre }}" = true ] && echo --prerelease)
+          # the Linux agent RPM built into the image (Dockerfile stage "agent")
+          cid=$(docker create securitas:test) && docker cp "$cid:/app/agent/." dist-agent && docker rm "$cid"
+          ls dist-agent/securitas-agent-*.x86_64.rpm
+          gh release upload "v$v" dist-chart/securitas-$v.tgz dist-agent/securitas-agent-*.x86_64.rpm --clobber 2>/dev/null \
+            || gh release create "v$v" dist-chart/securitas-$v.tgz dist-agent/securitas-agent-*.x86_64.rpm \
+               --title "Securitas $v" --generate-notes $([ "${{ steps.v.outputs.pre }}" = true ] && echo --prerelease)
       - name: Add the chart to the Helm repository (gh-pages)
         if: startsWith(github.ref, 'refs/tags/v') && steps.v.outputs.pre == 'false'
         run: |

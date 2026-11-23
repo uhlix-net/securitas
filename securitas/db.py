@@ -279,6 +279,8 @@ class ComplianceResult(Base):
     seconds: Mapped[int] = mapped_column(Integer, default=0)
     counts: Mapped[dict] = mapped_column(JSONType, default=dict)    # pass, fail, skip, notest, checked, score
     rules: Mapped[list] = mapped_column(JSONType, default=list)     # [{id, title, kind, status, tests: [...]}]
+    # what ran: "bundle:<sha256>" (audit content Securitas copied), "host" (a copy installed on the host) or ""
+    content: Mapped[str] = mapped_column(String(80), default="")
     scan: Mapped[ComplianceScan] = relationship(back_populates="results")
 
 
@@ -340,7 +342,8 @@ class Database:
 
     # Columns added to existing tables after their first release: (table, column, SQLite type, PostgreSQL type).
     # create_all() makes new tables but does not change existing ones.
-    ADDED_COLUMNS = [("compliance_scans", "hosts", "JSON", "JSONB")]
+    ADDED_COLUMNS = [("compliance_scans", "hosts", "JSON", "JSONB"),
+                     ("compliance_results", "content", "VARCHAR(80) DEFAULT ''", "VARCHAR(80) DEFAULT ''")]
 
     def _add_columns(self):
         from sqlalchemy import inspect

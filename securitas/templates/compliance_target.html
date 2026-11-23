@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_content.html" import content %}
 {% block content %}
 <section>
   <p class="small"><a href="/compliance/report#{{ t.platform }}">← Compliance report</a></p>
@@ -15,13 +16,14 @@
   <h2>Checks</h2>
   <p class="sub">Every compliance check of this host, newest first (up to 100).</p>
   <div class="scroll"><table>
-    <thead><tr><th>Checked</th><th>Scan</th><th>Benchmark</th><th>Status</th><th class="n">Passed</th><th class="n">Accepted</th><th class="n">Failed</th><th class="n">Score</th></tr></thead>
+    <thead><tr><th>Checked</th><th>Scan</th><th>Benchmark</th><th>Audit content</th><th>Status</th><th class="n">Passed</th><th class="n">Accepted</th><th class="n">Failed</th><th class="n">Score</th></tr></thead>
     <tbody>
     {% for c in checks %}
     <tr>
       <td class="date">{% if c.status == "done" %}<a href="/compliance/scans/{{ c.scan_id }}/hosts/{{ c.id }}">{{ fmt(c.scanned_at) }}</a>{% else %}{{ fmt(c.scanned_at) }}{% endif %}</td>
       <td><a href="/compliance/scans/{{ c.scan_id }}">#{{ c.scan_id }}</a></td>
       <td class="small mono">{{ c.benchmark_key }}</td>
+      <td class="small">{{ content(c.content) }}</td>
       <td>{% if c.status == "done" %}<span class="badge b-done">Checked</span>{% elif c.status == "skipped" %}<span class="badge b-off">Skipped</span>{% else %}<span class="badge b-failed">Failed</span>{% endif %}</td>
       {% if c.status == "done" %}
       <td class="n">{{ c.counts.pass }}</td><td class="n{% if c.counts.get('accepted') %} acc{% endif %}">{{ c.counts.get("accepted", 0) }}</td>

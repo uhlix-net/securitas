@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+  <h2>Securitas agent for Linux</h2>
+  <p class="sub">Compliance checks on Linux hosts run through the Securitas agent: a small RPM (<span class="mono">securitas-agent</span>) with the compliance wrapper, Goss and a setup command. It creates the scan account <span class="mono">{{ scan_user }}</span> (password locked), authorizes Securitas's SSH key and adds one sudo rule: the account may run only <span class="mono">/usr/local/sbin/securitas-cis-audit</span> as root. At scan time Securitas copies the benchmark's audit content to the host; the wrapper runs it as root in a temporary root-only folder and deletes it. Nothing runs on the host between scans.</p>
+  <p class="hint">Trust: whoever controls Securitas decides what the checks run as root on these hosts, as with Semaphore or a credentialed Tenable scan. Keep Securitas's admin accounts and its SSH key protected accordingly.</p>
+</section>
+<section>
+  <h2>Install</h2>
+  {% if not pubkey %}<div class="fail"><p>Securitas has no SSH key yet. Set the Linux scan account and key under <a href="/settings/credentials">Scan credentials</a> first: the installer authorizes that key on each host.</p></div>{% endif %}
+  {% if not rpm %}<div class="warn"><p>This Securitas image has no agent RPM, so the installer cannot download it. Use the RPM from the GitHub release instead.</p></div>{% endif %}
+  <p>On each Rocky Linux / RHEL / AlmaLinux 8 or 9 host (x86_64), as root:</p>
+  <pre class="log">curl -fsS {{ base }}/agent/install.sh | sudo bash</pre>
+  <p class="hint">If the host does not trust Securitas's certificate yet (a private CA), give curl the CA file: <span class="mono">curl -fsS --cacert /path/ca.pem {{ base }}/agent/install.sh | sudo SECURITAS_CA=/path/ca.pem bash</span>. To read the script first: <a href="/agent/install.sh">install.sh</a>.</p>
+  <p>Then add the host as a Linux target under <a href="/targets">Targets</a>, run a vulnerability scan once (so its OS is known) and a compliance scan.</p>
+  <h3>By hand or with Ansible</h3>
+  <pre class="log">dnf install {{ base }}/agent/securitas-agent.rpm      # or the RPM from the GitHub release
+securitas-agent-setup --user {{ scan_user }} --key '{{ pubkey or "<Securitas public key>" }}'{% if allowed %} --from {{ allowed }}{% endif %}</pre>
+  <p class="hint">Remove: <span class="mono">dnf remove securitas-agent</span> (removes the sudo rule; the account is kept) or <span class="mono">securitas-agent-setup --remove</span> (removes the sudo rule and Securitas's key).{% if rpm %} RPM in this image: <span class="mono">{{ rpm }}</span>.{% endif %}</p>
+</section>
+<section>
+  <h2>Allowed source addresses</h2>
+  <p class="sub">The installer limits Securitas's key to these addresses (<span class="mono">from=</span> in authorized_keys): the addresses Securitas's scans come from, such as your Kubernetes nodes. Empty: any address. Changing this affects hosts installed afterwards; re-run the installer on existing hosts to update them.</p>
+  <form method="post" action="/settings/agent"><input type="hidden" name="csrf" value="{{ sess.csrf }}">
+    <div class="row"><div style="flex:1"><label for="al">Addresses or networks, comma-separated</label><input id="al" type="text" name="allowed" value="{{ allowed }}" placeholder="192.168.11.42,192.168.11.43,192.168.11.44" style="width:100%"></div><div><button class="btn">Save</button></div></div>
+  </form>
+</section>
+{% endblock %}

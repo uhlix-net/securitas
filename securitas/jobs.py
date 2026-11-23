@@ -356,6 +356,16 @@ class Jobs:
                          "profile": x["bench"].profile if x["bench"] else "",
                          "system_type": "workstation" if x["bench"] and x["bench"].profile.endswith("workstation") else "server",
                          "bench": None, "rules": x["rules_list"]} for x in plan.get(p, [])] for p in platforms}
+            # Linux: the audit bundle per benchmark, built once for this scan (None: the host's own copy is used)
+            bundles = {}
+            for x in plan.get("linux", []) if "linux" in platforms else []:
+                if x["bench"] and x["bench"].key not in bundles:
+                    try:
+                        bundles[x["bench"].key] = compliance.audit_bundle(s, x["bench"])
+                    except Exception as e:
+                        bundles[x["bench"].key] = e
+            for x in snap.get("linux", []):
+                x["bundle"] = bundles.get(x["key"])
         say("started: " + ", ".join(platforms) + ("; only " + ", ".join(sorted(only)) if only else ""))
         statuses = []
         for p in platforms:
@@ -422,7 +432,8 @@ class Jobs:
                                    benchmark_key=x["key"], benchmark_name=x["bench_name"],
                                    profile=x["profile"] + (" (%s)" % (result or {})["host_kind"] if (result or {}).get("host_kind") else ""),
                                    status=status, error=error[:2000], seconds=seconds,
-                                   counts=(result or {}).get("counts") or {}, rules=(result or {}).get("rules") or []))
+                                   counts=(result or {}).get("counts") or {}, rules=(result or {}).get("rules") or [],
+                                   content=(result or {}).get("content") or ""))
 
     def _save_comp_log(self, cid, lines):
         try:

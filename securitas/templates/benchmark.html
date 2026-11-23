@@ -32,6 +32,45 @@
   <p class="hint">The profile decides which rules are checked: a rule is in a Level 1 profile when it is tagged Level 1 for {{ "member servers or domain controllers" if b.platform == "windows" else "servers or workstations" }}; Level 2 adds the Level 2 rules.{% if b.platform == "windows" %} With a "by each host's role" profile, each host is checked with the domain controller or member server rules, from the role it reports when it is checked.{% endif %} Rules switched on or off below override the profile{% if b.platform == "windows" %} (the "Checked" column below shows the member server view){% endif %}.</p>
 </section>
 {% endif %}
+{% if b.platform == "linux" %}
+<section id="audit">
+  <h2>Audit content {% if audit %}<span class="badge b-done">Uploaded</span>{% else %}<span class="badge b-partial">Not uploaded</span>{% endif %}</h2>
+  <p class="sub">The checks that run on the hosts: the benchmark's Ansible-Lockdown audit content (for {{ b.name }}, the <span class="mono">{{ b.name.replace("-CIS", "-CIS-Audit") }}</span> repository, the branch or commit for CIS {{ b.benchmark_version or "this version" }}). For each Linux compliance scan Securitas builds one bundle from it with the settings below, copies it to each host and runs it there with the Securitas agent, which deletes it afterwards. Every host runs exactly the same content; each result shows the bundle's fingerprint.{% if not audit %} Until it is uploaded, hosts use a copy installed on them, if they have one.{% endif %}</p>
+  {% if audit %}
+  <div class="scroll"><table class="kv">
+    <tr><th>File</th><td class="small"><span class="mono">{{ audit.filename }}</span>, {{ (audit.size / 1024)|round(1) }} KB · folder <span class="mono">{{ audit_meta.top }}</span>{% if audit_meta.commit %} (commit <span class="mono">{{ audit_meta.commit[:12] }}</span>){% endif %} · {{ audit_meta.files }} files{% if audit_meta.benchmark_version %} · CIS {{ audit_meta.benchmark_version }}{% if b.benchmark_version and audit_meta.benchmark_version.lstrip("v") != b.benchmark_version.lstrip("v") %} <span class="badge b-partial">role is {{ b.benchmark_version }}</span>{% endif %}{% endif %}</td></tr>
+    <tr><th>Uploaded</th><td class="small">{{ fmt(audit.uploaded_at) }} by {{ audit.uploaded_by or "unknown" }} · SHA-256 <span class="mono">{{ audit.sha256 }}</span>{% if editable %} · <a href="/compliance/benchmarks/{{ b.id }}/audit/download">Download</a>{% endif %}</td></tr>
+  </table></div>
+  {% endif %}
+  {% if editable %}
+  <form method="post" action="/compliance/benchmarks/{{ b.id }}/audit" enctype="multipart/form-data">
+    <input type="hidden" name="csrf" value="{{ sess.csrf }}">
+    <div class="row"><div><label for="af">{{ "Replace with" if audit else "Upload" }} the audit zip</label><input id="af" type="file" name="file" accept=".zip" required></div><div><button class="btn primary">Upload</button></div></div>
+    <p class="hint">On GitHub: open the audit repository, pick the branch <span class="mono">benchmark_v{{ (b.benchmark_version or "x").lstrip("v") }}</span> or a commit, then Code → Download ZIP.</p>
+  </form>
+  {% if audit %}<form method="post" action="/compliance/benchmarks/{{ b.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="audit_remove"><div class="row"><label class="inline"><input type="checkbox" required> Confirm</label><button class="btn small danger">Remove the audit content</button></div></form>{% endif %}
+  {% endif %}
+  {% if audit %}
+  <h3>Audit settings</h3>
+  <p class="sub">On/off settings the checks read (for example <span class="mono">{{ b.name.split("-")[0]|lower }}cis_nfs_server</span>: the host is meant to run an NFS server, so the "not in use" rule is not checked). The value comes from the audit content, then the uploaded role where it sets the same setting, then what is chosen here. {{ asettings_total }} settings.</p>
+  <form method="get" action="#audit" class="filters"><div class="row"><div><label for="aq">Search</label><input id="aq" type="text" name="aq" value="{{ aq }}" placeholder="nfs or server"></div><div><button class="btn">Filter</button>{% if aq %} <a href="?#audit">Clear</a>{% endif %}</div></div></form>
+  <form method="post" action="/compliance/benchmarks/{{ b.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="audit_settings">
+  <div class="scroll"><table>
+    <thead><tr><th>Setting</th><th>Value</th><th>From</th>{% if editable %}<th>Set here</th>{% endif %}</tr></thead>
+    <tbody>
+    {% for k, v, src, dv in asettings %}
+    <tr><td class="mono small">{{ k }}<input type="hidden" name="shown" value="{{ k }}"></td>
+      <td>{% if v %}<span class="badge b-done">On</span>{% else %}<span class="badge b-off">Off</span>{% endif %}</td>
+      <td class="small">{{ {"audit": "audit content", "role": "role", "here": "set here"}[src] }}{% if src != "audit" %} <span class="muted">(audit default {{ "on" if dv else "off" }})</span>{% endif %}</td>
+      {% if editable %}<td><select name="set_{{ k }}" aria-label="{{ k }}"><option value="">Default</option><option value="on"{% if src == "here" and v %} selected{% endif %}>On</option><option value="off"{% if src == "here" and not v %} selected{% endif %}>Off</option></select></td>{% endif %}
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+  {% if editable and asettings %}<p><button class="btn">Save settings</button></p>{% endif %}
+  </form>
+  {% endif %}
+</section>
+{% endif %}
 <section>
   <h2>Rules</h2>
   <form method="get" action="/compliance/benchmarks/{{ b.id }}" class="filters">

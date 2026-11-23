@@ -34,6 +34,18 @@ Compliance exceptions: accept a failed rule, for every host or for one.
   always stays an Admin, so no other admin can take its rights away.
 - *Compliance* menu: **Exceptions** now comes before Schedules.
 - The **compliance score per host** bars moved from Home to *Compliance → Summary*.
+- **Securitas agent for Linux** (RPM `securitas-agent`, Rocky/RHEL/AlmaLinux 8 and 9, x86_64): the compliance
+  wrapper, a checksum-pinned Goss and `securitas-agent-setup` (scan account, Securitas's SSH key with
+  `restrict`/`from=`, one sudo rule for the wrapper). Install with one line from Securitas
+  (`curl -fsS https://<securitas>/agent/install.sh | sudo bash`) or from the RPM on each GitHub release.
+  **Settings → Agent** (admins) shows the install command and the allowed source addresses.
+- **Audit content copied at scan time:** upload the benchmark's Ansible-Lockdown audit zip on its page; each
+  Linux compliance scan builds one bundle from it (with the settings below), copies it to a random hidden file in
+  `/tmp`, and the agent runs it as root in a new root-only directory and deletes it. Every host runs the same
+  content; each result shows the bundle's fingerprint ("host copy" when a host's own copy was used).
+- **Audit settings** per benchmark (e.g. `rhel9cis_nfs_server`): from the audit content, then the role zip, then
+  what an admin sets on the benchmark page. Rules that the audit skipped for such a setting (2.1.9 and 2.1.12
+  on RHEL 9 by default) get real checks once it is off.
 - **Home** has two tabs, **Vulnerabilities** (the default) and **Compliance**, each with its own headline
   numbers, table and charts.
 - **Compliance → Schedules** shows only the picker (no cron field or Advanced option; cron is still used behind

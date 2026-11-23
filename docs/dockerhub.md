@@ -42,9 +42,42 @@ results as web pages behind a sign-in, with an **Export to PDF** button.
 - **Light and dark mode**, chosen per user.
 - **PDF export** with WeasyPrint (no browser in the image).
 
+## Installing the agent on Linux targets
+
+Linux compliance checks need the **Securitas agent** on each host: a small RPM (`securitas-agent`, Rocky Linux /
+RHEL / AlmaLinux 8 and 9, x86_64) with the compliance wrapper, a checksum-pinned Goss and a setup command. It
+creates the scan account (password locked), authorizes Securitas's SSH key and adds **one** sudo rule: the
+account may run only `/usr/local/sbin/securitas-cis-audit` as root. Nothing runs on the host between scans.
+
+**One line, on each host as root** (Securitas serves the script and the RPM; set the scan account and key in
+*Settings → Scan credentials* first, and the allowed source addresses in *Settings → Agent*):
+
+```bash
+curl -fsS https://securitas.example.com/agent/install.sh | sudo bash
+# private CA the host does not trust yet:
+curl -fsS --cacert /path/ca.pem https://securitas.example.com/agent/install.sh | sudo SECURITAS_CA=/path/ca.pem bash
+```
+
+**Or by hand / with Ansible**, using the RPM from Securitas or from the [GitHub release](https://github.com/uhlix-net/securitas/releases):
+
+```bash
+dnf install https://github.com/uhlix-net/securitas/releases/download/vX.Y.Z/securitas-agent-X.Y.Z-1.x86_64.rpm
+securitas-agent-setup --user svc-securitas --key 'ssh-ed25519 AAAA... securitas' --from 10.0.0.11,10.0.0.12
+```
+
+Then add the host under **Targets**, run a vulnerability scan once (so its OS is known) and a compliance scan.
+`securitas-agent-setup --remove` removes the sudo rule and the key; `dnf remove securitas-agent` removes the agent
+(the account is kept).
+
+At scan time Securitas copies the benchmark's audit content (uploaded once per benchmark on its page) to a random
+hidden file in `/tmp`; the wrapper, as root, unpacks it into a new root-only directory, runs Goss read-only and
+deletes both. Every host runs exactly the same content, so there is no drift between hosts. Trust: whoever
+controls Securitas decides what the checks run as root on these hosts, as with Semaphore or a credentialed
+Tenable scan; protect Securitas's admin accounts and SSH key accordingly.
+
 ## Security
 
-- **Scans don't change the systems they scan.** Nothing is installed on the targets, and the scan accounts need no root, sudo or admin rights.
+- **Scans don't change the systems they scan.** Vulnerability scans install nothing and need no root, sudo or admin rights. Linux compliance checks use the Securitas agent, whose scan account may run only the read-only compliance wrapper as root.
 - **No scripts in the pages.** A strict Content Security Policy blocks all scripts, every form carries a CSRF token, and sessions use secure, HTTP-only cookies.
 - **Locked-down container.** It runs as UID 10001 with a read-only root filesystem and writes only to `/data` (feed cache) and `/tmp`.
 

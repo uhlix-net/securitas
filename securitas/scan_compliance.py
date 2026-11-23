@@ -25,10 +25,35 @@ STATUS_LABEL = {"pass": "Passed", "fail": "Failed", "accepted": "Accepted (excep
 SCOPE_LABEL = {"baseline": "BASELINE EXCEPTION", "server": "SERVER EXCEPTION"}
 
 
-def remote_command(key, system_type="server"):
+def remote_command(key, system_type="server", bundle_path=""):
     if not re.fullmatch(r"[A-Za-z0-9.-]+", key or ""):
         raise ValueError("bad benchmark key %r" % key)
-    return "sudo -n %s %s %s" % (WRAPPER, shlex.quote(key), "workstation" if system_type == "workstation" else "server")
+    if bundle_path and not re.fullmatch(r"/tmp/\.securitas-[A-Za-z0-9]{16,64}\.tar\.gz", bundle_path):
+        raise ValueError("bad bundle path")
+    return "sudo -n %s %s %s%s" % (WRAPPER, shlex.quote(key), "workstation" if system_type == "workstation" else "server",
+                                   " " + bundle_path if bundle_path else "")
+
+
+def bundle_path():
+    """A random hidden name in /tmp for the audit bundle (the wrapper accepts only this shape)."""
+    import secrets
+    import string
+    return "/tmp/.securitas-%s.tar.gz" % "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(24))
+
+
+def upload(client, path, data, timeout=120):
+    """Copy bytes to `path` on the host over the exec channel (works with a `restrict` key, no SFTP needed).
+    The file is created new (noclobber) and readable by the scan account only."""
+    chan = client.get_transport().open_session(timeout=30)
+    chan.settimeout(timeout)
+    chan.exec_command("umask 077; set -o noclobber; cat > %s" % shlex.quote(path))
+    chan.sendall(data)
+    chan.shutdown_write()
+    rc = chan.recv_exit_status()
+    err = chan.recv_stderr(2000).decode(errors="replace").strip() if chan.recv_stderr_ready() else ""
+    chan.close()
+    if rc != 0:
+        raise RuntimeError("could not copy the audit bundle to the host (%s)" % (err or "exit %d" % rc))
 
 
 def _ids(v):
@@ -49,9 +74,9 @@ def parse_goss(text):
     if start < 0:
         tail = text.strip()[-400:]
         if "a password is required" in tail or "not allowed to run sudo" in tail or "may not run sudo" in tail:
-            raise RuntimeError("sudo refused: the host has no sudo rule for %s (install it with the Ansible playbook)" % WRAPPER)
+            raise RuntimeError("sudo refused: the host has no sudo rule for %s (install the Securitas agent: Settings > Agent)" % WRAPPER)
         if "command not found" in tail or "No such file" in tail:
-            raise RuntimeError("%s is not installed on the host (install it with the Ansible playbook)" % WRAPPER)
+            raise RuntimeError("%s is not installed on the host (install the Securitas agent: Settings > Agent)" % WRAPPER)
         raise RuntimeError("no Goss output: " + (tail or "(empty)"))
     try:
         data = json.loads(text[start:])
@@ -117,21 +142,39 @@ def apply_exceptions(rules, counts, host, exceptions):
 
 
 def run_host(cfg, target, record_key):
-    """target: {id, host, host_key, key, system_type, rules}. Returns {"os", "rules", "counts", "goss"}."""
+    """target: {id, host, host_key, key, system_type, rules, bundle}. bundle: (bytes, sha256) of the audit content to
+    copy and run, None to use a copy installed on the host, or an Exception (the bundle could not be built).
+    Returns {"os", "rules", "counts", "goss", "content"}."""
+    bundle = target.get("bundle")
+    if isinstance(bundle, Exception):
+        raise RuntimeError("the audit bundle for %s could not be built: %s" % (target["key"], bundle))
     client = scan_linux.connect(cfg, target, record_key)
+    path = ""
     try:
         timeout = max(cfg.host_timeout, 1200)
+        if bundle:
+            path = bundle_path()
+            upload(client, path, bundle[0])
         _, out, err = client.exec_command("bash -c %s" % shlex.quote(
-            'echo "##OS $(. /etc/os-release; echo "$NAME $VERSION_ID")"; ' + remote_command(target["key"], target.get("system_type"))
-            + " 2>&1"), timeout=timeout)
+            'echo "##OS $(. /etc/os-release; echo "$NAME $VERSION_ID")"; '
+            + remote_command(target["key"], target.get("system_type"), path) + " 2>&1"), timeout=timeout)
         text = out.read().decode(errors="replace")
     finally:
+        if path:
+            try:    # the wrapper deletes it; this covers a wrapper that never started (old wrapper, sudo refused)
+                client.exec_command("rm -f %s" % shlex.quote(path), timeout=30)[1].channel.recv_exit_status()
+            except Exception:
+                pass
         client.close()
+    m0 = re.search(r'^\{"error":"([^"]*)"\}', text.split("\n", 1)[1] if text.startswith("##OS") else text, re.M)
+    if m0:
+        raise RuntimeError("the host's Securitas wrapper refused: %s%s" % (
+            m0.group(1), " (update the agent on this host)" if bundle and "no audit content" in m0.group(1) else ""))
     m = re.match(r"##OS (.*)\n", text)
     os_name = m.group(1).strip() if m else ""
     by, summary = parse_goss(text[m.end():] if m else text)
     rules, counts = evaluate(target["rules"], by)
-    return {"os": os_name, "rules": rules, "counts": counts,
+    return {"os": os_name, "rules": rules, "counts": counts, "content": "bundle:" + bundle[1] if bundle else "host",
             "goss": {k: summary.get(k) for k in ("test-count", "failed-count", "skipped-count", "total-duration")}}
 
 
