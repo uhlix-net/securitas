@@ -43,8 +43,9 @@ Compliance exceptions: accept a failed rule, for every host or for one.
   Linux compliance scan builds one bundle from it (with the settings below), copies it to a random hidden file in
   `/tmp`, and the agent runs it as root in a new root-only directory and deletes it. Every host runs the same
   content; each result shows the bundle's fingerprint ("host copy" when a host's own copy was used).
-- **Audit settings** per benchmark (e.g. `rhel9cis_nfs_server`): from the audit content, then the role zip, then
-  what an admin sets on the benchmark page. Rules that the audit skipped for such a setting (2.1.9 and 2.1.12
+- **Audit settings** per benchmark (e.g. `rhel9cis_nfs_server`): from the audit content, then the role zip (on/off
+  and number settings only; the role's text values can be Ansible expressions), then what an admin sets on the
+  benchmark page. Rules that the audit skipped for such a setting (2.1.9 and 2.1.12
   on RHEL 9 by default) get real checks once it is off.
 - **Home** has two tabs, **Vulnerabilities** (the default) and **Compliance**, each with its own headline
   numbers, table and charts.

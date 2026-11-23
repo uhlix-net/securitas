@@ -1894,7 +1894,7 @@ class AuditBundle(unittest.TestCase):
         self.assertEqual(s, {"rhel9cis_nfs_server": (False, "here"), "rhel9cis_rpc_server": (False, "role")})  # no rule/level
         v = ab.effective_vars(audit, role, {"rhel9cis_nfs_server": False, "nope": True})
         self.assertEqual((v["rhel9cis_nfs_server"], v["rhel9cis_rpc_server"], v["rhel9cis_rule_2_1_9"], v["rhel9cis_level_1"],
-                          v["rhel9cis_motd"]), (False, False, True, True, "role"))      # rule/level switches never from the role
+                          v["rhel9cis_motd"]), (False, False, True, True, "hello"))     # rule/level switches and text never from the role
         self.assertNotIn("nope", v)
         b1, h1 = ab.build(data, v)
         b2, h2 = ab.build(data, v)

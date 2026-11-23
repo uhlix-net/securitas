@@ -114,11 +114,12 @@ def settings(audit_vars, role_vars, overrides):
 
 
 def effective_vars(audit_vars, role_vars, overrides):
-    """vars/CIS.yml for the bundle: the audit's settings, the role's values for the same scalar settings (never rule
-    or level switches), then the admin's on/off choices."""
+    """vars/CIS.yml for the bundle: the audit's settings, the role's values for the same on/off and number settings
+    (never rule or level switches, never text: the role's text values can be Ansible/Jinja expressions that mean
+    nothing to the audit), then the admin's on/off choices."""
     v = dict(audit_vars)
     for k, rv in role_vars.items():
-        if k in v and not NOT_FROM_ROLE.search(k) and isinstance(rv, (bool, int, str)) and type(rv) is type(v[k]):
+        if k in v and not NOT_FROM_ROLE.search(k) and isinstance(rv, (bool, int)) and type(rv) is type(v[k]):
             v[k] = rv
     for k, ov in (overrides or {}).items():
         if k in v and isinstance(ov, bool) and isinstance(v[k], bool):
