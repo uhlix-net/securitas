@@ -27,20 +27,6 @@
   </table></div>
   {% if can(user.role, "scan.run") %}<p><a class="btn" href="/compliance/scans">Run a compliance scan</a></p>{% endif %}
 </section>
-<section>
-  <h2>Active benchmarks</h2>
-  <p class="sub">{{ active|length }} active of {{ nbench }} loaded. Manage them under <a href="/compliance/benchmarks">Benchmarks</a>.</p>
-  {% if not active %}<p class="muted">No benchmark is active.</p>{% else %}
-  <div class="scroll"><table>
-    <thead><tr><th>Benchmark</th><th>Operating system</th><th>Profile</th><th>Rules checked</th></tr></thead>
-    <tbody>
-    {% for b in active %}{% set c = counts[b.id] %}
-    <tr><td><a href="/compliance/benchmarks/{{ b.id }}" class="mono"><strong>{{ b.key }}</strong></a><br><span class="small muted">{{ name(b) }}</span></td>
-      <td>{{ b.os_label }}</td><td class="small">{{ profiles[b.profile] }}</td><td>{{ c.on }} of {{ c.total }}</td></tr>
-    {% endfor %}
-    </tbody></table></div>
-  {% endif %}
-</section>
 {% if cbars %}
 <section class="chartcard">
   <h2>Compliance score per host</h2>

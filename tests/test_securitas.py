@@ -1318,7 +1318,7 @@ class Menus(unittest.TestCase):
                                  raw={"systems": [{"name": "rocky1", "os": "Rocky Linux 9.6"},
                                                   {"name": "ubu1", "os": "Ubuntu 22.04.4 LTS"}]}))
         page = self.c.get("/compliance/report").text
-        self.assertIn("No benchmark is active", page)
+        self.assertNotIn("Active benchmarks", page)                                    # removed from the report
         self.c.post("/compliance/benchmarks", data={"csrf": csrf(self.c, "/compliance/benchmarks")},
                     files={"file": ("r.zip", role_zip(top="RHEL9-CIS-1.0.0"), "application/zip")})
         page = self.c.get("/compliance/report").text
@@ -1504,6 +1504,11 @@ class ComplianceScans(unittest.TestCase):
         self.assertIn("Checked", summary)
         report = self.c.get("/compliance/report").text
         self.assertIn("/compliance/scans/%d/hosts/%d" % (cid, res["rocky1"].id), report)
+        self.assertNotIn("Active benchmarks", report)
+        self.assertNotIn("Active benchmarks", summary)
+        bench = self.c.get("/compliance/benchmarks").text
+        self.assertIn("Trivy k8s-cis", bench)                                         # Kubernetes listed with the others
+        self.assertEqual(bench.count("<th>Rules checked</th>"), 2)                    # Linux and Kubernetes tables
         hist = self.c.get("/compliance/scans").text
         self.assertIn("1 of 3", hist)
 

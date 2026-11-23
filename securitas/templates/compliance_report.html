@@ -5,24 +5,6 @@
   <p class="sub">How each system measures up against the active benchmark for its operating system. A system is matched to a benchmark by the OS its latest vulnerability scan saw. Benchmarks, profiles and which rules count are set under <a href="/compliance/benchmarks">Benchmarks</a>.</p>
   <p class="sub">Each system's newest successful check is shown; open it for every rule's result. Run checks on the <a href="/compliance/scans">Scans</a> page. Failed rules with an exception show as Accepted; see <a href="/compliance/exceptions">Exceptions</a>.</p>
 </section>
-<section>
-  <h2>Active benchmarks</h2>
-  {% if not active %}<p class="muted">No benchmark is active. Upload one and make it active under <a href="/compliance/benchmarks">Benchmarks</a>.</p>{% else %}
-  <div class="scroll"><table>
-    <thead><tr><th>Benchmark</th><th>Platform</th><th>Operating system</th><th>Profile</th><th>Rules checked</th></tr></thead>
-    <tbody>
-    {% for b in active %}{% set c = counts[b.id] %}
-    <tr>
-      <td><a href="/compliance/benchmarks/{{ b.id }}" class="mono"><strong>{{ b.key }}</strong></a><br><span class="small muted">{{ name(b) }}{% if b.benchmark_version %} · CIS {{ b.benchmark_version }}{% endif %}</span></td>
-      <td>{{ PLATFORM_LABEL[b.platform] }}</td>
-      <td>{{ b.os_label }}</td>
-      <td class="small">{{ profiles[b.profile] }}</td>
-      <td>{{ c.on }} of {{ c.total }}</td>
-    </tr>
-    {% endfor %}
-    </tbody></table></div>
-  {% endif %}
-</section>
 {% for plat in ("linux", "windows") %}
 <section id="{{ plat }}">
   <h2>{{ PLATFORM_LABEL[plat] }}</h2>

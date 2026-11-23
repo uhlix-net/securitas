@@ -34,6 +34,9 @@ Compliance exceptions: accept a failed rule, for every host or for one.
   always stays an Admin, so no other admin can take its rights away.
 - *Compliance* menu: **Exceptions** now comes before Schedules.
 - The **compliance score per host** bars moved from Home to *Compliance → Summary*.
+- *Active benchmarks* removed from *Compliance → Summary* and *Report* (the same information, with the rules
+  checked, is on *Compliance → Benchmarks*). *Benchmarks* now lists Kubernetes too (Trivy `k8s-cis`, not set up
+  yet) with the same columns as Linux and Windows.
 - **Compliance over time** graph on Home and Compliance → Summary: the average compliance score per platform
   (each host's newest check at the end of each day, week or month), daily, weekly or monthly like the CVE graph.
 - The *over time* graphs (CVEs and compliance) now open on the **daily** view (was weekly).
