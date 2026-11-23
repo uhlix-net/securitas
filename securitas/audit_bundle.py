@@ -127,8 +127,21 @@ def effective_vars(audit_vars, role_vars, overrides):
     return v
 
 
+# goss.yml includes some check folders only for one choice, e.g. {{ if eq .Vars.rhel9cis_firewall "nftables" }}
+# (firewalld or nftables, journald or rsyslog). Securitas runs every automated check, so these include guards
+# become {{ if true }}: both alternatives run, and the one a host does not use fails (accept it with an exception).
+# Only goss.yml is changed; checks that verify which alternative is in use keep reading the setting.
+CHOICE_GUARD = re.compile(r'\{\{\s*if\s+eq\s+\.Vars\.[A-Za-z0-9_]+\s+"[^"]*"\s*\}\}')
+
+
+def all_alternatives(goss_yml):
+    """goss.yml with every either/or include guard turned on. Returns (text, number of guards changed)."""
+    return CHOICE_GUARD.subn("{{ if true }}", goss_yml)
+
+
 def build(audit_zip, vars_dict):
-    """(tar.gz bytes, sha256 hex) of the audit content with vars/CIS.yml replaced. Deterministic."""
+    """(tar.gz bytes, sha256 hex) of the audit content with vars/CIS.yml replaced and goss.yml running both
+    alternatives of every either/or include. Deterministic."""
     z, _, files = _top_and_files(audit_zip)
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w", format=tarfile.PAX_FORMAT) as tar:
@@ -137,8 +150,12 @@ def build(audit_zip, vars_dict):
         for rel in sorted(files):
             if rel.startswith(SKIP_DIRS):
                 continue
-            data = yaml.safe_dump(vars_dict, sort_keys=True, default_flow_style=False).encode() \
-                if rel == "vars/CIS.yml" else z.read(files[rel])
+            if rel == "vars/CIS.yml":
+                data = yaml.safe_dump(vars_dict, sort_keys=True, default_flow_style=False).encode()
+            elif rel == "goss.yml":
+                data = all_alternatives(z.read(files[rel]).decode())[0].encode()
+            else:
+                data = z.read(files[rel])
             entries.append((rel, data))
             parts = rel.split("/")[:-1]
             for n in range(1, len(parts) + 1):

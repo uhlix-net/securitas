@@ -22,7 +22,7 @@ from sqlalchemy import String, cast, delete, func, select
 from . import __version__, auth, charts, compliance, render, report, scan_linux, scan_windows, schedule_ui, sources
 from .config import PLATFORMS
 from .settings import FIELDS, SettingsError
-from .db import (AuditEvent, Benchmark, BenchmarkFile, ComplianceException, ComplianceResult, ComplianceScan, ComplianceSchedule, LoginState, PlatformResult, ResultStats, RoleMapping,
+from .db import (AuditEvent, Benchmark, BenchmarkFile, BenchmarkRule, ComplianceException, ComplianceResult, ComplianceScan, ComplianceSchedule, LoginState, PlatformResult, ResultStats, RoleMapping,
                  Scan, Schedule, Session, Target, User, audit, get_setting, set_setting, utcnow)
 from .jobs import STATUS_LABEL, fmt_time, next_run, valid_cron
 
@@ -973,6 +973,8 @@ def create_app(cfg, db, jobs):
     ]
     a.env.globals["SETTINGS_PAGES"] = SETTINGS_PAGES
     a.env.globals["BUILTIN_ADMIN"] = cfg.admin_username
+    # CIS marks each recommendation Automated or Manual; Ansible-Lockdown roles tag them PATCH or AUDIT
+    a.env.globals["CIS_KIND"] = lambda kind: "(automated)" if kind == "PATCH" else "(manual)" if kind == "AUDIT" else ""
     a.env.globals["describe"] = lambda cron: schedule_ui.describe(cron, cfg.timezone)
     a.env.globals["settings_for"] = lambda role: [p for p in SETTINGS_PAGES if auth.can(role, p[2])]
     # Top-level sections and their pages: (path, label, permission). Vulnerability scans and reports keep their
@@ -1704,9 +1706,13 @@ def create_app(cfg, db, jobs):
                 ComplianceException.host)).all()
             s.expunge_all()
         rows = sorted(rows, key=lambda x: (x.platform, x.benchmark, compliance.sort_key(x.rule_id), x.scope, x.host))
+        with db.Session() as s:     # CIS automated/manual per (benchmark name, rule)
+            kinds = {(scan_compliance.bench_name(k), rid): kind for k, rid, kind in s.execute(
+                select(Benchmark.key, BenchmarkRule.rule_id, BenchmarkRule.kind).join(BenchmarkRule,
+                       BenchmarkRule.benchmark_id == Benchmark.id).where(BenchmarkRule.rule_id.in_({x.rule_id for x in rows} or {""})))}
         return a.page(request, "compliance_exceptions.html", {
             "user": user, "sess": request.state.sess, "title": "Compliance exceptions", "rows": rows,
-            "scopes": scan_compliance.SCOPE_LABEL, "may_except": auth.can(user.role, "compliance.exception")})
+            "scopes": scan_compliance.SCOPE_LABEL, "may_except": auth.can(user.role, "compliance.exception"), "kinds": kinds})
 
     @api.post("/compliance/exceptions/{xid}/delete")
     async def compliance_exception_delete(request: Request, xid: int, user=Depends(a.need("compliance.exception"))):

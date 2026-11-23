@@ -51,6 +51,7 @@
   {% if audit %}<form method="post" action="/compliance/benchmarks/{{ b.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="audit_remove"><div class="row"><label class="inline"><input type="checkbox" required> Confirm</label><button class="btn small danger">Remove the audit content</button></div></form>{% endif %}
   {% endif %}
   {% if audit %}
+  <p class="hint">Every automated check runs: where the audit content would run only one of two alternatives (firewalld or nftables, journald or rsyslog), Securitas runs both, and the one a host does not use fails; accept it with an exception.</p>
   <h3>Audit settings</h3>
   <p class="sub">On/off settings the checks read (for example <span class="mono">{{ b.name.split("-")[0]|lower }}cis_nfs_server</span>: the host is meant to run an NFS server, so the "not in use" rule is not checked). The value comes from the audit content, then the uploaded role where it sets the same setting, then what is chosen here. {{ asettings_total }} settings.</p>
   <form method="get" action="#audit" class="filters"><div class="row"><div><label for="aq">Search</label><input id="aq" type="text" name="aq" value="{{ aq }}" placeholder="nfs or server"></div><div><button class="btn">Filter</button>{% if aq %} <a href="?#audit">Clear</a>{% endif %}</div></div></form>
@@ -93,7 +94,7 @@
     <tr>
       <td class="nowrap"><input type="hidden" name="shown" value="{{ r.rule_id }}">{% if editable %}<label class="inline"><input type="checkbox" name="rule" value="{{ r.rule_id }}"{% if on %} checked{% endif %} aria-label="Check rule {{ r.rule_id }}"> {{ "On" if on else "Off" }}</label>{% else %}{{ "On" if on else "Off" }}{% endif %}{% if r.override is not none %} <span class="src ui">Set here</span>{% endif %}{% if not r.default_on %} <span class="small muted">off in role</span>{% endif %}</td>
       <td class="mono nowrap">{{ r.rule_id }}</td>
-      <td>{{ r.title }}<br><span class="small muted mono">{{ r.toggle }}</span></td>
+      <td>{{ r.title }} <span class="small muted">{{ CIS_KIND(r.kind) }}</span><br><span class="small muted mono">{{ r.toggle }}</span></td>
       <td class="small">{{ "Automated" if r.kind == "PATCH" else "Manual" }}</td>
       <td class="small">{{ r.levels|join(", ") }}</td>
       <td class="small mono">{{ r.refs|map("replace", "NIST800-53R5_", "")|join(", ") }}</td>

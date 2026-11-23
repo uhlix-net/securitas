@@ -1609,8 +1609,10 @@ class ComplianceScans(unittest.TestCase):
         host = self.c.get("/compliance/scans/%d/hosts/%d" % (cid2, r.id)).text
         self.assertIn('class="badge b-accepted">Accepted</span>', host)
         self.assertIn("SERVER EXCEPTION: Needed by the backup agent", host)
+        self.assertIn('Ensure cramfs is not available <span class="small muted">(automated)</span>', host)
         self.assertIn("var(--cr-accepted)", self.c.get("/?tab=compliance").text)                          # charts have the colour
         self.assertIn("Needed by the backup agent", self.c.get("/compliance/exceptions").text)
+        self.assertIn('<span class="muted">(automated)</span>', self.c.get("/compliance/exceptions").text)
         # a baseline exception replaces this host's server exception and covers every host of the benchmark
         self.assertIn("ok=exception", post(rule="1.1.1", scope="baseline", reason="Not used here").headers["location"])
         with self.db.Session() as s:
@@ -1908,6 +1910,11 @@ class AuditBundle(unittest.TestCase):
             self.assertIn("./goss.yml", names)
             self.assertFalse(any(".github" in n for n in names))
             self.assertFalse(yaml.safe_load(t.extractfile("./vars/CIS.yml").read())["rhel9cis_nfs_server"])
+        g = '{{ if eq .Vars.rhel9cis_firewall "firewalld" }}\n  a/*.yml: {}\n{{ end }}\n{{ if eq .Vars.rhel9cis_firewall "nftables" }}\n  b/*.yml: {}\n{{ end }}\n{{ if .Vars.rhel9cis_section1 }}\n'
+        out, n = ab.all_alternatives(g)
+        self.assertEqual(n, 2)                                                          # both alternatives run
+        self.assertEqual(out.count("{{ if true }}"), 2)
+        self.assertIn("{{ if .Vars.rhel9cis_section1 }}", out)                         # other conditions untouched
 
     def test_bad_audit_zips(self):
         from securitas import audit_bundle as ab

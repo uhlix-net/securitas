@@ -11,7 +11,7 @@
     <tr>
       <td class="mono nowrap">{{ x.benchmark }}<br><span class="small muted">{{ PLATFORM_LABEL.get(x.platform, x.platform) }}</span></td>
       <td class="mono nowrap">{{ x.rule_id }}</td>
-      <td class="small">{{ x.rule_title }}</td>
+      <td class="small">{{ x.rule_title }}{% set k = kinds.get((x.benchmark, x.rule_id)) %}{% if k %} <span class="muted">{{ CIS_KIND(k) }}</span>{% endif %}</td>
       <td class="nowrap"><span class="badge b-accepted">{{ scopes[x.scope] }}</span></td>
       <td class="small">{% if x.scope == "server" %}<span class="mono">{{ x.host }}</span>{% else %}All {{ x.benchmark }} hosts{% endif %}</td>
       <td class="small">{{ x.reason }}</td>

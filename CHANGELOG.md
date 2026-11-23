@@ -43,6 +43,11 @@ Compliance exceptions: accept a failed rule, for every host or for one.
   Linux compliance scan builds one bundle from it (with the settings below), copies it to a random hidden file in
   `/tmp`, and the agent runs it as root in a new root-only directory and deletes it. Every host runs the same
   content; each result shows the bundle's fingerprint ("host copy" when a host's own copy was used).
+- Every rule title (host and target results, benchmark rules, exceptions) ends in **(automated)** or
+  **(manual)**, as CIS marks the recommendation (Ansible-Lockdown's PATCH / AUDIT).
+- **Every automated check runs:** where the audit content includes check folders for only one choice
+  (firewalld or nftables, journald or rsyslog), the bundle runs both; the alternative a host does not use fails
+  and can be accepted with an exception.
 - **Audit settings** per benchmark (e.g. `rhel9cis_nfs_server`): from the audit content, then the role zip (on/off
   and number settings only; the role's text values can be Ansible expressions), then what an admin sets on the
   benchmark page. Rules that the audit skipped for such a setting (2.1.9 and 2.1.12

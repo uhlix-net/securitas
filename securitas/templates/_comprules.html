@@ -16,7 +16,7 @@
     {% for x in rules %}
     <tr id="r-{{ x.id }}">
       <td class="mono nowrap">{{ x.id }}</td>
-      <td>{{ x.title }}{% if x.kind == "AUDIT" %} <span class="small muted">(manual in the benchmark)</span>{% endif %}</td>
+      <td>{{ x.title }} <span class="small muted">{{ CIS_KIND(x.kind) }}</span></td>
       <td>{% if x.status == "fail" %}<span class="badge b-failed">Failed</span>{% elif x.status == "accepted" %}<span class="badge b-accepted">Accepted</span> <span class="small">{{ scopes[x.exception.scope] }}: {{ x.exception.reason }}</span>{% if x.exception.by %}<br><span class="small muted">by {{ x.exception.by }}</span>{% endif %}{% elif x.status == "pass" %}<span class="badge b-done">Passed</span>{% elif x.status == "skip" %}<span class="badge b-off">Not applicable</span>{% else %}<span class="badge b-off">No automated check</span>{% endif %}
         {% if x.status in ("fail", "accepted") %}{% set cur = exc_now.get(x.id) %}
         {% if x.status == "fail" and cur %}<div class="excnote"><span class="badge b-accepted">Exception saved</span> {{ scopes[cur.scope] }}: {{ cur.reason }} <span class="muted">(Accepted from the next scan)</span></div>{% endif %}
