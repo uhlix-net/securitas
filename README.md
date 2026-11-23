@@ -69,6 +69,20 @@ serves the results as web pages with an **Export to PDF** button.
 
 What's new in each version: [CHANGELOG.md](CHANGELOG.md). Upgrading? See the upgrade notes there.
 
+## Screenshots
+
+| | |
+|---|---|
+| ![Home: vulnerabilities and compliance at a glance](docs/screenshots/home.png) | ![CVEs over time and by severity, dark mode](docs/screenshots/charts-dark.png) |
+| Home | CVEs over time and by severity (dark mode) |
+| ![Vulnerability report: CVEs ranked by CISA KEV and EPSS](docs/screenshots/report.png) | ![Compliance summary](docs/screenshots/compliance.png) |
+| Vulnerability report, ranked by KEV and EPSS | Compliance summary |
+| ![Per-host CIS rule results, dark mode](docs/screenshots/host-rules-dark.png) | ![CIS benchmark library](docs/screenshots/benchmarks.png) |
+| Per-host CIS rule results (dark mode) | Benchmark library |
+
+The screenshots use made-up demo data (fictional hosts, images and CVE numbers; compliance results against the real
+RHEL 9 and Windows Server 2022 CIS benchmarks, with random pass/fail).
+
 ## Roles
 
 | Permission | Viewer | Operator | Admin |
