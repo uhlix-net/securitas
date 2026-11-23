@@ -196,6 +196,21 @@ class History(unittest.TestCase):
         self.assertEqual(h["series"][1]["values"], [100, 100, 70, 70, 70, 70, 70])  # newest result of the day wins
         self.assertEqual(h["series"][0]["values"], [None] * 5 + [5, 5])
 
+    def test_compliance_history(self):
+        import datetime as dt
+        d = lambda x: dt.date(2026, 11, x)
+        rows = [("linux", "a", d(14), 40.0), ("linux", "b", d(15), 60.0), ("linux", "a", d(17), 80.0),
+                ("linux", "c", d(18), None), ("windows", "w", d(19), 90.0)]
+        h = report.compliance_history(rows, "day", d(19), ("kubernetes", "linux", "windows"))
+        self.assertEqual([s["id"] for s in h["series"]], ["linux", "windows"])
+        self.assertEqual(h["series"][0]["values"], [None, 40.0, 50.0, 50.0, 70.0, 70.0, 70.0])   # newest per host, averaged
+        self.assertEqual(h["series"][1]["values"], [None] * 6 + [90.0])
+        from securitas import charts
+        out = charts.history_svg(h, what="Average compliance score per platform", gid="chist", percent=True)
+        self.assertIn("<title>Linux, Nov 19: 70.0%</title>", out)
+        self.assertIn('aria-labelledby="chist-t"', out)
+        self.assertIn(">100%</text>", out)                                                       # fixed 0-100 axis
+
     def test_svg(self):
         from securitas import charts
         h = {"labels": ["a", "b"], "series": [{"id": "linux", "title": "Linux", "values": [3, 7]}], "range": "week"}
@@ -528,12 +543,12 @@ class Web(unittest.TestCase):
         self.jobs.run_scan(self.jobs._claim())
         page = self.c.get("/vulnerabilities").text
         self.assertIn('id="history"', page)
-        self.assertIn('class="on" aria-current="true" href="/vulnerabilities?range=week#history"', page)   # default: weekly
+        self.assertIn('class="on" aria-current="true" href="/vulnerabilities?range=day#history"', page)   # default: daily
         self.assertIn("<title>Kubernetes,", page)
         self.assertIn('id="pie-lv-kubernetes"', page)
         self.assertNotIn("<script", page)
         self.assertIn('aria-current="true" href="/vulnerabilities?range=month#history"', self.c.get("/vulnerabilities?range=month").text)
-        self.assertIn('aria-current="true" href="/vulnerabilities?range=week#history"', self.c.get("/vulnerabilities?range=bogus").text)
+        self.assertIn('aria-current="true" href="/vulnerabilities?range=day#history"', self.c.get("/vulnerabilities?range=bogus").text)
         rep_ = self.c.get("/report").text
         self.assertIn("CVE-2099-0003", rep_)                       # low, not a priority: listed now
         self.assertIn('name="sev" value="low" checked', rep_)
@@ -1461,6 +1476,9 @@ class ComplianceScans(unittest.TestCase):
         home = self.c.get("/").text
         self.assertIn("<title>Home", home)
         self.assertIn("Compliance score per host", home)
+        self.assertIn("Compliance over time", home)
+        self.assertIn('href="/?crange=day&range=day#chistory"', home)                               # daily by default
+        self.assertIn("Compliance over time", self.c.get("/compliance").text)
         self.assertIn('id="pie-cr-linux"', home)
         self.assertIn("50.0%", home)
         about = self.c.get("/about").text

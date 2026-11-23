@@ -1240,7 +1240,11 @@ def create_app(cfg, db, jobs):
             systems, active = compliance_systems(s)
             rows = [platform_row(p, systems.get(p, [])) for p in ("linux", "windows", "kubernetes")]
             sched = {x.platform: x for x in s.scalars(select(ComplianceSchedule)).all()}
-            ctx = {"user": user, "sess": request.state.sess, "title": "Compliance summary", "rows": rows,
+            crng = request.query_params.get("crange", report.DEFAULT_RANGE)
+            crng = crng if crng in report.RANGES else report.DEFAULT_RANGE
+            ctx = {"user": user, "sess": request.state.sess, "title": "Compliance summary", "rows": rows, "crange": crng,
+                   "crange_switch": charts.range_switch(crng, "/compliance", "crange", "chistory"),
+                   "chistory": compliance_history_svg(crng),
                    "active": sorted(active.values(), key=lambda b: (b.platform, b.os_key)),
                    "counts": {b.id: compliance.counts(b) for b in active.values()}, "sched": sched,
                    "nbench": s.scalar(select(func.count(Benchmark.id))), "profiles": compliance.PROFILES,
@@ -1436,6 +1440,10 @@ def create_app(cfg, db, jobs):
                       "score": r.counts.get("score"), "href": "/compliance/scans/%d/hosts/%d" % (r.scan_id, r.id)} for r in res]
         return rows, charts.result_pies(pies), charts.score_bars(bars) if bars else ""
 
+    def compliance_history_svg(rng):
+        return charts.history_svg(jobs.compliance_history(rng), what="Average compliance score per platform",
+                                  gid="chist", percent=True)
+
     @api.get("/")
     def home(request: Request, user=Depends(V)):
         m = jobs.current_model()
@@ -1443,6 +1451,8 @@ def create_app(cfg, db, jobs):
         vtot = {k: sum(r[k] for r in vrows) for k in ("systems", "priority", "kev", "critical", "high")}
         rng = request.query_params.get("range", report.DEFAULT_RANGE)
         rng = rng if rng in report.RANGES else report.DEFAULT_RANGE
+        crng = request.query_params.get("crange", report.DEFAULT_RANGE)
+        crng = crng if crng in report.RANGES else report.DEFAULT_RANGE
         with db.Session() as s:
             crows, cpies, cbars = compliance_charts(s)
         scores = [r["score"] for r in crows if r["score"] is not None]
@@ -1450,7 +1460,10 @@ def create_app(cfg, db, jobs):
                 "failed": sum(r["failed"] for r in crows), "score": round(sum(scores) / len(scores), 1) if scores else None}
         return a.page(request, "home.html", {
             "user": user, "sess": request.state.sess, "title": "Home", "model": m, "vrows": vrows, "vtot": vtot,
-            "range": rng, "range_switch": charts.range_switch(rng, "/"), "history": charts.history_svg(jobs.history(rng)),
+            "range": rng, "range_switch": charts.range_switch(rng, "/", keep={"crange": crng}),
+            "history": charts.history_svg(jobs.history(rng)), "crange": crng,
+            "crange_switch": charts.range_switch(crng, "/", "crange", "chistory", keep={"range": rng}),
+            "chistory": compliance_history_svg(crng),
             "vpies": charts.pies(report.platform_levels(m)), "crows": crows, "ctot": ctot, "cpies": cpies, "cbars": cbars})
 
     @api.get("/about")

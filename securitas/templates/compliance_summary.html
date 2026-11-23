@@ -41,4 +41,9 @@
     </tbody></table></div>
   {% endif %}
 </section>
+<section class="chartcard" id="chistory">
+  <h2>Compliance over time {{ crange_switch|safe }}</h2>
+  <p class="sub">Average compliance score per platform: each host's newest check at the end of each {{ {"day": "day", "week": "week", "month": "month"}[crange] }}, averaged over the platform's hosts.</p>
+  {{ chistory|safe }}
+</section>
 {% endblock %}

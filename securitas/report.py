@@ -165,7 +165,7 @@ def platform_levels(model):
 # History graph ranges: (points, step). Each point is the distinct CVE count of a platform's newest good result
 # at or before the end of that day, week or month.
 RANGES = {"day": ("Daily", "7 days", 7), "week": ("Weekly", "3 months", 13), "month": ("Monthly", "1 year", 12)}
-DEFAULT_RANGE = "week"
+DEFAULT_RANGE = "day"
 
 
 def range_points(rng, today):
@@ -200,6 +200,28 @@ def history(stats, rng, today, platforms):
                 cur = rows[i][1]
                 i += 1
             vals.append(cur)
+        if any(v is not None for v in vals):
+            series.append({"id": plat, "title": PLATFORM_TITLE.get(plat, plat.title()), "values": vals})
+    return {"labels": [l for l, _ in pts], "series": series, "range": rng}
+
+
+def compliance_history(rows, rng, today, platforms):
+    """rows: [(platform, host, local check date, score)] of successful compliance checks, oldest first.
+    Each point is the average score of the platform's hosts, each host's newest check at or before the end of that
+    day, week or month. Returns the same shape as history(); None before a platform's first check."""
+    pts = range_points(rng, today)
+    by = collections.defaultdict(list)
+    for plat, host, d, score in rows:
+        if score is not None:
+            by[plat].append((d, host, score))
+    series = []
+    for plat in platforms:
+        rs, vals, i, cur = by.get(plat, []), [], 0, {}
+        for _, end in pts:
+            while i < len(rs) and rs[i][0] <= end:
+                cur[rs[i][1]] = rs[i][2]
+                i += 1
+            vals.append(round(sum(cur.values()) / len(cur), 1) if cur else None)
         if any(v is not None for v in vals):
             series.append({"id": plat, "title": PLATFORM_TITLE.get(plat, plat.title()), "values": vals})
     return {"labels": [l for l, _ in pts], "series": series, "range": rng}

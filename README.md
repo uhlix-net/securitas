@@ -26,7 +26,7 @@ serves the results as web pages with an **Export to PDF** button.
   last scanned, and its counts: systems, priority CVEs, known exploited, critical and high. Each platform
   name links to its section of the full report at `/report`. The same table opens the report and the PDF.
   Below it, a graph of distinct CVEs per platform over time (daily for 7 days, weekly for 3 months or
-  monthly for a year; weekly by default) and a pie chart per platform of its CVEs by severity.
+  monthly for a year; daily by default) and a pie chart per platform of its CVEs by severity.
 - **Failed scans are flagged, not hidden.** If a platform's latest scan failed or was only partly
   successful, the summary, the report and the PDF say so and show the error. Older results stay
   visible but are marked as older; a platform that has never been scanned successfully still gets a section saying so.

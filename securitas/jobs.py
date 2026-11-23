@@ -130,6 +130,20 @@ class Jobs:
         stats = [(p, at.astimezone(z).date(), total) for p, at, total in rows]
         return report.history(stats, rng, datetime.datetime.now(z).date(), PLATFORMS)
 
+    def compliance_history(self, rng):
+        """Graph: average compliance score per platform over the range ('day', 'week' or 'month')."""
+        try:
+            z = zoneinfo.ZoneInfo(self.cfg.timezone)
+        except Exception:
+            z = datetime.timezone.utc
+        with self.db.Session() as s:
+            rows = s.execute(select(ComplianceResult.platform, ComplianceResult.host, ComplianceResult.scanned_at,
+                                    ComplianceResult.counts)
+                             .where(ComplianceResult.status == "done")
+                             .order_by(ComplianceResult.scanned_at, ComplianceResult.id)).all()
+        data = [(p, h, at.astimezone(z).date(), (c or {}).get("score")) for p, h, at, c in rows]
+        return report.compliance_history(data, rng, datetime.datetime.now(z).date(), PLATFORMS)
+
     def start(self):
         for i in range(self.cfg.workers):
             self.threads.append(threading.Thread(target=self._worker, name="scan-worker-%d" % i, daemon=True))

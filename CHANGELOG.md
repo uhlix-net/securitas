@@ -17,6 +17,9 @@ Compliance exceptions: accept a failed rule, for every host or for one.
 - **Score.** Accepted rules count as met: score = (passed + accepted) / (passed + accepted + failed).
 - **Compliance → Exceptions**: every exception with its benchmark, rule, scope, host, reason, who saved it and
   when; admins can remove them there. Every change is in the audit log.
+- **Compliance over time** graph on Home and Compliance → Summary: the average compliance score per platform
+  (each host's newest check at the end of each day, week or month), daily, weekly or monthly like the CVE graph.
+- The *over time* graphs (CVEs and compliance) now open on the **daily** view (was weekly).
 - **Charts and tables** have an Accepted colour and column: the per-host score bars, the rule-result pies, Home,
   Compliance summary, report, scan list and scan pages.
 

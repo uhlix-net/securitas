@@ -32,31 +32,38 @@ def _nice_axis(v):
     return best or (max(4, math.ceil(v)), 1)
 
 
-def range_switch(current, base="/vulnerabilities"):
+def range_switch(current, base="/vulnerabilities", param="range", anchor="history", keep=None):
+    """Interval links. keep: other query parameters to carry over (e.g. the other graph's interval)."""
     links = []
+    extra = "".join("&%s=%s" % (k, v) for k, v in (keep or {}).items())
     for key, (name, span, _) in RANGES.items():
         cls = ' class="on" aria-current="true"' if key == current else ""
-        links.append('<a%s href="%s?range=%s#history">%s <span>(%s)</span></a>' % (cls, base, key, name, span))
+        links.append('<a%s href="%s?%s=%s%s#%s">%s <span>(%s)</span></a>' % (cls, base, param, key, extra, anchor, name, span))
     return '<nav class="seg seglinks" aria-label="Interval">%s</nav>' % "".join(links)
 
 
-def history_svg(h):
-    """h: report.history() result. A shaded line per platform, direct-labelled at its last point."""
+def history_svg(h, unit="CVEs", what="Distinct CVEs per platform", gid="hist", percent=False):
+    """h: report.history() or report.compliance_history() result. A shaded line per platform, direct-labelled at
+    its last point. percent: values are scores (0-100), shown with a % sign on a fixed 0-100 axis."""
     labels, series = h["labels"], h["series"]
     if not series:
         return '<p class="muted">No history yet: the graph fills in as scans finish.</p>'
     W, H, L, R, T, B = 920, 300, 58, 150, 14, 34
     pw, ph = W - L - R, H - T - B
-    top, step = _nice_axis(max(v for s in series for v in s["values"] if v is not None))
+    fv = (lambda v: "%s%%" % v) if percent else n
+    if percent:
+        top, step = 100, 25
+    else:
+        top, step = _nice_axis(max(v for s in series for v in s["values"] if v is not None))
     npts = len(labels)
     x = lambda i: L + (pw * i / (npts - 1) if npts > 1 else pw / 2)
     y = lambda v: T + ph - ph * v / top
-    out = ['<svg class="chart" viewBox="0 0 %d %d" role="img" aria-labelledby="hist-t">' % (W, H),
-           '<title id="hist-t">Distinct CVEs per platform, %s</title>' % e(RANGES[h["range"]][0].lower())]
+    out = ['<svg class="chart" viewBox="0 0 %d %d" role="img" aria-labelledby="%s-t">' % (W, H, gid),
+           '<title id="%s-t">%s, %s</title>' % (gid, e(what), e(RANGES[h["range"]][0].lower()))]
     for k in range(int(round(top / step)) + 1):   # recessive grid and y labels
         v = step * k
         out.append('<line class="grid" x1="%d" x2="%d" y1="%.1f" y2="%.1f"/>' % (L, L + pw, y(v), y(v)))
-        out.append('<text class="ax" x="%d" y="%.1f" text-anchor="end" dy=".32em">%s</text>' % (L - 8, y(v), n(int(v))))
+        out.append('<text class="ax" x="%d" y="%.1f" text-anchor="end" dy=".32em">%s</text>' % (L - 8, y(v), fv(int(v))))
     every = max(1, math.ceil(npts / 8))        # x labels: at most ~8, always the last
     for i, lab in enumerate(labels):
         if i % every == 0 or i == npts - 1:
@@ -75,21 +82,22 @@ def history_svg(h):
         for px, py, v, lab in pts:
             out.append('<g class="pt"><circle class="hit" cx="%.1f" cy="%.1f" r="10"/>'
                        '<circle class="dot" cx="%.1f" cy="%.1f" r="4" style="fill:%s"/>'
-                       '<title>%s, %s: %s CVEs</title></g>' % (px, py, px, py, var, e(s["title"]), e(lab), n(v)))
+                       '<title>%s, %s: %s%s</title></g>' % (px, py, px, py, var, e(s["title"]), e(lab), fv(v),
+                                                              "" if percent else " " + e(unit)))
         ends.append([pts[-1][1], s, pts[-1]])
     ends.sort(key=lambda t: t[0])              # end labels: keep at least 15px apart
     for j in range(1, len(ends)):
         ends[j][0] = max(ends[j][0], ends[j - 1][0] + 15)
     for ly, s, (px, py, v, _) in ends:
         out.append('<text class="end" x="%.1f" y="%.1f" dy=".32em"><tspan class="nm">%s</tspan> %s</text>' % (
-            L + pw + 12, ly, e(s["title"]), n(v)))
+            L + pw + 12, ly, e(s["title"]), fv(v)))
     out.append("</svg>")
     legend = '<ul class="legend">%s</ul>' % "".join(
         '<li><span class="sw" style="background:var(--pl-%s, var(--pl-other))"></span>%s</li>' % (e(s["id"]), e(s["title"]))
         for s in series)
     head = "".join("<th class=\"n\">%s</th>" % e(s["title"]) for s in series)
     body = "".join("<tr><td class=\"date\">%s</td>%s</tr>" % (e(lab), "".join(
-        '<td class="n">%s</td>' % (n(s["values"][i]) if s["values"][i] is not None else "&ndash;") for s in series))
+        '<td class="n">%s</td>' % (fv(s["values"][i]) if s["values"][i] is not None else "&ndash;") for s in series))
         for i, lab in enumerate(labels))
     table = ('<details class="tview"><summary>Show as a table</summary><div class="scroll"><table><thead><tr><th>%s</th>%s</tr>'
              '</thead><tbody>%s</tbody></table></div></details>' % ({"day": "Day", "week": "Week ending", "month": "Month"}[h["range"]],
