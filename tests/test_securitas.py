@@ -1552,12 +1552,18 @@ class ComplianceScans(unittest.TestCase):
 
     def test_home_and_about(self):
         self.run_scan()
-        home = self.c.get("/").text
+        vhome = self.c.get("/").text                                                  # Vulnerabilities tab by default
+        self.assertIn('class="on" aria-current="page">Vulnerabilities</a>', vhome)
+        self.assertNotIn("Compliance over time", vhome)
+        self.assertIn('href="/?range=day&tab=vulnerabilities#history"', vhome)
+        home = self.c.get("/?tab=compliance").text
+        self.assertIn('class="on" aria-current="page">Compliance</a>', home)
+        self.assertNotIn("CVEs over time", home)
         self.assertIn("<title>Home", home)
         self.assertNotIn("Compliance score per host", home)                        # moved to Compliance -> Summary
         self.assertIn("Compliance score per host", self.c.get("/compliance").text)
         self.assertIn("Compliance over time", home)
-        self.assertIn('href="/?crange=day&range=day#chistory"', home)                               # daily by default
+        self.assertIn('href="/?crange=day&tab=compliance#chistory"', home)                          # daily by default
         self.assertIn("Compliance over time", self.c.get("/compliance").text)
         self.assertIn('id="pie-cr-linux"', home)
         self.assertIn("50.0%", home)
@@ -1603,7 +1609,7 @@ class ComplianceScans(unittest.TestCase):
         host = self.c.get("/compliance/scans/%d/hosts/%d" % (cid2, r.id)).text
         self.assertIn('class="badge b-accepted">Accepted</span>', host)
         self.assertIn("SERVER EXCEPTION: Needed by the backup agent", host)
-        self.assertIn("var(--cr-accepted)", self.c.get("/").text)                          # charts have the colour
+        self.assertIn("var(--cr-accepted)", self.c.get("/?tab=compliance").text)                          # charts have the colour
         self.assertIn("Needed by the backup agent", self.c.get("/compliance/exceptions").text)
         # a baseline exception replaces this host's server exception and covers every host of the benchmark
         self.assertIn("ok=exception", post(rule="1.1.1", scope="baseline", reason="Not used here").headers["location"])

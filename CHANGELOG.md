@@ -34,6 +34,8 @@ Compliance exceptions: accept a failed rule, for every host or for one.
   always stays an Admin, so no other admin can take its rights away.
 - *Compliance* menu: **Exceptions** now comes before Schedules.
 - The **compliance score per host** bars moved from Home to *Compliance → Summary*.
+- **Home** has two tabs, **Vulnerabilities** (the default) and **Compliance**, each with its own headline
+  numbers, table and charts.
 - **Compliance → Schedules** shows only the picker (no cron field or Advanced option; cron is still used behind
   the scenes). Compliance → Summary shows each schedule in words.
 - **Compliance → Report**: the Linux and Windows tables have the same column widths, so they line up; each

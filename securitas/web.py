@@ -1618,16 +1618,17 @@ def create_app(cfg, db, jobs):
         rng = rng if rng in report.RANGES else report.DEFAULT_RANGE
         crng = request.query_params.get("crange", report.DEFAULT_RANGE)
         crng = crng if crng in report.RANGES else report.DEFAULT_RANGE
+        tab = "compliance" if request.query_params.get("tab") == "compliance" else "vulnerabilities"
         with db.Session() as s:
             crows, cpies, _ = compliance_charts(s)
         scores = [r["score"] for r in crows if r["score"] is not None]
         ctot = {"systems": sum(r["systems"] or 0 for r in crows), "checked": sum(r["checked"] for r in crows),
                 "failed": sum(r["failed"] for r in crows), "score": round(sum(scores) / len(scores), 1) if scores else None}
         return a.page(request, "home.html", {
-            "user": user, "sess": request.state.sess, "title": "Home", "model": m, "vrows": vrows, "vtot": vtot,
-            "range": rng, "range_switch": charts.range_switch(rng, "/", keep={"crange": crng}),
+            "user": user, "sess": request.state.sess, "title": "Home", "tab": tab, "model": m, "vrows": vrows, "vtot": vtot,
+            "range": rng, "range_switch": charts.range_switch(rng, "/", keep={"tab": "vulnerabilities"}),
             "history": charts.history_svg(jobs.history(rng)), "crange": crng,
-            "crange_switch": charts.range_switch(crng, "/", "crange", "chistory", keep={"range": rng}),
+            "crange_switch": charts.range_switch(crng, "/", "crange", "chistory", keep={"tab": "compliance"}),
             "chistory": compliance_history_svg(crng),
             "vpies": charts.pies(report.platform_levels(m)), "crows": crows, "ctot": ctot, "cpies": cpies})
 
