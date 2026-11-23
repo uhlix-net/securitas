@@ -282,6 +282,24 @@ class ComplianceResult(Base):
     scan: Mapped[ComplianceScan] = relationship(back_populates="results")
 
 
+class ComplianceException(Base):
+    """An accepted failure of one rule. scope 'baseline': every host checked against that benchmark (matched by
+    benchmark name without its version, e.g. RHEL9-CIS, so it carries over to a newer version of the same role);
+    scope 'server': only `host`. Scans after it is saved report the rule as Accepted instead of Failed."""
+    __tablename__ = "compliance_exceptions"
+    __table_args__ = (UniqueConstraint("benchmark", "rule_id", "host"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    platform: Mapped[str] = mapped_column(String(16), index=True)
+    benchmark: Mapped[str] = mapped_column(String(96), index=True)   # benchmark name, e.g. RHEL9-CIS
+    rule_id: Mapped[str] = mapped_column(String(32))
+    rule_title: Mapped[str] = mapped_column(Text, default="")
+    scope: Mapped[str] = mapped_column(String(16))                   # baseline | server
+    host: Mapped[str] = mapped_column(String(255), default="")      # '' for a baseline exception
+    reason: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime.datetime] = mapped_column(TZDateTime(), default=utcnow)
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+
+
 class Database:
     def __init__(self, url):
         kw = {"pool_pre_ping": True, "future": True}
@@ -356,4 +374,4 @@ def audit(s, user, ip, action, detail=""):
 
 
 __all__ = ["Database", "User", "Session", "LoginState", "RoleMapping", "Target", "Schedule", "Scan", "PlatformResult",
-           "ResultStats", "AuditEvent", "Setting", "Benchmark", "BenchmarkRule", "BenchmarkFile", "ComplianceSchedule", "ComplianceScan", "ComplianceResult", "get_setting", "set_setting", "audit", "utcnow", "select", "func"]
+           "ResultStats", "AuditEvent", "Setting", "Benchmark", "BenchmarkRule", "BenchmarkFile", "ComplianceSchedule", "ComplianceScan", "ComplianceResult", "ComplianceException", "get_setting", "set_setting", "audit", "utcnow", "select", "func"]

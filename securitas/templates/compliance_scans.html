@@ -35,7 +35,7 @@
   <p class="sub">Every scheduled and manual compliance scan. Open one for its hosts and their rule results.{% if busy %} This page refreshes while a scan is running.{% endif %}</p>
   {% if not scans %}<p class="muted">No compliance scans yet.</p>{% else %}
   <div class="scroll"><table>
-    <thead><tr><th>Scan</th><th>Started</th><th>Platforms</th><th>Trigger</th><th>Status</th><th class="n">Hosts checked</th><th class="n">Rules passed</th><th class="n">Rules failed</th><th class="n">Score</th><th class="n">Duration</th></tr></thead>
+    <thead><tr><th>Scan</th><th>Started</th><th>Platforms</th><th>Trigger</th><th>Status</th><th class="n">Hosts checked</th><th class="n">Rules passed</th><th class="n">Rules accepted</th><th class="n">Rules failed</th><th class="n">Score</th><th class="n">Duration</th></tr></thead>
     <tbody>
     {% for s in scans %}{% set c = stats.get(s.id) %}
     <tr>
@@ -46,6 +46,7 @@
       <td><span class="badge b-{{ s.status }}">{{ STATUS_LABEL[s.status] }}</span></td>
       <td class="n">{% if c %}{{ c.done }} of {{ c.hosts }}{% endif %}</td>
       <td class="n">{% if c %}{{ c.pass }}{% endif %}</td>
+      <td class="n{% if c and c.accepted %} acc{% endif %}">{% if c %}{{ c.accepted }}{% endif %}</td>
       <td class="n{% if c and c.fail %} hot{% endif %}">{% if c %}{{ c.fail }}{% endif %}</td>
       <td class="n">{% if c and c.scores %}{{ (c.scores|sum / c.scores|length)|round(1) }}%{% endif %}</td>
       <td class="n">{% if s.finished_at and s.started_at %}{{ ((s.finished_at - s.started_at).total_seconds())|round|int }} s{% endif %}</td>

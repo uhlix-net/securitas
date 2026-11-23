@@ -10,7 +10,7 @@ from sqlalchemy import delete, select, update
 
 from . import feeds, k8s, report, scan_linux, scan_windows
 from .config import PLATFORMS
-from .db import (Benchmark, ComplianceResult, ComplianceScan, ComplianceSchedule, PlatformResult, ResultStats, Scan,
+from .db import (Benchmark, ComplianceException, ComplianceResult, ComplianceScan, ComplianceSchedule, PlatformResult, ResultStats, Scan,
                  Schedule, Target, utcnow)
 from .settings import Settings
 
@@ -387,8 +387,22 @@ class Jobs:
             if final != "done":
                 scan.error = "; ".join("%s %s" % (p, st) for p, st in zip(platforms, statuses) if st != "done")
 
+    def exceptions_for(self, s, key):
+        """{(rule_id, host or ''): {scope, reason, by, at}} for a benchmark key (matched by benchmark name)."""
+        from .scan_compliance import bench_name
+        out = {}
+        for x in s.scalars(select(ComplianceException).where(ComplianceException.benchmark == bench_name(key))).all():
+            out[(x.rule_id, x.host if x.scope == "server" else "")] = {
+                "scope": x.scope, "reason": x.reason, "by": x.created_by,
+                "at": x.created_at.isoformat() if x.created_at else ""}
+        return out
+
     def _save_comp(self, cid, platform, x, status, error="", result=None, seconds=0):
         with self.db.Session() as s, s.begin():
+            if result and x.get("key"):
+                from .scan_compliance import apply_exceptions
+                apply_exceptions(result.get("rules") or [], result.setdefault("counts", {}), x["host"],
+                                 self.exceptions_for(s, x["key"]))
             s.add(ComplianceResult(scan_id=cid, platform=platform, host=x["host"], label=x["label"],
                                    os=(result or {}).get("os") or x["os"], benchmark_id=x["bench_id"],
                                    benchmark_key=x["key"], benchmark_name=x["bench_name"],

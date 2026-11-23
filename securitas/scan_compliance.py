@@ -19,8 +19,10 @@ import shlex
 from . import scan_linux
 
 WRAPPER = "/usr/local/sbin/securitas-cis-audit"
-STATUSES = ("fail", "pass", "skip", "notest")
-STATUS_LABEL = {"pass": "Passed", "fail": "Failed", "skip": "Not applicable", "notest": "No automated check (manual review)"}
+STATUSES = ("fail", "accepted", "pass", "skip", "notest")
+STATUS_LABEL = {"pass": "Passed", "fail": "Failed", "accepted": "Accepted (exception)", "skip": "Not applicable",
+                "notest": "No automated check (manual review)"}
+SCOPE_LABEL = {"baseline": "BASELINE EXCEPTION", "server": "SERVER EXCEPTION"}
 
 
 def remote_command(key, system_type="server"):
@@ -82,10 +84,36 @@ def evaluate(rules, by):
             st = "pass"
         n[st] += 1
         out.append({**r, "status": st, "tests": tests})
-    scored = n["pass"] + n["fail"]
     n["checked"] = len(rules)
-    n["score"] = round(100.0 * n["pass"] / scored, 1) if scored else None
+    rescore(n)
     return out, n
+
+
+def rescore(n):
+    """Score = rules met / rules that could be met: an accepted failure counts as met."""
+    met = n.get("pass", 0) + n.get("accepted", 0)
+    scored = met + n.get("fail", 0)
+    n["score"] = round(100.0 * met / scored, 1) if scored else None
+
+
+def bench_name(key):
+    """'RHEL9-CIS-2.4.2' -> 'RHEL9-CIS': exceptions are kept per benchmark name, not per version."""
+    return key.rsplit("-", 1)[0] if "-" in (key or "") else (key or "")
+
+
+def apply_exceptions(rules, counts, host, exceptions):
+    """Mark failed rules that have an exception as Accepted. exceptions: {(rule_id, host or ''): {scope, reason,
+    by, at}}; a server exception for this host wins over the baseline one. Changes rules and counts in place."""
+    for r in rules:
+        if r.get("status") != "fail":
+            continue
+        x = exceptions.get((r.get("id"), host)) or exceptions.get((r.get("id"), ""))
+        if x:
+            r["status"], r["exception"] = "accepted", dict(x)
+            counts["fail"] = counts.get("fail", 0) - 1
+            counts["accepted"] = counts.get("accepted", 0) + 1
+    counts.setdefault("accepted", 0)
+    rescore(counts)
 
 
 def run_host(cfg, target, record_key):

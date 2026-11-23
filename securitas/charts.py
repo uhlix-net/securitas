@@ -143,7 +143,7 @@ def pies(platforms):
 
 
 # Compliance rule results, in slice order.
-RESULTS = [("fail", "Failed"), ("pass", "Passed"), ("skip", "Not applicable"), ("notest", "No automated check")]
+RESULTS = [("fail", "Failed"), ("accepted", "Accepted"), ("pass", "Passed"), ("skip", "Not applicable"), ("notest", "No automated check")]
 
 
 def result_pies(platforms):
@@ -155,7 +155,8 @@ def result_pies(platforms):
 
 
 def score_bars(hosts):
-    """hosts: [{"host", "pass", "fail", "score", "href"}]: a stacked bar of passed and failed rules per host,
+    """hosts: [{"host", "pass", "fail", "accepted", "score", "href"}]: a stacked bar of passed, accepted (failed with
+    an exception) and failed rules per host,
     labelled with the score. Sorted lowest score first so the hosts needing work are on top."""
     if not hosts:
         return '<p class="muted">No host has been checked yet.</p>'
@@ -165,34 +166,41 @@ def score_bars(hosts):
     out = ['<svg class="chart bars" viewBox="0 0 %d %d" role="img" aria-label="Compliance score per host">' % (w, row * len(hosts) + 6)]
     for i, h in enumerate(hosts):
         y = 3 + i * row
-        tot = h["pass"] + h["fail"]
+        acc = h.get("accepted", 0)
+        tot = h["pass"] + acc + h["fail"]
         pw = width * h["pass"] / tot if tot else 0
-        out.append('<g class="pt"><title>%s: %s passed, %s failed, score %s</title>' % (
-            e(h["host"]), n(h["pass"]), n(h["fail"]), "%s%%" % h["score"] if h["score"] is not None else "-"))
+        aw = width * acc / tot if tot else 0
+        out.append('<g class="pt"><title>%s: %s passed, %s accepted, %s failed, score %s</title>' % (
+            e(h["host"]), n(h["pass"]), n(acc), n(h["fail"]), "%s%%" % h["score"] if h["score"] is not None else "-"))
         out.append('<a href="%s"><text class="ax" x="%d" y="%d" text-anchor="end">%s</text></a>' % (
             e(h["href"]), lab - 8, y + bar - 2, e(h["host"] if len(h["host"]) <= 36 else h["host"][:35] + "…")))
         out.append('<rect x="%d" y="%d" width="%.1f" height="%d" rx="2" style="fill:var(--cr-pass)"/>' % (lab, y, pw, bar))
-        out.append('<rect x="%.1f" y="%d" width="%.1f" height="%d" rx="2" style="fill:var(--cr-fail)"/>' % (lab + pw, y, width - pw if tot else 0, bar))
+        if aw:
+            out.append('<rect x="%.1f" y="%d" width="%.1f" height="%d" rx="2" style="fill:var(--cr-accepted)"/>' % (lab + pw, y, aw, bar))
+        out.append('<rect x="%.1f" y="%d" width="%.1f" height="%d" rx="2" style="fill:var(--cr-fail)"/>' % (
+            lab + pw + aw, y, width - pw - aw if tot else 0, bar))
         if not tot:
             out.append('<rect x="%d" y="%d" width="%d" height="%d" rx="2" class="empty"/>' % (lab, y, width, bar))
         out.append('<text class="end" x="%d" y="%d">%s</text></g>' % (lab + width + 8, y + bar - 2,
                                                                        "%s%%" % h["score"] if h["score"] is not None else "–"))
     out.append("</svg>")
     legend = ('<ul class="legend"><li><span class="sw" style="background:var(--cr-pass)"></span>Passed</li>'
+              '<li><span class="sw" style="background:var(--cr-accepted)"></span>Accepted (exception)</li>'
               '<li><span class="sw" style="background:var(--cr-fail)"></span>Failed</li></ul>')
-    rows = "".join('<tr><td class="mono"><a href="%s">%s</a></td><td class="n">%s</td><td class="n">%s</td><td class="n">%s</td></tr>' % (
-        e(h["href"]), e(h["host"]), n(h["pass"]), n(h["fail"]), "%s%%" % h["score"] if h["score"] is not None else "–") for h in hosts)
+    rows = "".join('<tr><td class="mono"><a href="%s">%s</a></td><td class="n">%s</td><td class="n">%s</td><td class="n">%s</td><td class="n">%s</td></tr>' % (
+        e(h["href"]), e(h["host"]), n(h["pass"]), n(h.get("accepted", 0)), n(h["fail"]),
+        "%s%%" % h["score"] if h["score"] is not None else "–") for h in hosts)
     table = ('<details class="tview"><summary>Show as a table</summary><div class="scroll"><table><thead><tr><th>Host</th>'
-             '<th class="n">Passed</th><th class="n">Failed</th><th class="n">Score</th></tr></thead><tbody>%s</tbody></table></div></details>' % rows)
+             '<th class="n">Passed</th><th class="n">Accepted</th><th class="n">Failed</th><th class="n">Score</th></tr></thead><tbody>%s</tbody></table></div></details>' % rows)
     return legend + "".join(out) + table
 
 
 # Light and dark colour tokens for the charts (added to render.TOKENS_*). Validated with the data-viz palette
 # checks: platforms are categorical slots 1-3; severity is an ordinal ramp (Critical .. Low) plus neutral Unknown.
-TOKENS_LIGHT = ("--cr-pass:#2e8b57;--cr-fail:#b3261e;--cr-skip:#9aa3ae;--cr-notest:#c9d3df;"
+TOKENS_LIGHT = ("--cr-pass:#2e8b57;--cr-fail:#b3261e;--cr-accepted:#d9a400;--cr-skip:#9aa3ae;--cr-notest:#c9d3df;"
                 "--pl-kubernetes:#2a78d6;--pl-linux:#eb6834;--pl-windows:#1baf7a;--pl-other:#6250d6;"
                 "--lv-critical:#7a0d16;--lv-high:#b3261e;--lv-medium:#e0561b;--lv-low:#f29a5c;--lv-unknown:#9aa3ae")
-TOKENS_DARK = ("--cr-pass:#4fb67c;--cr-fail:#ec7a45;--cr-skip:#6b7584;--cr-notest:#465163;"
+TOKENS_DARK = ("--cr-pass:#4fb67c;--cr-fail:#ec7a45;--cr-accepted:#e6c440;--cr-skip:#6b7584;--cr-notest:#465163;"
                "--pl-kubernetes:#3987e5;--pl-linux:#d95926;--pl-windows:#199e70;--pl-other:#9085e9;"
                "--lv-critical:#f7b38a;--lv-high:#ec7a45;--lv-medium:#d4442a;--lv-low:#9e2a22;--lv-unknown:#6b7584")
 

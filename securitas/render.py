@@ -272,10 +272,10 @@ def report_body(model, view=None, paged=False):
 # (data-theme on <html>). The PDF always uses the light tokens.
 TOKENS_LIGHT = """--bg:#f6f7f9;--card:#fff;--ink:#1a2230;--muted:#5d6878;--line:#dfe3ea;--head:#eef1f5;--accent:#1f4e79;--accent-ink:#fff;
 --crit:#a4161a;--crit-bg:#fde8e8;--imp:#9a4a00;--imp-bg:#fdebd3;--mod:#6b5900;--mod-bg:#fbf3c4;--low:#3d5a80;--low-bg:#e3ecf7;--kevrow:#fff6f5;
---warn-bg:#fff4d6;--warn-line:#e7c66b;--ok:#1d6b3a;--ok-bg:#e1f3e7;--input:#fff"""
+--warn-bg:#fff4d6;--warn-line:#e7c66b;--acc-ink:#6b4f00;--acc-bg:#fff3c4;--ok:#1d6b3a;--ok-bg:#e1f3e7;--input:#fff"""
 TOKENS_DARK = """--bg:#12161c;--card:#1a2029;--ink:#e6e9ee;--muted:#9aa5b4;--line:#2c3542;--head:#222a35;
 --accent:#8ab8e6;--accent-ink:#10202f;--crit:#ff9a9a;--crit-bg:#4a1c1f;--imp:#ffc27a;--imp-bg:#47300f;--mod:#ead77a;--mod-bg:#3d3611;
---low:#a9c4e6;--low-bg:#1f2f44;--kevrow:#2a1d20;--warn-bg:#3a3010;--warn-line:#7a6420;--ok:#8fd8a8;--ok-bg:#16301f;--input:#141920"""
+--low:#a9c4e6;--low-bg:#1f2f44;--kevrow:#2a1d20;--warn-bg:#3a3010;--warn-line:#7a6420;--acc-ink:#f2d466;--acc-bg:#3a3010;--ok:#8fd8a8;--ok-bg:#16301f;--input:#141920"""
 
 CSS_REPORT = """
 *{box-sizing:border-box}
@@ -367,6 +367,10 @@ label{display:block;font-weight:600;margin:10px 0 4px}label.inline{display:inlin
 .b-done{color:var(--ok);background:var(--ok-bg)}.b-partial{color:var(--imp);background:var(--imp-bg)}
 .b-failed{color:var(--crit);background:var(--crit-bg)}.b-queued,.b-running{color:var(--low);background:var(--low-bg)}
 .b-role{color:var(--low);background:var(--low-bg)}.b-off{color:var(--muted);background:var(--head)}
+.b-accepted{color:var(--acc-ink);background:var(--acc-bg);border:1px solid var(--cr-accepted)}
+td.acc{color:var(--acc-ink);font-weight:700}.excform{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px}
+.excform select,.excform input[type=text]{font-size:12.5px;padding:3px 6px}.excform input[type=text]{flex:1;min-width:180px}
+.excform .btn{font-size:12.5px;padding:3px 10px}.excnote{font-size:12.5px;margin-top:4px}
 td form{display:inline}td .row{gap:6px;align-items:center}
 pre.log{background:var(--head);border:1px solid var(--line);border-radius:6px;padding:10px 12px;font-size:12px;overflow-x:auto;white-space:pre-wrap;max-height:480px;overflow-y:auto}
 .login{max-width:400px;margin:60px auto}.login .brand{text-align:center;margin-bottom:18px;font-size:24px}

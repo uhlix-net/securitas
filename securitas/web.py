@@ -21,7 +21,7 @@ from sqlalchemy import String, cast, delete, func, select
 from . import __version__, auth, charts, compliance, render, report, scan_linux, scan_windows, sources
 from .config import PLATFORMS
 from .settings import FIELDS, SettingsError
-from .db import (AuditEvent, Benchmark, BenchmarkFile, ComplianceResult, ComplianceScan, ComplianceSchedule, LoginState, PlatformResult, ResultStats, RoleMapping,
+from .db import (AuditEvent, Benchmark, BenchmarkFile, ComplianceException, ComplianceResult, ComplianceScan, ComplianceSchedule, LoginState, PlatformResult, ResultStats, RoleMapping,
                  Scan, Schedule, Session, Target, User, audit, get_setting, set_setting, utcnow)
 from .jobs import STATUS_LABEL, fmt_time, next_run, valid_cron
 
@@ -37,6 +37,8 @@ MESSAGES = {
     "hostkey": "Host key cleared; the next scan records the key the host presents.",
     "loggedout": "You are signed out.",
     "imported": "Benchmark imported.", "activated": "Active benchmark changed.",
+    "exception": "Exception saved. The rule shows as Accepted from the next compliance scan.",
+    "unexcepted": "Exception removed. The rule shows as Failed again from the next compliance scan.",
 }
 ERRORS = {
     "csrf": "The form expired. Please try again.", "noplat": "Pick at least one platform or host.",
@@ -44,6 +46,7 @@ ERRORS = {
     "exists": "That name is already in use.", "pw": "", "self": "You cannot change or remove your own account here.",
     "lastadmin": "At least one admin must remain.", "host": "Enter a host name.", "group": "Enter a group name.",
     "managed": "This account's password is managed by the deployment (SECURITAS_ADMIN_PASSWORD).",
+    "reason": "Give a reason for the exception.", "scope": "Pick BASELINE EXCEPTION or SERVER EXCEPTION.",
 }
 
 
@@ -879,7 +882,7 @@ def create_app(cfg, db, jobs):
                             ("/vulnerabilities/sources", "Sources", "view")],
         "compliance": [("/compliance", "Summary", "view"), ("/compliance/report", "Report", "view"),
                        ("/compliance/scans", "Scans", "view"), ("/compliance/schedules", "Schedules", "schedule.edit"),
-                       ("/compliance/benchmarks", "Benchmarks", "view")],
+                       ("/compliance/exceptions", "Exceptions", "view"), ("/compliance/benchmarks", "Benchmarks", "view")],
     }
     # Top menu after Vulnerabilities and Compliance: (path, label, permission); Settings comes last.
     a.env.globals["TOP_PAGES"] = [("/targets", "Targets", "target.edit"), ("/audit", "Audit log", "audit.view")]
@@ -1226,6 +1229,7 @@ def create_app(cfg, db, jobs):
                 "matched": sum(1 for x in lst if x["bench"]), "checked": len(res),
                 "benchmarks": sorted({x["bench"].key for x in lst if x["bench"]}),
                 "passed": sum(r.counts.get("pass", 0) for r in res), "failed": sum(r.counts.get("fail", 0) for r in res),
+                "accepted": sum(r.counts.get("accepted", 0) for r in res),
                 "score": round(sum(scores) / len(scores), 1) if scores else None,
                 "last": max((r.scanned_at for r in res), default=None), "checker": p in jobs.compliance_scanners,
                 "note": COMPLIANCE_CHECKER[p]}
@@ -1266,12 +1270,13 @@ def create_app(cfg, db, jobs):
             rows = s.scalars(select(ComplianceScan).order_by(ComplianceScan.id.desc()).offset((page - 1) * 50).limit(50)).all()
             stats = {}
             for r in s.scalars(select(ComplianceResult).where(ComplianceResult.scan_id.in_([x.id for x in rows]))).all() if rows else []:
-                d = stats.setdefault(r.scan_id, {"hosts": 0, "done": 0, "pass": 0, "fail": 0, "scores": []})
+                d = stats.setdefault(r.scan_id, {"hosts": 0, "done": 0, "pass": 0, "fail": 0, "accepted": 0, "scores": []})
                 d["hosts"] += 1
                 if r.status == "done":
                     d["done"] += 1
                     d["pass"] += r.counts.get("pass", 0)
                     d["fail"] += r.counts.get("fail", 0)
+                    d["accepted"] += r.counts.get("accepted", 0)
                     if r.counts.get("score") is not None:
                         d["scores"].append(r.counts["score"])
             s.expunge_all()
@@ -1335,9 +1340,84 @@ def create_app(cfg, db, jobs):
         order = {k: i for i, k in enumerate(scan_compliance.STATUSES)}
         if not st:
             rules.sort(key=lambda x: (order.get(x.get("status"), 9), compliance.sort_key(x["id"]) if x.get("id") else ""))
+        with db.Session() as s:
+            exc = jobs.exceptions_for(s, r.benchmark_key)
+        # the exception that applies to this host now (may differ from the one the scan recorded)
+        now = {x.get("id"): exc.get((x.get("id"), r.host)) or exc.get((x.get("id"), ""))
+               for x in rules if x.get("status") in ("fail", "accepted")}
         return a.page(request, "compliance_host.html", {"user": user, "sess": request.state.sess,
                                                         "title": "%s · compliance scan #%d" % (r.host, sid), "r": r,
-                                                        "rules": rules, "st": st, "q": q, "statuses": scan_compliance.STATUSES})
+                                                        "rules": rules, "st": st, "q": q, "statuses": scan_compliance.STATUSES,
+                                                        "exc_now": now, "scopes": scan_compliance.SCOPE_LABEL,
+                                                        "may_except": auth.can(user.role, "compliance.exception")})
+
+    @api.post("/compliance/scans/{sid}/hosts/{rid}/exception")
+    async def compliance_exception_set(request: Request, sid: int, rid: int, user=Depends(a.need("compliance.exception"))):
+        """Set, change or remove the exception for one failed rule of this host. BASELINE applies to every host
+        checked against this benchmark; SERVER to this host only. Empty scope removes the exception that applies."""
+        form = await a.csrf(request)
+        rule = str(form.get("rule", "")).strip()[:32]
+        scope = str(form.get("scope", "")).strip()
+        reason = str(form.get("reason", "")).strip()[:2000]
+        back = "/compliance/scans/%d/hosts/%d" % (sid, rid)
+        with db.Session() as s, s.begin():
+            r = s.get(ComplianceResult, rid)
+            if r is None or r.scan_id != sid:
+                raise HTTPException(404, "No such result.")
+            x = next((y for y in r.rules or [] if y.get("id") == rule and y.get("status") in ("fail", "accepted")), None)
+            if x is None:
+                raise HTTPException(400, "That rule did not fail on this host.")
+            bname = scan_compliance.bench_name(r.benchmark_key)
+            q = select(ComplianceException).where(ComplianceException.benchmark == bname, ComplianceException.rule_id == rule)
+            server = s.scalar(q.where(ComplianceException.scope == "server", ComplianceException.host == r.host))
+            base = s.scalar(q.where(ComplianceException.scope == "baseline"))
+            if scope == "":
+                gone = server or base
+                if gone is None:
+                    return go(back, ok="nochange")
+                a.audit(s, request, "compliance_exception.remove", "%s %s %s%s" % (
+                    bname, rule, gone.scope, " " + gone.host if gone.scope == "server" else ""))
+                s.delete(gone)
+                return go(back, ok="unexcepted")
+            if scope not in scan_compliance.SCOPE_LABEL:
+                return go(back, err="scope")
+            if not reason:
+                return go(back, err="reason")
+            row = server if scope == "server" else base
+            if row is None:
+                row = ComplianceException(platform=r.platform, benchmark=bname, rule_id=rule, scope=scope,
+                                          host=r.host if scope == "server" else "")
+                s.add(row)
+            row.rule_title, row.reason, row.created_by, row.created_at = x.get("title", "")[:2000], reason, user.username, utcnow()
+            if scope == "baseline" and server is not None:
+                s.delete(server)                  # the baseline exception now covers this host too
+            a.audit(s, request, "compliance_exception.set", "%s %s %s%s: %s" % (
+                bname, rule, scope, " " + r.host if scope == "server" else "", reason))
+        return go(back, ok="exception")
+
+    @api.get("/compliance/exceptions")
+    def compliance_exceptions(request: Request, user=Depends(V)):
+        with db.Session() as s:
+            rows = s.scalars(select(ComplianceException).order_by(
+                ComplianceException.platform, ComplianceException.benchmark, ComplianceException.scope,
+                ComplianceException.host)).all()
+            s.expunge_all()
+        rows = sorted(rows, key=lambda x: (x.platform, x.benchmark, compliance.sort_key(x.rule_id), x.scope, x.host))
+        return a.page(request, "compliance_exceptions.html", {
+            "user": user, "sess": request.state.sess, "title": "Compliance exceptions", "rows": rows,
+            "scopes": scan_compliance.SCOPE_LABEL, "may_except": auth.can(user.role, "compliance.exception")})
+
+    @api.post("/compliance/exceptions/{xid}/delete")
+    async def compliance_exception_delete(request: Request, xid: int, user=Depends(a.need("compliance.exception"))):
+        await a.csrf(request)
+        with db.Session() as s, s.begin():
+            x = s.get(ComplianceException, xid)
+            if x is None:
+                raise HTTPException(404, "There is no such exception.")
+            a.audit(s, request, "compliance_exception.remove", "%s %s %s%s" % (
+                x.benchmark, x.rule_id, x.scope, " " + x.host if x.scope == "server" else ""))
+            s.delete(x)
+        return go("/compliance/exceptions", ok="unexcepted")
 
     # ------------------------------------------------------------ home and about
 
@@ -1352,6 +1432,7 @@ def create_app(cfg, db, jobs):
             lv = {k: sum(r.counts.get(k, 0) for r in res) for k, _ in charts.RESULTS}
             pies.append({"id": p, "title": PLATFORM_LABEL[p], "total": sum(lv.values()), "levels": lv})
             bars += [{"host": r.host, "pass": r.counts.get("pass", 0), "fail": r.counts.get("fail", 0),
+                      "accepted": r.counts.get("accepted", 0),
                       "score": r.counts.get("score"), "href": "/compliance/scans/%d/hosts/%d" % (r.scan_id, r.id)} for r in res]
         return rows, charts.result_pies(pies), charts.score_bars(bars) if bars else ""
 

@@ -1480,6 +1480,65 @@ class ComplianceScans(unittest.TestCase):
         self.assertIn("since removed", page)
         self.assertIn("Ensure cramfs is not available", page)          # rule titles kept with the result
 
+    def test_exceptions(self):
+        cid = self.run_scan()
+        from securitas.db import ComplianceException, ComplianceResult
+        with self.db.Session() as s:
+            rid = s.scalar(select(ComplianceResult.id).where(ComplianceResult.host == "rocky1"))
+        url = "/compliance/scans/%d/hosts/%d" % (cid, rid)
+        page = self.c.get(url).text
+        self.assertIn('<option value="baseline">BASELINE EXCEPTION</option>', page)
+        self.assertIn('<option value="server">SERVER EXCEPTION</option>', page)
+        post = lambda **d: self.c.post(url + "/exception", data={"csrf": csrf(self.c, url), **d}, follow_redirects=False)
+        self.assertIn("err=reason", post(rule="1.1.1", scope="server", reason=" ").headers["location"])
+        self.assertEqual(post(rule="2.10.1", scope="server", reason="x").status_code, 400)     # it passed
+        self.assertIn("ok=exception", post(rule="1.1.1", scope="server", reason="Needed by the backup agent").headers["location"])
+        self.assertIn("Exception saved", self.c.get(url).text)
+        # the next scan reports it as Accepted, with the reason, and counts it towards the score
+        cid2 = self.run_scan_again()
+        with self.db.Session() as s:
+            r = s.scalar(select(ComplianceResult).where(ComplianceResult.scan_id == cid2, ComplianceResult.host == "rocky1"))
+        self.assertEqual((r.counts["fail"], r.counts["accepted"], r.counts["score"]), (0, 1, 100.0))
+        rule = next(x for x in r.rules if x["id"] == "1.1.1")
+        self.assertEqual((rule["status"], rule["exception"]["scope"], rule["exception"]["reason"]),
+                         ("accepted", "server", "Needed by the backup agent"))
+        host = self.c.get("/compliance/scans/%d/hosts/%d" % (cid2, r.id)).text
+        self.assertIn('class="badge b-accepted">Accepted</span>', host)
+        self.assertIn("SERVER EXCEPTION: Needed by the backup agent", host)
+        self.assertIn("var(--cr-accepted)", self.c.get("/").text)                          # charts have the colour
+        self.assertIn("Needed by the backup agent", self.c.get("/compliance/exceptions").text)
+        # a baseline exception replaces this host's server exception and covers every host of the benchmark
+        self.assertIn("ok=exception", post(rule="1.1.1", scope="baseline", reason="Not used here").headers["location"])
+        with self.db.Session() as s:
+            rows = [(x.benchmark, x.rule_id, x.scope, x.host) for x in s.scalars(select(ComplianceException)).all()]
+        self.assertEqual(rows, [("RHEL9-CIS", "1.1.1", "baseline", "")])
+        with self.db.Session() as s:
+            exc = self.jobs.exceptions_for(s, "RHEL9-CIS-9.9.9")                                 # another version: same name
+        from securitas import scan_compliance as scm
+        rules, n = [{"id": "1.1.1", "status": "fail"}, {"id": "2.10.1", "status": "pass"}], {"pass": 1, "fail": 1}
+        scm.apply_exceptions(rules, n, "any-host", exc)
+        self.assertEqual((rules[0]["status"], n["score"]), ("accepted", 100.0))
+        # viewers can read exceptions but not change them; removing one is audited
+        self.c.post("/settings/users", data={"csrf": csrf(self.c), "username": "vic", "password": "a-long-password-1", "role": "viewer"})
+        v = client(self.app)
+        login(v, "vic", "a-long-password-1")
+        self.assertNotIn('name="scope"', v.get(url).text)
+        self.assertEqual(v.post(url + "/exception", data={"csrf": csrf(v, url), "rule": "1.1.1", "scope": "server",
+                                                          "reason": "x"}, follow_redirects=False).status_code, 403)
+        self.assertIn("Not used here", v.get("/compliance/exceptions").text)
+        with self.db.Session() as s:
+            xid = s.scalar(select(ComplianceException.id))
+        self.c.post("/compliance/exceptions/%d/delete" % xid, data={"csrf": csrf(self.c, "/compliance/exceptions")})
+        with self.db.Session() as s:
+            self.assertIsNone(s.scalar(select(ComplianceException.id)))
+        self.assertIn("compliance_exception.remove", self.c.get("/audit").text)
+
+    def run_scan_again(self):
+        self.c.post("/compliance/scans", data={"csrf": csrf(self.c, "/compliance/scans"), "platform": "linux"})
+        cid = self.jobs._claim_compliance()
+        self.jobs.run_compliance(cid)
+        return cid
+
     def test_viewer_cannot_run_and_schedule_runs(self):
         from securitas.db import ComplianceSchedule, ComplianceScan
         import datetime as dt

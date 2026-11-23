@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.0 (beta)
+
+Compliance exceptions: accept a failed rule, for every host or for one.
+
+### New
+
+- **Exceptions on failed rules.** On a host's compliance result, each failed rule has a drop-down
+  (*BASELINE EXCEPTION* or *SERVER EXCEPTION*) and a reason (required). A **baseline exception** applies to every
+  host checked against that benchmark (matched by benchmark name, e.g. `RHEL9-CIS`, so it carries over to a newer
+  version of the same role); a **server exception** applies only to that host and wins over a baseline one.
+  Choosing *No exception* removes the exception that applies. Admins only; viewers and operators can read them.
+- **Accepted results.** Compliance scans after an exception is saved report the rule as **Accepted** (yellow),
+  with the exception type and reason next to it. Until the next scan, the rule stays Failed and shows
+  *Exception saved*. Removing an exception makes the rule Failed again from the next scan.
+- **Score.** Accepted rules count as met: score = (passed + accepted) / (passed + accepted + failed).
+- **Compliance → Exceptions**: every exception with its benchmark, rule, scope, host, reason, who saved it and
+  when; admins can remove them there. Every change is in the audit log.
+- **Charts and tables** have an Accepted colour and column: the per-host score bars, the rule-result pies, Home,
+  Compliance summary, report, scan list and scan pages.
+
 ## 0.5.0 (2026-11-21)
 
 Compliance: a library of CIS benchmarks, and Linux and Windows hosts checked against them.
