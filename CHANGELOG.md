@@ -33,6 +33,7 @@ Compliance exceptions: accept a failed rule, for every host or for one.
 - **The built-in admin account** (`SECURITAS_ADMIN_USERNAME`) has no role drop-down and cannot be disabled: it
   always stays an Admin, so no other admin can take its rights away.
 - *Compliance* menu: **Exceptions** now comes before Schedules.
+- The **compliance score per host** bars moved from Home to *Compliance → Summary*.
 - **Compliance over time** graph on Home and Compliance → Summary: the average compliance score per platform
   (each host's newest check at the end of each day, week or month), daily, weekly or monthly like the CVE graph.
 - The *over time* graphs (CVEs and compliance) now open on the **daily** view (was weekly).

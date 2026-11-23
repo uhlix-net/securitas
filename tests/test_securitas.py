@@ -1529,7 +1529,8 @@ class ComplianceScans(unittest.TestCase):
         self.run_scan()
         home = self.c.get("/").text
         self.assertIn("<title>Home", home)
-        self.assertIn("Compliance score per host", home)
+        self.assertNotIn("Compliance score per host", home)                        # moved to Compliance -> Summary
+        self.assertIn("Compliance score per host", self.c.get("/compliance").text)
         self.assertIn("Compliance over time", home)
         self.assertIn('href="/?crange=day&range=day#chistory"', home)                               # daily by default
         self.assertIn("Compliance over time", self.c.get("/compliance").text)

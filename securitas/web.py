@@ -1370,7 +1370,9 @@ def create_app(cfg, db, jobs):
             sched = {x.platform: x for x in s.scalars(select(ComplianceSchedule)).all()}
             crng = request.query_params.get("crange", report.DEFAULT_RANGE)
             crng = crng if crng in report.RANGES else report.DEFAULT_RANGE
+            _, _, cbars = compliance_charts(s)
             ctx = {"user": user, "sess": request.state.sess, "title": "Compliance summary", "rows": rows, "crange": crng,
+                   "cbars": cbars,
                    "crange_switch": charts.range_switch(crng, "/compliance", "crange", "chistory"),
                    "chistory": compliance_history_svg(crng),
                    "active": sorted(active.values(), key=lambda b: (b.platform, b.os_key)),
@@ -1582,7 +1584,7 @@ def create_app(cfg, db, jobs):
         crng = request.query_params.get("crange", report.DEFAULT_RANGE)
         crng = crng if crng in report.RANGES else report.DEFAULT_RANGE
         with db.Session() as s:
-            crows, cpies, cbars = compliance_charts(s)
+            crows, cpies, _ = compliance_charts(s)
         scores = [r["score"] for r in crows if r["score"] is not None]
         ctot = {"systems": sum(r["systems"] or 0 for r in crows), "checked": sum(r["checked"] for r in crows),
                 "failed": sum(r["failed"] for r in crows), "score": round(sum(scores) / len(scores), 1) if scores else None}
@@ -1592,7 +1594,7 @@ def create_app(cfg, db, jobs):
             "history": charts.history_svg(jobs.history(rng)), "crange": crng,
             "crange_switch": charts.range_switch(crng, "/", "crange", "chistory", keep={"range": rng}),
             "chistory": compliance_history_svg(crng),
-            "vpies": charts.pies(report.platform_levels(m)), "crows": crows, "ctot": ctot, "cpies": cpies, "cbars": cbars})
+            "vpies": charts.pies(report.platform_levels(m)), "crows": crows, "ctot": ctot, "cpies": cpies})
 
     @api.get("/about")
     def about(request: Request, user=Depends(any_user)):

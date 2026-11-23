@@ -41,6 +41,13 @@
     </tbody></table></div>
   {% endif %}
 </section>
+{% if cbars %}
+<section class="chartcard">
+  <h2>Compliance score per host</h2>
+  <p class="sub">Passed, accepted and failed rules of each host's newest check, lowest score first. Select a host for its rules.</p>
+  {{ cbars|safe }}
+</section>
+{% endif %}
 <section class="chartcard" id="chistory">
   <h2>Compliance over time {{ crange_switch|safe }}</h2>
   <p class="sub">Average compliance score per platform: each host's newest check at the end of each {{ {"day": "day", "week": "week", "month": "month"}[crange] }}, averaged over the platform's hosts.</p>
