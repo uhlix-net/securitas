@@ -19,7 +19,7 @@
       <td class="n{% if r.accepted %} acc{% endif %}">{% if r.checked %}{{ "{:,}".format(r.accepted) }}{% endif %}</td>
       <td class="n{% if r.failed %} hot{% endif %}">{% if r.checked %}{{ "{:,}".format(r.failed) }}{% endif %}</td>
       <td class="n">{% if r.score is not none %}<strong>{{ r.score }}%</strong>{% endif %}</td>
-      <td class="small">{% if sc and sc.enabled %}<span class="mono">{{ sc.cron }}</span>{% else %}<span class="muted">off</span>{% endif %}</td>
+      <td class="small">{% if sc and sc.enabled %}{{ describe(sc.cron) }}{% else %}<span class="muted">off</span>{% endif %}</td>
     </tr>
     <tr><td colspan="11" class="small muted">{{ r.note }}</td></tr>
     {% endfor %}

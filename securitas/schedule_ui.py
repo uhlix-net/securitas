@@ -113,7 +113,7 @@ def describe(cron, tz):
         return "Every %s at %s" % (_join([DAY_NAME[d] for d in days]), at)
     if p["freq"] == "monthly":
         return "On the %s of every month at %s" % (_ordinal(p["monthday"]), at)
-    return "Custom cron schedule (%s)" % tz
+    return "Custom schedule (%s)" % tz
 
 
 def next_runs(cron, tz, count=3, after=None):

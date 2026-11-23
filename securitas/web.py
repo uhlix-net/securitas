@@ -9,6 +9,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 import urllib.parse
@@ -585,6 +586,10 @@ def create_app(cfg, db, jobs):
             s.expunge_all()
         default = "0 6 * * 0" if kind == "compliance" else "0 5 * * *"
         pick = {p: schedule_ui.from_cron(rows[p].cron if p in rows else default) for p in PLATFORMS}
+        hide_cron = kind == "compliance"         # compliance schedules: picker only, cron stays behind the scenes
+        if hide_cron:
+            pick = {p: f if f["freq"] != "advanced" else {**schedule_ui.from_cron(default), "custom": True}
+                    for p, f in pick.items()}
         for p, f in (keep or {}).items():
             pick[p] = f
         info = {p: {"text": schedule_ui.describe(r.cron, cfg.timezone),
@@ -596,6 +601,7 @@ def create_app(cfg, db, jobs):
             "title": "Compliance schedules" if kind == "compliance" else "Vulnerability schedules",
             "base": "/compliance/schedules" if kind == "compliance" else "/vulnerabilities/schedules",
             "freqs": schedule_ui.FREQS, "weekdays": schedule_ui.WEEKDAYS, "max_monthday": schedule_ui.MAX_MONTHDAY,
+            "hide_cron": hide_cron,
             "error": error, **extra}, status)
 
     def schedule_form(form):
@@ -916,6 +922,7 @@ def create_app(cfg, db, jobs):
     ]
     a.env.globals["SETTINGS_PAGES"] = SETTINGS_PAGES
     a.env.globals["BUILTIN_ADMIN"] = cfg.admin_username
+    a.env.globals["describe"] = lambda cron: schedule_ui.describe(cron, cfg.timezone)
     a.env.globals["settings_for"] = lambda role: [p for p in SETTINGS_PAGES if auth.can(role, p[2])]
     # Top-level sections and their pages: (path, label, permission). Vulnerability scans and reports keep their
     # old addresses (/, /report, /scans) so bookmarks and PDF links still work.
@@ -1469,6 +1476,12 @@ def create_app(cfg, db, jobs):
             if r is None or r.scan_id != sid:
                 raise HTTPException(404, "No such result.")
             s.expunge(r)
+        return a.page(request, "compliance_host.html", {"user": user, "sess": request.state.sess,
+                                                        "title": "%s · compliance scan #%d" % (r.host, sid),
+                                                        **rules_ctx(r, st, q, user)})
+
+    def rules_ctx(r, st, q, user, back=""):
+        """Context for _comprules.html: the check's rules (filtered, failed first) and the exceptions that apply now."""
         rules = [x for x in r.rules or [] if (not st or x.get("status") == st)
                  and (not q or q.lower() in (x.get("id", "") + " " + x.get("title", "")).lower())]
         order = {k: i for i, k in enumerate(scan_compliance.STATUSES)}
@@ -1479,11 +1492,30 @@ def create_app(cfg, db, jobs):
         # the exception that applies to this host now (may differ from the one the scan recorded)
         now = {x.get("id"): exc.get((x.get("id"), r.host)) or exc.get((x.get("id"), ""))
                for x in rules if x.get("status") in ("fail", "accepted")}
-        return a.page(request, "compliance_host.html", {"user": user, "sess": request.state.sess,
-                                                        "title": "%s · compliance scan #%d" % (r.host, sid), "r": r,
-                                                        "rules": rules, "st": st, "q": q, "statuses": scan_compliance.STATUSES,
-                                                        "exc_now": now, "scopes": scan_compliance.SCOPE_LABEL,
-                                                        "may_except": auth.can(user.role, "compliance.exception")})
+        return {"r": r, "rules": rules, "st": st, "q": q, "statuses": scan_compliance.STATUSES, "exc_now": now,
+                "scopes": scan_compliance.SCOPE_LABEL, "may_except": auth.can(user.role, "compliance.exception"), "back": back}
+
+    @api.get("/compliance/targets/{tid}")
+    def compliance_target_view(request: Request, tid: int, user=Depends(V)):
+        """One target's compliance: its benchmark, every check (score history) and the newest check's rules."""
+        st = request.query_params.get("status", "")
+        q = request.query_params.get("q", "").strip()[:100]
+        with db.Session() as s:
+            t_ = s.get(Target, tid)
+            if t_ is None:
+                raise HTTPException(404, "There is no target #%d." % tid)
+            plan, _ = jobs.compliance_plan(s)
+            x = next((y for y in plan.get(t_.platform, []) if y["id"] == tid), None)
+            checks = s.scalars(select(ComplianceResult).where(ComplianceResult.platform == t_.platform,
+                                                              ComplianceResult.host == t_.host)
+                               .order_by(ComplianceResult.id.desc()).limit(100)).all()
+            s.expunge_all()
+        latest = next((c for c in checks if c.status == "done"), None)
+        ctx = {"user": user, "sess": request.state.sess, "title": "%s · compliance" % t_.host, "t": t_, "x": x,
+               "checks": checks, "latest": latest}
+        if latest:
+            ctx.update(rules_ctx(latest, st, q, user, back="/compliance/targets/%d" % tid))
+        return a.page(request, "compliance_target.html", ctx)
 
     @api.post("/compliance/scans/{sid}/hosts/{rid}/exception")
     async def compliance_exception_set(request: Request, sid: int, rid: int, user=Depends(a.need("compliance.exception"))):
@@ -1494,6 +1526,9 @@ def create_app(cfg, db, jobs):
         scope = str(form.get("scope", "")).strip()
         reason = str(form.get("reason", "")).strip()[:2000]
         back = "/compliance/scans/%d/hosts/%d" % (sid, rid)
+        ret = str(form.get("back", ""))
+        if re.fullmatch(r"/compliance/targets/\d+", ret):      # came from a target's page: go back there
+            back = ret
         with db.Session() as s, s.begin():
             r = s.get(ComplianceResult, rid)
             if r is None or r.scan_id != sid:

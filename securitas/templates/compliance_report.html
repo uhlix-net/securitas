@@ -3,7 +3,7 @@
 <section>
   <h2>Compliance report</h2>
   <p class="sub">How each system measures up against the active benchmark for its operating system. A system is matched to a benchmark by the OS its latest vulnerability scan saw. Benchmarks, profiles and which rules count are set under <a href="/compliance/benchmarks">Benchmarks</a>.</p>
-  <p class="sub">Each system's newest successful check is shown; open it for every rule's result. Run checks on the <a href="/compliance/scans">Scans</a> page. Failed rules with an exception show as Accepted; see <a href="/compliance/exceptions">Exceptions</a>.</p>
+  <p class="sub">Each system's newest successful check is shown; select a system for its compliance details (every check and every rule). Run checks on the <a href="/compliance/scans">Scans</a> page. Failed rules with an exception show as Accepted; see <a href="/compliance/exceptions">Exceptions</a>.</p>
 </section>
 {% for plat in ("linux", "windows") %}
 <section id="{{ plat }}">
@@ -11,12 +11,13 @@
   <p class="sub">{{ checker[plat] }}</p>
   {% set list = systems.get(plat, []) %}
   {% if not list %}<p class="muted">No enabled {{ PLATFORM_LABEL[plat] }} targets. Add them in <a href="/targets">Targets</a>.</p>{% else %}
-  <div class="scroll"><table>
-    <thead><tr><th>System</th><th>Role</th><th>Operating system</th><th>Benchmark</th><th>Rules</th><th>Passed</th><th>Accepted</th><th>Failed</th><th>Score</th><th>Last check</th></tr></thead>
+  <div class="scroll"><table class="rep">
+    <colgroup><col class="c-sys"><col class="c-role"><col class="c-os"><col class="c-bench"><col class="c-n"><col class="c-n"><col class="c-n"><col class="c-n"><col class="c-n"><col class="c-last"></colgroup>
+    <thead><tr><th>System</th><th>Role</th><th>Operating system</th><th>Benchmark</th><th class="n">Rules</th><th class="n">Passed</th><th class="n">Accepted</th><th class="n">Failed</th><th class="n">Score</th><th>Last check</th></tr></thead>
     <tbody>
     {% for x in list %}
     <tr>
-      <td class="mono">{{ x.host }}</td>
+      <td class="mono"><a href="/compliance/targets/{{ x.id }}">{{ x.host }}</a></td>
       <td>{{ x.label }}</td>
       <td class="small">{% if x.os %}{{ x.os }}{% else %}<span class="muted">not known yet: run a vulnerability scan</span>{% endif %}</td>
       <td class="small">{% if x.bench %}<a href="/compliance/benchmarks/{{ x.bench.id }}" class="mono">{{ x.bench.key }}</a>{% elif x.os %}<span class="muted">no active benchmark for this OS{% if x.os_key %} ({{ x.os_key }}){% endif %}</span>{% else %}<span class="muted">—</span>{% endif %}</td>

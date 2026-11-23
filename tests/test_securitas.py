@@ -1322,7 +1322,7 @@ class Menus(unittest.TestCase):
         self.c.post("/compliance/benchmarks", data={"csrf": csrf(self.c, "/compliance/benchmarks")},
                     files={"file": ("r.zip", role_zip(top="RHEL9-CIS-1.0.0"), "application/zip")})
         page = self.c.get("/compliance/report").text
-        row = lambda host: re.search(r'<td class="mono">%s</td>(.*?)</tr>' % host, page, re.S).group(1)
+        row = lambda host: re.search(r'<td class="mono"><a href="/compliance/targets/\d+">%s</a></td>(.*?)</tr>' % host, page, re.S).group(1)
         self.assertIn("RHEL9-CIS-1.0.0", row("rocky1"))
         self.assertIn("no active benchmark for this OS (ubuntu22)", row("ubu1"))
         self.assertIn("run a vulnerability scan", row("new1"))
@@ -1345,7 +1345,10 @@ class Menus(unittest.TestCase):
             self.assertEqual(s.scalar(select(Schedule.cron).where(Schedule.platform == "linux")), "0 5 * * *")   # untouched
         page = self.c.get("/compliance/schedules").text
         self.assertIn("start nothing: Kubernetes.", page)
-        self.assertIn("0 6 * * 0", self.c.get("/compliance").text)
+        self.assertIn("Every Sunday at 06:00", self.c.get("/compliance").text)        # in words, not cron
+        self.assertNotIn('name="cron"', page)                                          # no cron field on compliance schedules
+        self.assertNotIn('value="advanced"', page)
+        self.assertIn('name="cron"', self.c.get("/vulnerabilities/schedules").text)
         self.assertIn('action="/vulnerabilities/schedules/linux"', self.c.get("/vulnerabilities/schedules").text)
 
     def test_schedule_picker(self):
@@ -1506,6 +1509,23 @@ class ComplianceScans(unittest.TestCase):
         self.assertIn("/compliance/scans/%d/hosts/%d" % (cid, res["rocky1"].id), report)
         self.assertNotIn("Active benchmarks", report)
         self.assertNotIn("Active benchmarks", summary)
+        from securitas.db import Target
+        with self.db.Session() as s:
+            tid = s.scalar(select(Target.id).where(Target.host == "rocky1"))
+        self.assertIn('href="/compliance/targets/%d">rocky1</a>' % tid, report)          # targets link to their page
+        tp = self.c.get("/compliance/targets/%d" % tid).text
+        self.assertIn("Checks", tp)
+        self.assertIn("patterns not found", tp)                                          # the newest check's rules
+        self.assertIn('name="back" value="/compliance/targets/%d"' % tid, tp)
+        r = self.c.post("/compliance/scans/%d/hosts/%d/exception" % (cid, res["rocky1"].id),
+                        data={"csrf": csrf(self.c, "/compliance"), "rule": "1.1.1", "scope": "server", "reason": "x",
+                              "back": "/compliance/targets/%d" % tid}, follow_redirects=False)
+        self.assertTrue(r.headers["location"].startswith("/compliance/targets/%d?" % tid))
+        r = self.c.post("/compliance/scans/%d/hosts/%d/exception" % (cid, res["rocky1"].id),
+                        data={"csrf": csrf(self.c, "/compliance"), "rule": "1.1.1", "scope": "", "back": "https://evil"},
+                        follow_redirects=False)
+        self.assertTrue(r.headers["location"].startswith("/compliance/scans/"))           # other targets ignored
+        self.assertEqual(self.c.get("/compliance/targets/9999").status_code, 404)
         bench = self.c.get("/compliance/benchmarks").text
         self.assertIn("Trivy k8s-cis", bench)                                         # Kubernetes listed with the others
         self.assertEqual(bench.count("<th>Rules checked</th>"), 2)                    # Linux and Kubernetes tables

@@ -3,7 +3,7 @@
 <section>
   <h2>{{ "Compliance" if kind == "compliance" else "Vulnerability" }} scan schedules</h2>
   <p class="sub">When each platform gets a {{ kind }} scan{% if kind == "compliance" %} (separate from the <a href="/vulnerabilities/schedules">vulnerability scan schedules</a>){% else %} (separate from the <a href="/compliance/schedules">compliance scan schedules</a>){% endif %}. Pick how often and when; times are in {{ cfg.timezone }}. A scheduled run is skipped while a scan of the same platform is still queued or running.</p>
-  <p class="hint">Only the fields for the chosen repeat are used: <em>weekdays</em> for every week, <em>day of the month</em> for every month, the <em>cron</em> field for Advanced (five fields: minute hour day month weekday, e.g. <span class="mono">0 5 * * 1-5</span>).</p>
+  <p class="hint">Only the fields for the chosen repeat are used: <em>weekdays</em> for every week, <em>day of the month</em> for every month{% if not hide_cron %}, the <em>cron</em> field for Advanced (five fields: minute hour day month weekday, e.g. <span class="mono">0 5 * * 1-5</span>){% endif %}.</p>
   {% if kind == "compliance" %}<p class="hint">Platforms without a checker yet keep their schedule but start nothing: {% for p in PLATFORMS if not has_checker[p] %}{{ PLATFORM_LABEL[p] }}{% if not loop.last %}, {% endif %}{% endfor %}.</p>{% endif %}
 </section>
 {% for p in PLATFORMS %}{% set r = rows.get(p) %}{% set f = pick[p] %}
@@ -12,11 +12,12 @@
     <input type="hidden" name="csrf" value="{{ sess.csrf }}">
     <h2>{{ PLATFORM_LABEL[p] }}
       <label class="inline sw-on"><input type="checkbox" name="enabled"{% if r and r.enabled %} checked{% endif %}> Scheduled</label></h2>
-    {% if r %}<p class="sub">{% if r.enabled %}<strong>{{ info[p].text }}</strong>{% else %}<span class="muted">Off</span> (saved: {{ info[p].text }}){% endif %} · cron <span class="mono">{{ r.cron }}</span>{% if r.last_run %} · last run {{ fmt(r.last_run) }}{% endif %}{% if kind == "compliance" and not has_checker[p] and r.enabled %} · <span class="muted">nothing runs (no checker)</span>{% endif %}</p>
+    {% if r %}<p class="sub">{% if r.enabled %}<strong>{{ info[p].text }}</strong>{% else %}<span class="muted">Off</span> (saved: {{ info[p].text }}){% endif %}{% if not hide_cron %} · cron <span class="mono">{{ r.cron }}</span>{% endif %}{% if r.last_run %} · last run {{ fmt(r.last_run) }}{% endif %}{% if kind == "compliance" and not has_checker[p] and r.enabled %} · <span class="muted">nothing runs (no checker)</span>{% endif %}</p>
     {% if info[p].next and not (kind == "compliance" and not has_checker[p]) %}<p class="small">Next runs: {% for d in info[p].next %}{{ fmt(d) }}{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
     {% else %}<p class="sub muted">Not scheduled yet.</p>{% endif %}
+    {% if f.custom %}<p class="hint">This schedule was set as a custom cron expression; saving below replaces it with the picked one.</p>{% endif %}
     <div class="row sched-row">
-      <div><label for="fq-{{ p }}">Repeat</label><select id="fq-{{ p }}" name="freq">{% for k, label in freqs %}<option value="{{ k }}"{% if f.freq == k %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+      <div><label for="fq-{{ p }}">Repeat</label><select id="fq-{{ p }}" name="freq">{% for k, label in freqs if not (hide_cron and k == "advanced") %}<option value="{{ k }}"{% if f.freq == k %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
       <div><label for="hh-{{ p }}">Time</label><span class="nowrap"><select id="hh-{{ p }}" name="hour" aria-label="Hour">{% for h in range(24) %}<option value="{{ h }}"{% if f.hour == h %} selected{% endif %}>{{ "%02d"|format(h) }}</option>{% endfor %}</select> : <select name="minute" aria-label="Minute">{% for m in range(60) %}<option value="{{ m }}"{% if f.minute == m %} selected{% endif %}>{{ "%02d"|format(m) }}</option>{% endfor %}</select></span><span class="small muted"> (every hour: only the minute)</span></div>
       <div><label for="md-{{ p }}">Day of the month</label><select id="md-{{ p }}" name="monthday">{% for d in range(1, max_monthday + 1) %}<option value="{{ d }}"{% if f.monthday == d %} selected{% endif %}>{{ d }}</option>{% endfor %}</select></div>
     </div>
@@ -24,7 +25,7 @@
       {% for n, short, full in weekdays %}<label class="inline"><input type="checkbox" name="weekday" value="{{ n }}"{% if n in f.weekdays %} checked{% endif %} aria-label="{{ full }}"> {{ short }}</label>{% endfor %}
     </fieldset>
     <div class="row sched-row">
-      <div><label for="cr-{{ p }}">Cron (Advanced)</label><input id="cr-{{ p }}" type="text" class="mono" name="cron" value="{{ f.cron if f.freq == 'advanced' else (r.cron if r else '') }}" size="18"></div>
+      {% if not hide_cron %}<div><label for="cr-{{ p }}">Cron (Advanced)</label><input id="cr-{{ p }}" type="text" class="mono" name="cron" value="{{ f.cron if f.freq == 'advanced' else (r.cron if r else '') }}" size="18"></div>{% endif %}
       <div><button class="btn">Save</button></div>
     </div>
   </form>

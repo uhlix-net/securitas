@@ -1,0 +1,37 @@
+{# Rule results of one compliance check (r) with filters and exception forms. Needs: r, rules, st, q, statuses,
+   exc_now, scopes, may_except, back (where the exception form returns to, or empty). #}
+<div id="rules"></div>
+  <form method="get" class="filters" action="#rules">
+    <div class="row">
+      <div><label for="cs">Result</label><select id="cs" name="status"><option value="">All (failed first)</option>{% for x in statuses %}<option value="{{ x }}"{% if st == x %} selected{% endif %}>{{ CSTATUS_LABEL[x] }}</option>{% endfor %}</select></div>
+      <div><label for="cq">Search</label><input id="cq" type="text" name="q" value="{{ q }}" placeholder="5.1 or ssh"></div>
+      <div><button class="btn">Filter</button>{% if st or q %} <a href="?">Clear</a>{% endif %}</div>
+    </div>
+  </form>
+  <p class="small muted">{{ rules|length }} of {{ r.counts.checked }} rules shown.{% if may_except %} A failed rule can be accepted: a <strong>baseline exception</strong> applies to every host checked against {{ r.benchmark_key.rsplit("-", 1)[0] }}, a <strong>server exception</strong> only to {{ r.host }}. Compliance scans after that report the rule as Accepted. All exceptions are listed under <a href="/compliance/exceptions">Exceptions</a>.{% endif %}</p>
+  {% if rules %}
+  <div class="scroll"><table>
+    <thead><tr><th>Rule</th><th>Title</th><th>Result</th><th>Tests</th></tr></thead>
+    <tbody>
+    {% for x in rules %}
+    <tr id="r-{{ x.id }}">
+      <td class="mono nowrap">{{ x.id }}</td>
+      <td>{{ x.title }}{% if x.kind == "AUDIT" %} <span class="small muted">(manual in the benchmark)</span>{% endif %}</td>
+      <td>{% if x.status == "fail" %}<span class="badge b-failed">Failed</span>{% elif x.status == "accepted" %}<span class="badge b-accepted">Accepted</span> <span class="small">{{ scopes[x.exception.scope] }}: {{ x.exception.reason }}</span>{% if x.exception.by %}<br><span class="small muted">by {{ x.exception.by }}</span>{% endif %}{% elif x.status == "pass" %}<span class="badge b-done">Passed</span>{% elif x.status == "skip" %}<span class="badge b-off">Not applicable</span>{% else %}<span class="badge b-off">No automated check</span>{% endif %}
+        {% if x.status in ("fail", "accepted") %}{% set cur = exc_now.get(x.id) %}
+        {% if x.status == "fail" and cur %}<div class="excnote"><span class="badge b-accepted">Exception saved</span> {{ scopes[cur.scope] }}: {{ cur.reason }} <span class="muted">(Accepted from the next scan)</span></div>{% endif %}
+        {% if x.status == "accepted" and not cur %}<div class="excnote muted">Exception removed since this scan: Failed from the next scan.</div>{% endif %}
+        {% if may_except %}
+        <form method="post" action="/compliance/scans/{{ r.scan_id }}/hosts/{{ r.id }}/exception" class="excform">
+          <input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="rule" value="{{ x.id }}">{% if back %}<input type="hidden" name="back" value="{{ back }}">{% endif %}
+          <select name="scope" aria-label="Exception for rule {{ x.id }}"><option value="">No exception</option>{% for k, label in scopes.items() %}<option value="{{ k }}"{% if cur and cur.scope == k %} selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+          <input type="text" name="reason" maxlength="2000" value="{{ cur.reason if cur else '' }}" placeholder="Reason" aria-label="Reason for the exception to rule {{ x.id }}">
+          <button class="btn">Save</button>
+        </form>
+        {% endif %}{% endif %}
+      </td>
+      <td class="small">{% for t in x.tests %}<div{% if t.result == "fail" %} class="hot"{% endif %}>{{ "✗" if t.result == "fail" else "✓" if t.result == "pass" else "?" if t.result == "manual" else "–" }} {{ t.title.split(" | ")[-1] if " | " in t.title else t.title }}{% if t.result == "fail" and t.message %}<br><span class="mono muted">{{ t.message }}</span>{% endif %}</div>{% endfor %}</td>
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+  {% endif %}
