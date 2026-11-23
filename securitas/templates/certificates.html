@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% macro certrows(i) %}
+  <tr><th>Subject</th><td><strong>{{ i.subject }}</strong><br><span class="small muted mono">{{ i.subject_dn }}</span></td></tr>
+  <tr><th>Names</th><td class="mono small">{{ i.names|join(", ") or "—" }}</td></tr>
+  <tr><th>Issued by</th><td>{{ i.issuer }}{% if i.self_signed %} <span class="badge b-partial">Self-signed</span>{% endif %}</td></tr>
+  <tr><th>Valid</th><td>{{ fmt(i.not_before) }} to {{ fmt(i.not_after) }} {% if i.expired %}<span class="badge b-failed">Expired</span>{% elif i.days_left < 30 %}<span class="badge b-partial">{{ i.days_left }} days left</span>{% else %}<span class="badge b-done">{{ i.days_left }} days left</span>{% endif %}</td></tr>
+  <tr><th>Serial</th><td class="mono small">{{ i.serial }}</td></tr>
+  <tr><th>SHA-256</th><td class="mono small" style="word-break:break-all">{{ i.sha256 }}</td></tr>
+{% endmacro %}
+{% block content %}
+<section>
+  <h2>Certificates</h2>
+  <p class="sub">The TLS certificate the web site is served with (the ingress Secret). Replace it with a new certificate and private key: PEM files (certificate, key and, if your CA has one, the intermediate chain) or a PFX / PKCS#12 file with its password, as a Windows CA exports it. Securitas checks that the key belongs to the certificate, that it is valid now and that it covers {% if hosts %}<span class="mono">{{ hosts|join(", ") }}</span>{% else %}the site's names{% endif %}, then writes it to the Secret; the ingress picks it up by itself. Securitas does not keep a copy of the key. Every replacement is in the audit log.</p>
+</section>
+{% if not current %}
+<section>
+  <p class="muted">Certificate management is not set up: the chart needs <span class="mono">ingress.enabled</span>, a <span class="mono">ingress.tls</span> entry and <span class="mono">ingress.manageCertificates: true</span> (the default). It then lets Securitas read and replace only those Secrets.</p>
+</section>
+{% else %}
+{% for c in current %}
+<section>
+  <h2>In use <span class="mono small">{{ c.name }}</span></h2>
+  {% if c.error %}<div class="fail"><p>{{ c.error }}</p></div>{% else %}
+  <div class="scroll"><table class="kv">{{ certrows(c.info) }}
+    {% if c.chain %}<tr><th>Chain</th><td class="small">{% for x in c.chain %}{{ x.subject }} (until {{ fmt(x.not_after) }}){% if not loop.last %} → {% endif %}{% endfor %}</td></tr>{% endif %}
+  </table></div>
+  {% if c.missing %}<p class="hint hot">Does not cover {{ c.missing|join(", ") }}.</p>{% endif %}
+  {% endif %}
+</section>
+{% endfor %}
+{% if new %}
+<section id="new">
+  <h2>New certificate</h2>
+  {% for x in new.errors %}<div class="fail"><p>{{ x }}</p></div>{% endfor %}
+  {% for x in new.warnings %}<div class="warn"><p>{{ x }}</p></div>{% endfor %}
+  {% if not new.errors %}<p class="sub">This certificate can be used. To replace the one in use, choose the files again below, tick <strong>Confirm</strong> and select <strong>Replace</strong> (files are not kept between steps).</p>{% endif %}
+  <div class="scroll"><table class="kv">{{ certrows(new.info) }}
+    {% if new.chain %}<tr><th>Chain</th><td class="small">{% for x in new.chain %}{{ x.subject }} (until {{ fmt(x.not_after) }}){% if not loop.last %} → {% endif %}{% endfor %}</td></tr>{% endif %}
+  </table></div>
+</section>
+{% endif %}
+<section>
+  <h2>Replace the certificate</h2>
+  <form method="post" action="/settings/certificates" enctype="multipart/form-data" class="certform">
+    <input type="hidden" name="csrf" value="{{ sess.csrf }}">
+    {% if current|length > 1 %}<div><label for="sec">Secret</label><select id="sec" name="secret">{% for c in current %}<option value="{{ c.name }}"{% if secret == c.name %} selected{% endif %}>{{ c.name }}</option>{% endfor %}</select></div>{% else %}<input type="hidden" name="secret" value="{{ current[0].name }}">{% endif %}
+    <fieldset><legend>PEM files</legend>
+      <div class="row">
+        <div><label for="cf">Certificate</label><input id="cf" type="file" name="cert" accept=".pem,.crt,.cer,.der"></div>
+        <div><label for="kf">Private key</label><input id="kf" type="file" name="key" accept=".pem,.key"></div>
+        <div><label for="chf">Chain (optional)</label><input id="chf" type="file" name="chain" accept=".pem,.crt,.cer"></div>
+      </div>
+      <details class="tview"><summary>Paste PEM text instead</summary>
+        <div><label for="ct">Certificate</label><textarea id="ct" name="cert_text" rows="5" class="mono" placeholder="-----BEGIN CERTIFICATE-----"></textarea></div>
+        <div><label for="kt">Private key</label><textarea id="kt" name="key_text" rows="5" class="mono" placeholder="-----BEGIN PRIVATE KEY-----" autocomplete="off"></textarea></div>
+        <div><label for="cht">Chain (optional)</label><textarea id="cht" name="chain_text" rows="5" class="mono"></textarea></div>
+      </details>
+    </fieldset>
+    <fieldset><legend>Or a PFX / PKCS#12 file</legend>
+      <div class="row"><div><label for="pf">PFX file</label><input id="pf" type="file" name="pfx" accept=".pfx,.p12"></div></div>
+    </fieldset>
+    <div class="row">
+      <div><label for="pw">Password (PFX or encrypted key)</label><input id="pw" type="password" name="password" autocomplete="off"></div>
+    </div>
+    <div class="row">
+      <div><button class="btn" name="action" value="check">Check</button></div>
+      <div><label class="inline"><input type="checkbox" name="confirm"> Confirm</label> <button class="btn danger" name="action" value="replace">Replace</button></div>
+    </div>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

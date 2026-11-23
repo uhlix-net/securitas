@@ -466,7 +466,9 @@ class Web(unittest.TestCase):
         self.assertEqual(o.get("/vulnerabilities/schedules").status_code, 200)
         r = o.post("/vulnerabilities/schedules/linux", data={"csrf": csrf(o), "cron": "15 3 * * 1", "enabled": "on"}, follow_redirects=False)
         self.assertIn("ok=saved", r.headers["location"])
-        self.assertIn("err=cron", o.post("/vulnerabilities/schedules/linux", data={"csrf": csrf(o), "cron": "bad"}, follow_redirects=False).headers["location"])
+        bad = o.post("/vulnerabilities/schedules/linux", data={"csrf": csrf(o), "cron": "bad"}, follow_redirects=False)
+        self.assertEqual(bad.status_code, 400)
+        self.assertIn("not a valid cron expression", bad.text)
         for p in ("/targets", "/settings/users", "/settings/authentication", "/audit"):
             self.assertEqual(o.get(p).status_code, 403, p)
         audit = self.c.get("/audit").text
@@ -486,6 +488,25 @@ class Web(unittest.TestCase):
         login(self.c, "admin", ADMIN_PW)
         r = self.c.post("/settings/users/1", data={"csrf": csrf(self.c), "action": "role", "role": "viewer"}, follow_redirects=False)
         self.assertIn("err=self", r.headers["location"])
+
+    def test_builtin_admin_keeps_role(self):
+        login(self.c, "admin", ADMIN_PW)
+        self.c.post("/settings/users", data={"csrf": csrf(self.c), "username": "ada", "password": "a-long-password-1", "role": "admin"})
+        o = client(self.app)
+        login(o, "ada", "a-long-password-1")
+        page = o.get("/settings/users").text
+        self.assertIn("Built-in admin: always Admin", page)
+        self.assertNotIn('aria-label="Role for admin"', page)                       # no role drop-down for it
+        self.assertIn('aria-label="Role for ada"', self.c.get("/settings/users").text)   # others keep theirs
+        from securitas.db import User
+        with self.db.Session() as s:
+            uid = s.scalar(select(User.id).where(User.username == "admin"))
+        for action in ({"action": "role", "role": "viewer"}, {"action": "disable"}):
+            r = o.post("/settings/users/%d" % uid, data={"csrf": csrf(o), **action}, follow_redirects=False)
+            self.assertIn("err=builtin", r.headers["location"])
+        with self.db.Session() as s:
+            u = s.get(User, uid)
+            self.assertEqual((u.role, u.disabled), ("admin", False))
 
     def test_password_change_and_disable(self):
         login(self.c, "admin", ADMIN_PW)
@@ -1317,8 +1338,8 @@ class Menus(unittest.TestCase):
         r = self.c.post("/compliance/schedules/linux", data={"csrf": csrf(self.c, "/compliance/schedules"), "cron": "0 6 * * 0",
                                                              "enabled": "on"}, follow_redirects=False)
         self.assertEqual(r.headers["location"], "/compliance/schedules?ok=saved")
-        self.assertIn("err=cron", self.c.post("/compliance/schedules/linux", data={"csrf": csrf(self.c, "/compliance/schedules"),
-                                                                                    "cron": "bad"}, follow_redirects=False).headers["location"])
+        self.assertEqual(self.c.post("/compliance/schedules/linux", data={"csrf": csrf(self.c, "/compliance/schedules"),
+                                                                           "cron": "bad"}, follow_redirects=False).status_code, 400)
         with self.db.Session() as s:
             self.assertEqual(s.scalar(select(ComplianceSchedule.cron).where(ComplianceSchedule.platform == "linux")), "0 6 * * 0")
             self.assertEqual(s.scalar(select(Schedule.cron).where(Schedule.platform == "linux")), "0 5 * * *")   # untouched
@@ -1326,6 +1347,39 @@ class Menus(unittest.TestCase):
         self.assertIn("start nothing: Kubernetes.", page)
         self.assertIn("0 6 * * 0", self.c.get("/compliance").text)
         self.assertIn('action="/vulnerabilities/schedules/linux"', self.c.get("/vulnerabilities/schedules").text)
+
+    def test_schedule_picker(self):
+        from securitas import schedule_ui as su
+        from securitas.db import Schedule
+        self.assertEqual(su.to_cron({"freq": "hourly", "minute": "15"}), "15 * * * *")
+        self.assertEqual(su.to_cron({"freq": "daily", "hour": "5", "minute": "0"}), "0 5 * * *")
+        self.assertEqual(su.to_cron({"freq": "weekly", "hour": "5", "minute": "30", "weekday": ["4", "0", "1"]}), "30 5 * * 1,4,0")
+        self.assertEqual(su.to_cron({"freq": "monthly", "hour": "23", "minute": "5", "monthday": "28"}), "5 23 28 * *")
+        self.assertEqual(su.to_cron({"freq": "advanced", "cron": " 0  5 * * 1-5 "}), "0 5 * * 1-5")
+        for bad in ({"freq": "weekly", "hour": "5", "minute": "0"}, {"freq": "monthly", "hour": "5", "minute": "0", "monthday": "31"},
+                    {"freq": "daily", "hour": "24", "minute": "0"}, {"freq": "advanced", "cron": "bad"}, {}):
+            self.assertRaises(su.ScheduleError, su.to_cron, bad)
+        self.assertEqual(su.from_cron("30 5 * * 1,4")["weekdays"], [1, 4])
+        self.assertEqual(su.from_cron("0 6 * * 0")["freq"], "weekly")
+        self.assertEqual(su.from_cron("0 5 1-7 * 1")["freq"], "advanced")
+        self.assertEqual(su.from_cron("*/15 * * * *")["freq"], "advanced")
+        self.assertTrue(su.describe("0 5 * * 1,4", "America/New_York").startswith("Every Monday and Thursday at 05:00 E"))
+        self.assertEqual(su.describe("0 5 * * 1,2,3,4,5", "UTC"), "Every weekday (Monday to Friday) at 05:00 UTC")
+        self.assertEqual(su.describe("0 3 2 * *", "UTC"), "On the 2nd of every month at 03:00 UTC")
+        self.assertEqual(len(su.next_runs("0 5 * * *", "UTC")), 3)
+        url = "/vulnerabilities/schedules"
+        r = self.c.post(url + "/linux", data={"csrf": csrf(self.c, url), "freq": "weekly", "hour": "4", "minute": "45",
+                                              "weekday": ["1", "4"], "enabled": "on"}, follow_redirects=False)
+        self.assertIn("ok=saved", r.headers["location"])
+        with self.db.Session() as s:
+            self.assertEqual(s.scalar(select(Schedule.cron).where(Schedule.platform == "linux")), "45 4 * * 1,4")
+        page = self.c.get(url).text
+        self.assertIn("Every Monday and Thursday at 04:45", page)
+        self.assertIn("Next runs:", page)
+        self.assertIn('<option value="weekly" selected>', page)
+        bad = self.c.post(url + "/linux", data={"csrf": csrf(self.c, url), "freq": "weekly", "hour": "4", "minute": "0"})
+        self.assertEqual(bad.status_code, 400)
+        self.assertIn("Linux: Tick at least one weekday.", bad.text)
 
     def test_viewer_menus(self):
         self.c.post("/settings/users", data={"csrf": csrf(self.c), "username": "vic", "password": "a-long-password-1", "role": "viewer"})
@@ -1681,3 +1735,99 @@ class WindowsCompliance(unittest.TestCase):
         detail = c.get("/compliance/benchmarks/1").text
         self.assertIn("2 of 4 on member servers, 2 of 4 on domain controllers", detail)
         self.assertIn("by each host&#39;s role", detail)
+
+
+def make_cert(names=("securitas.example.com",), days=365, ca=None, eku=True):
+    """(cert, key) for tests; signed by ca=(cert, key) when given, else self-signed."""
+    import datetime as dt
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+    key = ec.generate_private_key(ec.SECP256R1())
+    now = dt.datetime.now(dt.timezone.utc)
+    subj = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, names[0] if names else "CA")])
+    b = (x509.CertificateBuilder().subject_name(subj).issuer_name(ca[0].subject if ca else subj)
+         .public_key(key.public_key()).serial_number(x509.random_serial_number())
+         .not_valid_before(now - dt.timedelta(days=max(1, 5 - days))).not_valid_after(now + dt.timedelta(days=days)))
+    if names:
+        b = b.add_extension(x509.SubjectAlternativeName([x509.DNSName(n) for n in names]), False)
+    if eku:
+        b = b.add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), False)
+    return b.sign(ca[1] if ca else key, hashes.SHA256()), key
+
+
+class Certificates(unittest.TestCase):
+    def setUp(self):
+        self.app, self.db, self.jobs, self.cfg = make_app(tls_secrets=["securitas-tls"], tls_hosts=["securitas.example.com"],
+                                                          namespace="securitas")
+        self.c = client(self.app)
+        login(self.c, "admin", ADMIN_PW)
+        from cryptography.hazmat.primitives import serialization as ser
+        self.ser = ser
+        self.ca = make_cert((), 3650, eku=False)
+        old, _ = make_cert(days=10, ca=self.ca)
+        self.store = {"crt": old.public_bytes(ser.Encoding.PEM), "key": None}
+        from securitas import k8s
+        self._get, self._put = k8s.get_tls_secret, k8s.put_tls_secret
+        k8s.get_tls_secret = lambda cfg, name: (self.store["crt"], True)
+        k8s.put_tls_secret = lambda cfg, name, crt, key: self.store.update(crt=crt, key=key, name=name)
+
+    def tearDown(self):
+        from securitas import k8s
+        k8s.get_tls_secret, k8s.put_tls_secret = self._get, self._put
+
+    def pem(self, c, k=None):
+        ser = self.ser
+        return c.public_bytes(ser.Encoding.PEM), (k.private_bytes(ser.Encoding.PEM, ser.PrivateFormat.PKCS8, ser.NoEncryption()) if k else b"")
+
+    def post(self, files, **data):
+        url = "/settings/certificates"
+        return self.c.post(url, data={"csrf": csrf(self.c, url), **data}, files=files, follow_redirects=False)
+
+    def test_page_and_replace(self):
+        page = self.c.get("/settings/certificates").text
+        self.assertIn("securitas-tls", page)
+        self.assertIn("days left", page)
+        self.assertIn('href="/settings/certificates"', self.c.get("/settings").text)
+        new, key = make_cert(ca=self.ca)
+        crt, kp = self.pem(new, key)
+        chain, _ = self.pem(self.ca[0])
+        files = {"cert": ("c.pem", crt), "key": ("k.pem", kp), "chain": ("ca.pem", chain)}
+        r = self.post(files, action="check")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("This certificate can be used", r.text)
+        self.assertIsNone(self.store["key"])                                         # check only: nothing written
+        self.assertEqual(self.post(files, action="replace").status_code, 400)        # Confirm not ticked
+        r = self.post(files, action="replace", confirm="on")
+        self.assertIn("ok=cert", r.headers["location"])
+        self.assertEqual(self.store["crt"], crt)                                     # the root CA is not put in tls.crt
+        self.assertIn(b"PRIVATE KEY", self.store["key"])
+        self.assertIn("tls.replaced", self.c.get("/audit").text)
+
+    def test_pfx_and_problems(self):
+        from cryptography.hazmat.primitives.serialization import pkcs12, BestAvailableEncryption
+        new, key = make_cert(ca=self.ca)
+        pfx = pkcs12.serialize_key_and_certificates(b"x", key, new, [self.ca[0]], BestAvailableEncryption(b"pw"))
+        self.assertIn("wrong password", self.post({"pfx": ("s.pfx", pfx)}, action="check", password="nope").text)
+        r = self.post({"pfx": ("s.pfx", pfx)}, action="replace", confirm="on", password="pw")
+        self.assertIn("ok=cert", r.headers["location"])
+        other, okey = make_cert(("other.example.com",), ca=self.ca)
+        crt, kp = self.pem(other, okey)
+        r = self.post({"cert": ("c.pem", crt), "key": ("k.pem", kp)}, action="replace", confirm="on")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("does not cover securitas.example.com", r.text)
+        _, wrong = make_cert()
+        r = self.post({"cert": ("c.pem", self.pem(new)[0]), "key": ("k.pem", self.pem(new, wrong)[1])}, action="check")
+        self.assertIn("does not belong to the certificate", r.text)
+        old, oldkey = make_cert(days=-2, ca=self.ca)
+        r = self.post({"cert": ("c.pem", self.pem(old)[0]), "key": ("k.pem", self.pem(old, oldkey)[1])}, action="check")
+        self.assertIn("The certificate expired", r.text)
+
+    def test_admins_only(self):
+        self.c.post("/settings/users", data={"csrf": csrf(self.c), "username": "otto", "password": "a-long-password-1", "role": "operator"})
+        o = client(self.app)
+        login(o, "otto", "a-long-password-1")
+        self.assertEqual(o.get("/settings/certificates").status_code, 403)
+        self.assertNotIn("/settings/certificates", o.get("/settings").text)
+        self.assertEqual(o.post("/settings/certificates", data={"csrf": csrf(o)}).status_code, 403)

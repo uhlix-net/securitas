@@ -371,6 +371,10 @@ label{display:block;font-weight:600;margin:10px 0 4px}label.inline{display:inlin
 td.acc{color:var(--acc-ink);font-weight:700}.excform{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px}
 .excform select,.excform input[type=text]{font-size:12.5px;padding:3px 6px}.excform input[type=text]{flex:1;min-width:180px}
 .excform .btn{font-size:12.5px;padding:3px 10px}.excnote{font-size:12.5px;margin-top:4px}
+.sched h2 .sw-on{font-size:13px;font-weight:400;margin-left:14px}.sched-row{margin-top:8px}
+fieldset.days,.certform fieldset{border:0;padding:0;margin:10px 0}fieldset.days legend,.certform legend{font-size:12.5px;color:var(--muted);margin-bottom:4px;padding:0}
+fieldset.days label{margin-right:14px}table.kv th{text-align:left;width:120px;vertical-align:top;white-space:nowrap}
+.certform textarea{width:100%;box-sizing:border-box;font-size:12px}
 td form{display:inline}td .row{gap:6px;align-items:center}
 pre.log{background:var(--head);border:1px solid var(--line);border-radius:6px;padding:10px 12px;font-size:12px;overflow-x:auto;white-space:pre-wrap;max-height:480px;overflow-y:auto}
 .login{max-width:400px;margin:60px auto}.login .brand{text-align:center;margin-bottom:18px;font-size:24px}

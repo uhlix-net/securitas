@@ -30,7 +30,7 @@ serves the results as web pages with an **Export to PDF** button.
 - **Failed scans are flagged, not hidden.** If a platform's latest scan failed or was only partly
   successful, the summary, the report and the PDF say so and show the error. Older results stay
   visible but are marked as older; a platform that has never been scanned successfully still gets a section saying so.
-- **Scheduled and on-demand scans, with history.** Each platform has its own cron schedule.
+- **Scheduled and on-demand scans, with history.** Each platform has its own schedule (every hour, day, chosen weekdays or day of the month; cron underneath, with an advanced cron field).
   Operators can start a scan at any time. Every past scan can be opened and exported as it was at the time,
   and the history can be filtered by platform.
 - **Settings in the browser.** Admins configure LDAP, single sign-on, the scan accounts (SSH key,

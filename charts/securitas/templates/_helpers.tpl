@@ -54,3 +54,11 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- define "securitas.roleMap" -}}
 {{- $out := list }}{{ range $g, $r := .Values.auth.roleMappings }}{{ $out = append $out (printf "%s=%s" $g $r) }}{{ end }}{{ join "," $out }}
 {{- end }}
+
+{{/* Ingress TLS Secret names and hosts, comma-separated (Settings -> Certificates). */}}
+{{- define "securitas.tlsSecrets" -}}
+{{- $n := list }}{{- range .Values.ingress.tls }}{{- $n = append $n .secretName }}{{- end }}{{- join "," (uniq $n) }}
+{{- end }}
+{{- define "securitas.tlsHosts" -}}
+{{- $h := list }}{{- range .Values.ingress.tls }}{{- range .hosts }}{{- $h = append $h . }}{{- end }}{{- end }}{{- join "," (uniq $h) }}
+{{- end }}

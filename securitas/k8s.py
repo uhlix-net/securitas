@@ -1,4 +1,7 @@
-"""Read Trivy Operator VulnerabilityReports from the Kubernetes API. Read-only: list calls only."""
+"""Kubernetes API calls: read Trivy Operator VulnerabilityReports (list only), and read / replace the ingress TLS
+Secrets named in SECURITAS_TLS_SECRETS (Settings > Certificates; the chart's Role allows only get and patch on
+exactly those Secrets)."""
+import base64
 import json
 import os
 import ssl
@@ -55,3 +58,63 @@ def list_reports(cfg):
             if not cont:
                 break
     return items
+
+
+def _api(cfg):
+    """(base URL, SSL context, bearer token or None) for the in-cluster API, or SECURITAS_API_URL."""
+    if cfg.api_url:
+        return cfg.api_url.rstrip("/"), ssl.create_default_context(), None
+    host = os.environ.get("KUBERNETES_SERVICE_HOST")
+    if not host:
+        raise RuntimeError("not running in a cluster")
+    if ":" in host:
+        host = f"[{host}]"
+    base = f"https://{host}:{os.environ.get('KUBERNETES_SERVICE_PORT', '443')}"
+    ctx = ssl.create_default_context(cafile=os.path.join(SA, "ca.crt"))
+    return base, ctx, open(os.path.join(SA, "token")).read().strip()
+
+
+def _namespace(cfg):
+    if cfg.namespace:
+        return cfg.namespace
+    try:
+        return open(os.path.join(SA, "namespace")).read().strip()
+    except OSError:
+        raise RuntimeError("the pod's namespace is not known (SECURITAS_NAMESPACE)") from None
+
+
+def _secret_call(cfg, name, method="GET", body=None):
+    if name not in cfg.tls_secrets:
+        raise RuntimeError("%s is not one of the TLS Secrets Securitas may manage" % name)
+    base, ctx, token = _api(cfg)
+    url = "%s/api/v1/namespaces/%s/secrets/%s" % (base, urllib.parse.quote(_namespace(cfg)), urllib.parse.quote(name))
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/strategic-merge-patch+json"
+    try:
+        with _opener(ctx).open(urllib.request.Request(url, data=data, headers=headers, method=method), timeout=30) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise RuntimeError("Secret %s does not exist in namespace %s" % (name, _namespace(cfg))) from None
+        if e.code in (401, 403):
+            raise RuntimeError("not allowed to %s Secret %s (HTTP %d): check the chart's ingress.manageCertificates Role"
+                               % ("read" if method == "GET" else "change", name, e.code)) from None
+        raise
+
+
+def get_tls_secret(cfg, name):
+    """(tls.crt PEM bytes, has a key) of a managed TLS Secret. The key itself is never returned."""
+    doc = _secret_call(cfg, name)
+    d = doc.get("data") or {}
+    return base64.b64decode(d.get("tls.crt", "")), bool(d.get("tls.key"))
+
+
+def put_tls_secret(cfg, name, cert_pem, key_pem):
+    """Replace tls.crt and tls.key of a managed TLS Secret (the ingress controller picks it up by itself)."""
+    _secret_call(cfg, name, "PATCH", {"data": {"tls.crt": base64.b64encode(cert_pem).decode(),
+                                               "tls.key": base64.b64encode(key_pem).decode()}})

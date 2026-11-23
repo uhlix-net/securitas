@@ -17,6 +17,22 @@ Compliance exceptions: accept a failed rule, for every host or for one.
 - **Score.** Accepted rules count as met: score = (passed + accepted) / (passed + accepted + failed).
 - **Compliance → Exceptions**: every exception with its benchmark, rule, scope, host, reason, who saved it and
   when; admins can remove them there. Every change is in the audit log.
+- **Settings → Certificates** (admins only): see the web site's TLS certificate (names, issuer, validity, days
+  left, fingerprint) and replace it with PEM files (certificate, key, optional chain; or pasted text) or a
+  PFX / PKCS#12 file with its password. *Check* shows the new certificate and any problems; *Replace* (with
+  Confirm) writes it to the ingress TLS Secret, which the ingress picks up by itself. Refused when the key does not
+  match, the certificate is expired or not yet valid, lacks server authentication, or does not cover the ingress
+  host names; warns when it expires within 30 days, is self-signed or comes without its issuing CA. Securitas
+  keeps no copy of the key; every replacement is in the audit log. Chart: `ingress.manageCertificates` (default
+  `true`) adds a Role that can only get and patch the Secrets named in `ingress.tls`.
+- **Friendlier schedules** on *Vulnerabilities → Schedules* and *Compliance → Schedules*: pick every hour (at
+  minute), every day, chosen weekdays or a day of the month, and a time, in the configured time zone; each
+  platform shows its schedule in words ("Every Monday and Thursday at 05:00 EST") and the next three runs.
+  *Advanced (cron)* keeps a raw cron field. Schedules are still stored and run as cron; existing ones open in the
+  matching picker.
+- **The built-in admin account** (`SECURITAS_ADMIN_USERNAME`) has no role drop-down and cannot be disabled: it
+  always stays an Admin, so no other admin can take its rights away.
+- *Compliance* menu: **Exceptions** now comes before Schedules.
 - **Compliance over time** graph on Home and Compliance → Summary: the average compliance score per platform
   (each host's newest check at the end of each day, week or month), daily, weekly or monthly like the CVE graph.
 - The *over time* graphs (CVEs and compliance) now open on the **daily** view (was weekly).

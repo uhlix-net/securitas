@@ -107,6 +107,9 @@ class Config:
     session_hours: int = 12
     trusted_proxies: list = field(default_factory=list)  # client addresses allowed to set X-Forwarded-For
     ca_file: str = ""                # extra CA bundle for LDAPS, OIDC and WinRM
+    tls_secrets: list = field(default_factory=list)  # ingress TLS Secrets admins may replace (Settings > Certificates)
+    tls_hosts: list = field(default_factory=list)    # host names those certificates should cover
+    namespace: str = ""              # this pod's namespace (for the TLS Secrets)
     admin_username: str = "admin"
     admin_password: str = ""         # bootstrap: creates or resets this local admin when no local admin can sign in
     role_map: list = field(default_factory=list)  # bootstrap "Group=role" pairs, editable in the UI afterwards
@@ -167,6 +170,9 @@ class Config:
             session_hours=max(1, _int("SECURITAS_SESSION_HOURS", 12)),
             trusted_proxies=_list("SECURITAS_TRUSTED_PROXIES"),
             ca_file=e("SECURITAS_CA_FILE", ""),
+            tls_secrets=_list("SECURITAS_TLS_SECRETS"),
+            tls_hosts=_list("SECURITAS_TLS_HOSTS"),
+            namespace=e("SECURITAS_NAMESPACE", ""),
             admin_username=e("SECURITAS_ADMIN_USERNAME", "admin").strip().lower() or "admin",
             admin_password=_secret("SECURITAS_ADMIN_PASSWORD"),
             role_map=_list("SECURITAS_ROLE_MAP"),

@@ -57,6 +57,13 @@ spec:
             - {name: SECURITAS_SECURE_COOKIES, value: {{ .Values.web.secureCookies | quote }}}
             - {name: SECURITAS_SESSION_HOURS, value: {{ .Values.web.sessionHours | quote }}}
             - {name: SECURITAS_TRUSTED_PROXIES, value: {{ join "," .Values.web.trustedProxies | quote }}}
+            {{- if and .Values.ingress.enabled .Values.ingress.tls .Values.ingress.manageCertificates }}
+            # Settings -> Certificates: the ingress TLS Secrets admins may replace, and the names they must cover
+            - {name: SECURITAS_TLS_SECRETS, value: {{ include "securitas.tlsSecrets" . | quote }}}
+            - {name: SECURITAS_TLS_HOSTS, value: {{ include "securitas.tlsHosts" . | quote }}}
+            - name: SECURITAS_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+            {{- end }}
             # database
             - {name: SECURITAS_DB_HOST, value: {{ include "securitas.dbHost" . | quote }}}
             - {name: SECURITAS_DB_PORT, value: {{ ternary "5432" (toString .Values.database.external.port) .Values.database.bundled.enabled | quote }}}

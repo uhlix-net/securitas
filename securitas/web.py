@@ -18,7 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlalchemy import String, cast, delete, func, select
 
-from . import __version__, auth, charts, compliance, render, report, scan_linux, scan_windows, sources
+from . import __version__, auth, charts, compliance, render, report, scan_linux, scan_windows, schedule_ui, sources
 from .config import PLATFORMS
 from .settings import FIELDS, SettingsError
 from .db import (AuditEvent, Benchmark, BenchmarkFile, ComplianceException, ComplianceResult, ComplianceScan, ComplianceSchedule, LoginState, PlatformResult, ResultStats, RoleMapping,
@@ -37,6 +37,7 @@ MESSAGES = {
     "hostkey": "Host key cleared; the next scan records the key the host presents.",
     "loggedout": "You are signed out.",
     "imported": "Benchmark imported.", "activated": "Active benchmark changed.",
+    "cert": "Certificate replaced. The ingress serves it within a minute; reload the page to see it.",
     "exception": "Exception saved. The rule shows as Accepted from the next compliance scan.",
     "unexcepted": "Exception removed. The rule shows as Failed again from the next compliance scan.",
 }
@@ -46,6 +47,7 @@ ERRORS = {
     "exists": "That name is already in use.", "pw": "", "self": "You cannot change or remove your own account here.",
     "lastadmin": "At least one admin must remain.", "host": "Enter a host name.", "group": "Enter a group name.",
     "managed": "This account's password is managed by the deployment (SECURITAS_ADMIN_PASSWORD).",
+    "builtin": "The built-in admin account always keeps the Admin role and cannot be disabled.",
     "reason": "Give a reason for the exception.", "scope": "Pick BASELINE EXCEPTION or SERVER EXCEPTION.",
 }
 
@@ -574,20 +576,57 @@ def create_app(cfg, db, jobs):
 
     # ------------------------------------------------------------ schedules
 
+    def schedule_page(request, user, kind, error="", status=200, keep=None):
+        """Vulnerability or compliance schedules with the picker. keep: {platform: form fields} to show again after
+        a mistake."""
+        model = ComplianceSchedule if kind == "compliance" else Schedule
+        with db.Session() as s:
+            rows = {x.platform: x for x in s.scalars(select(model)).all()}
+            s.expunge_all()
+        default = "0 6 * * 0" if kind == "compliance" else "0 5 * * *"
+        pick = {p: schedule_ui.from_cron(rows[p].cron if p in rows else default) for p in PLATFORMS}
+        for p, f in (keep or {}).items():
+            pick[p] = f
+        info = {p: {"text": schedule_ui.describe(r.cron, cfg.timezone),
+                    "next": schedule_ui.next_runs(r.cron, cfg.timezone) if r.enabled else []} for p, r in rows.items()}
+        extra = {"checker": COMPLIANCE_CHECKER, "has_checker": {p: p in jobs.compliance_scanners for p in PLATFORMS}} \
+            if kind == "compliance" else {}
+        return a.page(request, "schedules.html", {
+            "user": user, "sess": request.state.sess, "kind": kind, "rows": rows, "pick": pick, "info": info,
+            "title": "Compliance schedules" if kind == "compliance" else "Vulnerability schedules",
+            "base": "/compliance/schedules" if kind == "compliance" else "/vulnerabilities/schedules",
+            "freqs": schedule_ui.FREQS, "weekdays": schedule_ui.WEEKDAYS, "max_monthday": schedule_ui.MAX_MONTHDAY,
+            "error": error, **extra}, status)
+
+    def schedule_form(form):
+        """(cron, picker fields as entered) from a schedule form; raises ScheduleError with the picker fields."""
+        # no repeat chosen but a cron given (older forms, scripts): treat it as Advanced
+        f = {"freq": form.get("freq") or ("advanced" if form.get("cron") else ""), "hour": form.get("hour", ""), "minute": form.get("minute", ""),
+             "weekday": form.getlist("weekday"), "monthday": form.get("monthday", ""), "cron": form.get("cron", "")}
+        shown = {"freq": f["freq"], "hour": int(f["hour"]) if str(f["hour"]).isdigit() else 5,
+                 "minute": int(f["minute"]) if str(f["minute"]).isdigit() else 0,
+                 "weekdays": [int(d) for d in f["weekday"] if str(d).isdigit()],
+                 "monthday": int(f["monthday"]) if str(f["monthday"]).isdigit() else 1, "cron": str(f["cron"])}
+        try:
+            return schedule_ui.to_cron(f), shown
+        except schedule_ui.ScheduleError as e:
+            e.shown = shown
+            raise
+
     @api.get("/vulnerabilities/schedules")
     def schedules(request: Request, user=Depends(a.need("schedule.edit"))):
-        with db.Session() as s:
-            rows = {x.platform: x for x in s.scalars(select(Schedule)).all()}
-        return a.page(request, "schedules.html", {"user": user, "sess": request.state.sess, "title": "Vulnerability schedules",
-                                                  "rows": rows, "base": "/vulnerabilities/schedules", "kind": "vulnerability"})
+        return schedule_page(request, user, "vulnerability")
 
     @api.post("/vulnerabilities/schedules/{platform}")
     async def schedule_save(request: Request, platform: str, user=Depends(a.need("schedule.edit"))):
         form = await a.csrf(request)
         if platform not in PLATFORMS:
             raise HTTPException(404, "Unknown platform.")
-        cron = " ".join(str(form.get("cron", "")).split())
         enabled = form.get("enabled") == "on"
+        try:
+            cron, _ = schedule_form(form)
+        except schedule_ui.ScheduleError as e:
+            return schedule_page(request, user, "vulnerability", "%s: %s" % (PLATFORM_LABEL[platform], e), 400, {platform: e.shown})
         if not valid_cron(cron):
             return go("/vulnerabilities/schedules", err="cron")
         with db.Session() as s, s.begin():
@@ -706,6 +745,8 @@ def create_app(cfg, db, jobs):
             u = s.get(User, uid)
             if u is None:
                 raise HTTPException(404, "No such user.")
+            if u.source == "local" and u.username == cfg.admin_username and action in ("role", "disable"):
+                return go("/settings/users", err="builtin")      # the break-glass account always stays an admin
             if action == "role":
                 role = str(form.get("role", ""))
                 if u.source == "local":
@@ -871,8 +912,10 @@ def create_app(cfg, db, jobs):
         ("users", "Users", "user.manage", "Local accounts (add, reset passwords, disable), and LDAP and SSO users with their roles."),
         ("authentication", "Authentication", "auth.manage", "Local sign-in, LDAP and single sign-on settings, group to role mappings."),
         ("credentials", "Scan credentials", "credentials.edit", "The SSH account and key for Linux scans and the WinRM account for Windows scans, with a connection test."),
+        ("certificates", "Certificates", "tls.manage", "The web site's TLS certificate: see the one in use and replace it with a new certificate and key (PEM or PFX)."),
     ]
     a.env.globals["SETTINGS_PAGES"] = SETTINGS_PAGES
+    a.env.globals["BUILTIN_ADMIN"] = cfg.admin_username
     a.env.globals["settings_for"] = lambda role: [p for p in SETTINGS_PAGES if auth.can(role, p[2])]
     # Top-level sections and their pages: (path, label, permission). Vulnerability scans and reports keep their
     # old addresses (/, /report, /scans) so bookmarks and PDF links still work.
@@ -881,8 +924,8 @@ def create_app(cfg, db, jobs):
                             ("/vulnerabilities/schedules", "Schedules", "schedule.edit"),
                             ("/vulnerabilities/sources", "Sources", "view")],
         "compliance": [("/compliance", "Summary", "view"), ("/compliance/report", "Report", "view"),
-                       ("/compliance/scans", "Scans", "view"), ("/compliance/schedules", "Schedules", "schedule.edit"),
-                       ("/compliance/exceptions", "Exceptions", "view"), ("/compliance/benchmarks", "Benchmarks", "view")],
+                       ("/compliance/scans", "Scans", "view"), ("/compliance/exceptions", "Exceptions", "view"),
+                       ("/compliance/schedules", "Schedules", "schedule.edit"), ("/compliance/benchmarks", "Benchmarks", "view")],
     }
     # Top menu after Vulnerabilities and Compliance: (path, label, permission); Settings comes last.
     a.env.globals["TOP_PAGES"] = [("/targets", "Targets", "target.edit"), ("/audit", "Audit log", "audit.view")]
@@ -955,6 +998,91 @@ def create_app(cfg, db, jobs):
                 "key_file": cfg.ssh_key_file, "can_store": a.settings.can_store_secrets,
                 "targets": s.scalars(select(Target).where(Target.enabled.is_(True)).order_by(Target.platform, Target.host)).all(),
                 "known_hosts": bool(eff.ssh_known_hosts), **extra}
+
+    # ------------------------------------------------------------ admin: TLS certificates
+
+    TM = a.need("tls.manage")
+
+    def cert_page(request, user, status=200, **extra):
+        from . import k8s, tlscert
+        current = []
+        for name in cfg.tls_secrets:
+            row = {"name": name, "info": None, "chain": [], "error": ""}
+            try:
+                pem, _ = k8s.get_tls_secret(cfg, name)
+                certs = x509_certs(pem)
+                if certs:
+                    row["info"] = tlscert.info(certs[0])
+                    row["chain"] = [tlscert.info(c) for c in certs[1:]]
+                    row["missing"] = [h for h in cfg.tls_hosts if not tlscert.covers(certs[0], h)]
+                else:
+                    row["error"] = "The Secret holds no certificate."
+            except Exception as e:
+                row["error"] = str(e) or type(e).__name__
+            current.append(row)
+        return a.page(request, "certificates.html", {"user": user, "sess": request.state.sess, "title": "Certificates",
+                                                     "current": current, "hosts": cfg.tls_hosts, **extra}, status)
+
+    def x509_certs(pem):
+        from cryptography import x509
+        try:
+            return x509.load_pem_x509_certificates(pem) if pem else []
+        except ValueError:
+            return []
+
+    @api.get("/settings/certificates")
+    def certificates(request: Request, user=Depends(TM)):
+        return cert_page(request, user)
+
+    @api.post("/settings/certificates")
+    async def certificates_replace(request: Request, user=Depends(TM)):
+        """Check a new certificate and key; with action=replace (and Confirm ticked) write them to the Secret."""
+        from . import k8s, tlscert
+        await request.form(max_files=4, max_fields=12, max_part_size=tlscert.MAX_BYTES)
+        form = await a.csrf(request)
+
+        async def part(field, text_field=None):
+            up = form.get(field)
+            data = b""
+            if up is not None and hasattr(up, "read"):
+                try:
+                    data = await up.read(tlscert.MAX_BYTES + 1)
+                finally:
+                    await up.close()
+            if not data and text_field:
+                data = str(form.get(text_field, "")).strip().encode()
+            if len(data) > tlscert.MAX_BYTES:
+                raise tlscert.CertError("A file is too large for a certificate or key.")
+            return data
+
+        action = str(form.get("action", "check"))
+        secret = str(form.get("secret", "")) or (cfg.tls_secrets[0] if cfg.tls_secrets else "")
+        if secret not in cfg.tls_secrets:
+            return cert_page(request, user, 400, error="Securitas is not set up to manage this Secret.")
+        try:
+            leaf, chain, key = tlscert.load(cert=await part("cert", "cert_text"), key=await part("key", "key_text"),
+                                            chain=await part("chain", "chain_text"), pfx=await part("pfx"),
+                                            password=str(form.get("password", "")))
+        except tlscert.CertError as e:
+            return cert_page(request, user, 400, error=str(e))
+        errors, warnings = tlscert.check(leaf, chain, cfg.tls_hosts)
+        new = {"info": tlscert.info(leaf), "chain": [tlscert.info(c) for c in chain], "errors": errors, "warnings": warnings}
+        if action != "replace" or errors:
+            return cert_page(request, user, 400 if errors else 200, new=new, secret=secret,
+                             error="This certificate cannot be used: see the problems below." if errors else "")
+        if form.get("confirm") != "on":
+            return cert_page(request, user, 400, new=new, secret=secret, error="Tick Confirm to replace the certificate.")
+        crt, k = tlscert.secret_data(leaf, chain, key)
+        try:
+            k8s.put_tls_secret(cfg, secret, crt, k)
+        except Exception as e:
+            log.exception("replacing TLS Secret %s", secret)
+            return cert_page(request, user, 502, new=new, secret=secret, error="The Secret was not changed: %s" % e)
+        i = new["info"]
+        with db.Session() as s, s.begin():
+            a.audit(s, request, "tls.replaced", "%s: %s, issued by %s, serial %s, valid until %s, SHA-256 %s" % (
+                secret, i["subject"], i["issuer"], i["serial"], i["not_after"].strftime("%Y-%m-%d"), i["sha256"]))
+        return go("/settings/certificates", ok="cert")
 
     @api.get("/settings/credentials")
     def credentials(request: Request, user=Depends(CR)):
@@ -1478,20 +1606,18 @@ def create_app(cfg, db, jobs):
 
     @api.get("/compliance/schedules")
     def compliance_schedules(request: Request, user=Depends(a.need("schedule.edit"))):
-        with db.Session() as s:
-            rows = {x.platform: x for x in s.scalars(select(ComplianceSchedule)).all()}
-        return a.page(request, "schedules.html", {"user": user, "sess": request.state.sess, "title": "Compliance schedules",
-                                                  "rows": rows, "base": "/compliance/schedules", "kind": "compliance",
-                                                  "checker": COMPLIANCE_CHECKER,
-                                                  "has_checker": {p: p in jobs.compliance_scanners for p in PLATFORMS}})
+        return schedule_page(request, user, "compliance")
 
     @api.post("/compliance/schedules/{platform}")
     async def compliance_schedule_save(request: Request, platform: str, user=Depends(a.need("schedule.edit"))):
         form = await a.csrf(request)
         if platform not in PLATFORMS:
             raise HTTPException(404, "Unknown platform.")
-        cron = " ".join(str(form.get("cron", "")).split())
         enabled = form.get("enabled") == "on"
+        try:
+            cron, _ = schedule_form(form)
+        except schedule_ui.ScheduleError as e:
+            return schedule_page(request, user, "compliance", "%s: %s" % (PLATFORM_LABEL[platform], e), 400, {platform: e.shown})
         if not valid_cron(cron):
             return go("/compliance/schedules", err="cron")
         with db.Session() as s, s.begin():
