@@ -3,6 +3,7 @@
 All pages need a signed-in user. Pages are rendered on the server and contain no scripts, so the Content
 Security Policy allows none. Every form carries a per-session CSRF token.
 """
+import collections
 import copy
 import datetime
 import ipaddress
@@ -1539,11 +1540,83 @@ def create_app(cfg, db, jobs):
     def compliance_report(request: Request, user=Depends(V)):
         with db.Session() as s:
             systems, active = compliance_systems(s)
-            ctx = {"user": user, "sess": request.state.sess, "title": "Compliance report", "systems": systems,
+            ctx = {"user": user, "sess": request.state.sess, "title": "Compliance report", "systems": systems, "report_tab": "target",
                    "active": sorted(active.values(), key=lambda b: (b.platform, b.os_key)),
                    "counts": {b.id: compliance.counts(b) for b in active.values()}, "checker": COMPLIANCE_CHECKER,
                    "profiles": compliance.PROFILES, "name": lambda b: compliance.display_name(b, cfg.timezone)}
             return a.page(request, "compliance_report.html", ctx)
+
+    def bench_results(systems, b):
+        """[(system, newest result or None)] for the targets matched to benchmark b. A result counts when it was
+        checked against a benchmark of the same name (e.g. RHEL9-CIS), so results from before a version switch
+        still show until the next scan."""
+        name = scan_compliance.bench_name(b.key)
+        out = []
+        for x in systems.get(b.platform, []):
+            if not x["bench"] or scan_compliance.bench_name(x["bench"].key) != name:
+                continue
+            r = x.get("result")
+            out.append((x, r if r and scan_compliance.bench_name(r.benchmark_key) == name else None))
+        return out
+
+    @api.get("/compliance/report/tests")
+    def compliance_report_tests(request: Request, user=Depends(V)):
+        """Every rule of each active benchmark with its results across the targets' newest checks."""
+        q = request.query_params.get("q", "").strip()[:100]
+        only = request.query_params.get("only", "")
+        with db.Session() as s:
+            systems, active = compliance_systems(s)
+            benches = []
+            for b in sorted(active.values(), key=lambda b: (b.platform, b.os_key)):
+                res = bench_results(systems, b)
+                status = {}       # rule id -> Counter of statuses over the targets
+                for _, r in res:
+                    for x in (r.rules if r else []) or []:
+                        status.setdefault(x.get("id"), collections.Counter())[x.get("status")] += 1
+                rows = []
+                for rule in b.rules:
+                    c = status.get(rule.rule_id, collections.Counter())
+                    if q and q.lower() not in (rule.rule_id + " " + rule.title).lower():
+                        continue
+                    if only == "fail" and not c.get("fail"):
+                        continue
+                    if only == "checked" and not compliance.rule_on(rule, b.profile):
+                        continue
+                    rows.append({"id": rule.rule_id, "title": rule.title, "assessment": rule.assessment,
+                                 "on": compliance.rule_on(rule, b.profile), "c": c,
+                                 "nores": sum(1 for _, r in res if r) - sum(c.values())})
+                benches.append({"b": b, "rows": rows, "targets": len(res), "checked": sum(1 for _, r in res if r),
+                                "total": len(b.rules)})
+            s.expunge_all()
+        return a.page(request, "compliance_tests.html", {
+            "user": user, "sess": request.state.sess, "title": "Compliance report by test", "report_tab": "test",
+            "benches": benches, "q": q, "only": only})
+
+    @api.get("/compliance/report/tests/{bid}/{rule_id}")
+    def compliance_report_test(request: Request, bid: int, rule_id: str, user=Depends(V)):
+        """One rule on every target matched to the benchmark: result, exception and the failed tests' output."""
+        with db.Session() as s:
+            b = bench_or_404(s, bid)
+            rule = next((r for r in b.rules if r.rule_id == rule_id), None)
+            if rule is None:
+                raise HTTPException(404, "%s has no rule %s." % (b.key, rule_id))
+            systems, _ = compliance_systems(s)
+            exc = {}
+            rows = []
+            for x, r in bench_results(systems, b):
+                if r is not None and r.benchmark_key not in exc:
+                    exc[r.benchmark_key] = jobs.exceptions_for(s, r.benchmark_key)
+                item = next((y for y in (r.rules or []) if y.get("id") == rule_id), None) if r else None
+                now = (exc.get(r.benchmark_key, {}).get((rule_id, x["host"])) or exc.get(r.benchmark_key, {}).get((rule_id, ""))) if r else None
+                rows.append({"x": x, "r": r, "item": item, "exc_now": now})
+            order = {"fail": 0, "accepted": 1, "pass": 2, "skip": 3, "notest": 4, None: 5}
+            rows.sort(key=lambda d: (order.get((d["item"] or {}).get("status")), d["x"]["host"]))
+            ctx = {"user": user, "sess": request.state.sess, "title": "%s · %s" % (rule_id, b.key), "report_tab": "test",
+                   "b": b, "rule": rule, "on": compliance.rule_on(rule, b.profile), "rows": rows,
+                   "c": collections.Counter((d["item"] or {}).get("status") for d in rows if d["item"]),
+                   "scopes": scan_compliance.SCOPE_LABEL}
+            s.expunge_all()
+        return a.page(request, "compliance_test.html", ctx)
 
     @api.get("/compliance/scans")
     def compliance_scans(request: Request, page: int = 1, user=Depends(V)):

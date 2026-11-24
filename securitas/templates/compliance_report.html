@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
+{% include "_report_tabs.html" %}
 <section>
-  <h2>Compliance report</h2>
+  <h2>Compliance Report by Target</h2>
   <p class="sub">How each system measures up against the active benchmark for its operating system. A system is matched to a benchmark by the OS its latest vulnerability scan saw. Benchmarks, profiles and which rules count are set under <a href="/compliance/benchmarks">Benchmarks</a>.</p>
   <p class="sub">Each system's newest successful check is shown; select a system for its compliance details (every check and every rule). Run checks on the <a href="/compliance/scans">Scans</a> page. Failed rules with an exception show as Accepted; see <a href="/compliance/exceptions">Exceptions</a>.</p>
 </section>

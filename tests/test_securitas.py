@@ -2118,3 +2118,28 @@ class BenchmarkPackages(unittest.TestCase):
             r = self.c.post("/compliance/benchmarks", data={"csrf": csrf(self.c, "/compliance/benchmarks")},
                             files={"file": ("p.zip", bad, "application/zip")})
             self.assertIn(msg, r.text)
+
+
+class ReportByTest(unittest.TestCase):
+    def test_by_test_pages(self):
+        T = ComplianceScans("run_scan")
+        T.setUp()
+        T.run_scan()
+        c = T.c
+        from securitas.db import Benchmark
+        with T.db.Session() as s:
+            bid = s.scalar(select(Benchmark.id))
+        rep = c.get("/compliance/report").text
+        self.assertIn("Compliance Report by Target</h2>", rep)
+        self.assertIn('href="/compliance/report/tests">Compliance Report by Test</a>', rep)
+        page = c.get("/compliance/report/tests").text
+        self.assertIn('class="on" aria-current="page">Compliance Report by Test</a>', page)
+        self.assertIn('href="/compliance/report/tests/%d/1.1.1">1.1.1</a>' % bid, page)
+        self.assertIn('<a href="/compliance/report" class="on">Report</a>', page)               # the Report tab stays lit
+        self.assertNotIn("/compliance/report/tests/%d/2.10.1\"" % bid, c.get("/compliance/report/tests?only=fail").text)
+        one = c.get("/compliance/report/tests/%d/1.1.1" % bid).text
+        self.assertIn("rocky1", one)
+        self.assertIn('<span class="badge b-failed">Failed</span>', one)
+        self.assertIn("patterns not found", one)                                                # the failed test's output
+        self.assertIn("rocky2", one)                                                            # matched, never checked
+        self.assertEqual(c.get("/compliance/report/tests/%d/9.9.9" % bid).status_code, 404)

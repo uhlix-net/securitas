@@ -53,6 +53,10 @@ Compliance exceptions: accept a failed rule, for every host or for one.
   PATCH/AUDIT means "the role fixes it" / "audit only", which differs from CIS for 28 RHEL 9 rules), so the
   benchmark page shows it separately as "role: fixes it / audit only".
 - **Compliance → Exceptions**: filter by BASELINE or SERVER exceptions.
+- **Compliance → Report** has two tabs: **Compliance Report by Target** (the report as before) and **Compliance
+  Report by Test**: every rule of each active benchmark with how many targets passed, were accepted, failed, did
+  not apply or had no automated check (search, checked rules only, rules that failed somewhere). Each rule number
+  opens that test on every target: its result, exception and the failed tests' output.
 - **Every automated check runs:** where the audit content includes check folders for only one choice
   (firewalld or nftables, journald or rsyslog), the bundle runs both; the alternative a host does not use fails
   and can be accepted with an exception.

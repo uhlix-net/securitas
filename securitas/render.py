@@ -375,6 +375,7 @@ td.acc{color:var(--acc-ink);font-weight:700}.excform{display:flex;flex-wrap:wrap
 fieldset.days,.certform fieldset{border:0;padding:0;margin:10px 0}fieldset.days legend,.certform legend{font-size:12.5px;color:var(--muted);margin-bottom:4px;padding:0}
 fieldset.days label{margin-right:14px}table.kv th{text-align:left;width:120px;vertical-align:top;white-space:nowrap}
 .certform textarea{width:100%;box-sizing:border-box;font-size:12px}
+nav.tabs2{border-bottom:0;margin:-6px 0 14px;padding-bottom:0}nav.tabs2 a{font-size:13px;border:1px solid var(--line);background:var(--card)}
 table.rep{table-layout:fixed;min-width:900px}table.rep col.c-sys{width:16%}table.rep col.c-role{width:11%}table.rep col.c-os{width:15%}
 table.rep col.c-bench{width:15%}table.rep col.c-n{width:6.4%}table.rep col.c-last{width:11%}table.rep td{overflow-wrap:anywhere}
 td form{display:inline}td .row{gap:6px;align-items:center}
