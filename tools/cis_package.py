@@ -29,6 +29,32 @@ PROFILE = {"Level 1 - Server": "level1-server", "Level 2 - Server": "level2-serv
 RID = r"\d+(?:\.\d+){1,5}"
 
 
+LICENSE = """# Licences
+
+This package has two parts with different licences.
+
+## securitas-benchmark.json (the rules)
+
+The recommendation IDs, titles, Automated/Manual labels, profiles and section names are taken from the
+**%(document)s %(version)s** (%(date)s) by the Center for Internet Security, Inc. (CIS),
+https://www.cisecurity.org/cis-benchmarks. CIS Benchmarks are licensed under the Creative Commons
+Attribution-NonCommercial-ShareAlike 4.0 International licence (CC BY-NC-SA 4.0),
+https://creativecommons.org/licenses/by-nc-sa/4.0/.
+
+Changes: only those facts were extracted from the PDF and stored as JSON; no descriptions, rationale, audit or
+remediation text are included. This part is shared under the same licence, CC BY-NC-SA 4.0, for non-commercial
+use. CIS has not reviewed or endorsed this package. CIS(R) and CIS Benchmarks(TM) are trademarks of the Center for
+Internet Security, Inc.
+
+## audit/ (the checks)
+
+The Goss checks in audit/ are %(atop)s from Ansible-Lockdown (https://github.com/ansible-lockdown), unchanged,
+under their own licence in audit/LICENSE (MIT).
+
+Packaged for Securitas (https://github.com/uhlix-net/securitas) with tools/cis_package.py.
+"""
+
+
 def pdf_text(path):
     import pypdf
     r = pypdf.PdfReader(path)
@@ -145,6 +171,8 @@ def main():
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("%s/securitas-benchmark.json" % key, json.dumps(pkg, indent=1))
         z.writestr("%s/SOURCES.txt" % key, src)
+        z.writestr("%s/LICENSE.md" % key, LICENSE % {"document": doc["document"], "version": doc["version"],
+                                                     "date": doc["date"], "atop": atop})
         for i in sorted(az.infolist(), key=lambda i: i.filename):
             if i.is_dir():
                 continue
