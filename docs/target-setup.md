@@ -59,7 +59,7 @@ curl -fsS --cacert /path/ca.pem https://securitas.example.com/agent/install.sh |
 **Or by hand / with Ansible**, using the RPM from Securitas or from the [GitHub release](https://github.com/uhlix-net/securitas/releases):
 
 ```bash
-dnf install https://github.com/uhlix-net/securitas/releases/download/vX.Y.Z/securitas-agent-X.Y.Z-1.x86_64.rpm
+dnf install https://github.com/uhlix-net/securitas/releases/download/v0.6.0/securitas-agent-0.6.0-1.x86_64.rpm
 securitas-agent-setup --user svc-securitas --key 'ssh-ed25519 AAAA... securitas' --from 10.0.0.11,10.0.0.12
 ```
 

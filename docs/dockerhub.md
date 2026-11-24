@@ -1,14 +1,15 @@
 # Securitas
 
-CVE reports for Kubernetes, Linux and Windows. Securitas scans on a schedule or on demand, ranks the findings
-with the [CISA Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
-(KEV) catalog and [EPSS](https://www.first.org/epss/) scores, keeps every scan in its history, and serves the
-results as web pages behind a sign-in, with an **Export to PDF** button.
+Vulnerabilities and compliance for Kubernetes, Linux and Windows. Securitas scans on a schedule or on demand,
+ranks CVEs with the [CISA Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
+(KEV) catalog and [EPSS](https://www.first.org/epss/) scores, checks hosts against CIS benchmarks, keeps every
+scan in its history, and serves the results as web pages behind a sign-in, with an **Export to PDF** button.
 
-> **0.3.0** adds a Settings menu: LDAP, single sign-on, scan credentials and vulnerability sources are
-> configured in the browser (secrets encrypted, write-only), and a Sources page explains every data source and
-> shows the exact scripts the scanners run. See the [changelog](https://github.com/uhlix-net/securitas/blob/main/CHANGELOG.md)
-> and the upgrade notes there.
+> **0.6.0** adds compliance exceptions (baseline or per server, shown as *Accepted* in yellow), the **Securitas
+> agent** for Linux (one-line install; Securitas copies the audit checks at scan time so every host runs the same
+> content), [benchmark packages built from the official CIS documents](https://github.com/uhlix-net/securitas-benchmarks),
+> a compliance report by test, a Certificates page and a friendlier schedule picker. See the
+> [changelog](https://github.com/uhlix-net/securitas/blob/main/CHANGELOG.md).
 
 ## Features
 
@@ -16,6 +17,9 @@ results as web pages behind a sign-in, with an **Export to PDF** button.
   - **Kubernetes:** reads the vulnerability reports that [Trivy Operator](https://aquasecurity.github.io/trivy-operator/) keeps in the cluster.
   - **Linux (RHEL family):** connects over SSH and lists pending security advisories with `dnf updateinfo`.
   - **Windows:** connects over WinRM, reads the OS build and compares it with Microsoft's monthly security release data.
+- **CIS compliance checks** for Linux (with the Securitas agent) and Windows Server, against
+  [benchmark packages built from the official CIS documents](https://github.com/uhlix-net/securitas-benchmarks):
+  per-host and per-test results, scores, score history, and exceptions (baseline or per server) with reasons.
 - **Run scans whenever you want**
   - Operators and admins can start a scan of any platform from the Scans page.
   - Each platform also has its own cron schedule, which admins and operators can change in the browser.
@@ -61,7 +65,7 @@ curl -fsS --cacert /path/ca.pem https://securitas.example.com/agent/install.sh |
 **Or by hand / with Ansible**, using the RPM from Securitas or from the [GitHub release](https://github.com/uhlix-net/securitas/releases):
 
 ```bash
-dnf install https://github.com/uhlix-net/securitas/releases/download/vX.Y.Z/securitas-agent-X.Y.Z-1.x86_64.rpm
+dnf install https://github.com/uhlix-net/securitas/releases/download/v0.6.0/securitas-agent-0.6.0-1.x86_64.rpm
 securitas-agent-setup --user svc-securitas --key 'ssh-ed25519 AAAA... securitas' --from 10.0.0.11,10.0.0.12
 ```
 

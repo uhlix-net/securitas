@@ -1,8 +1,9 @@
 # Changelog
 
-## 0.6.0 (beta)
+## 0.6.0 (2026-11-24)
 
-Compliance exceptions: accept a failed rule, for every host or for one.
+Compliance you can tailor and trust: exceptions for failed rules, a Linux agent that runs the same checks on every
+host, benchmark packages built from the official CIS documents, and a compliance report by test.
 
 ### New
 
