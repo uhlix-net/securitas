@@ -12,7 +12,8 @@
       <td>{{ u.display_name }}</td>
       <td>{{ {"local": "Local", "ldap": "LDAP", "oidc": "SSO"}[u.source] }}</td>
       <td>{% if u.disabled %}<span class="badge b-off">Disabled</span>{% elif u.role %}<span class="badge b-role">{{ ROLE_LABEL[u.role] }}</span>{% else %}<span class="badge b-off">No role</span>{% endif %}</td>
-      <td>{% if u.id != user.id %}
+      <td>{% if u.source == "local" and u.username == BUILTIN_ADMIN %}<span class="muted small">Built-in admin: always Admin</span>
+      {% elif u.id != user.id %}
         <form method="post" action="/settings/users/{{ u.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="role">
         <div class="row"><select name="role" aria-label="Role for {{ u.username }}">
           {% if u.source != "local" %}<option value=""{% if not u.role_override %} selected{% endif %}>From groups</option>{% endif %}
@@ -21,7 +22,7 @@
       {% endif %}</td>
       <td class="small">{% for g in u.groups or [] %}{{ g.split(",")[0].replace("CN=", "").replace("cn=", "") }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
       <td class="date">{{ fmt(u.last_login_at) }}</td>
-      <td>{% if u.id != user.id and u.username != bootstrap %}
+      <td>{% if u.id != user.id and u.username != bootstrap and not (u.source == "local" and u.username == BUILTIN_ADMIN) %}
         <form method="post" action="/settings/users/{{ u.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="{{ 'enable' if u.disabled else 'disable' }}"><button class="btn small">{{ "Enable" if u.disabled else "Disable" }}</button></form>
         {% if u.source == "local" %}
         <form method="post" action="/settings/users/{{ u.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="password">
@@ -29,7 +30,7 @@
         {% endif %}
         <form method="post" action="/settings/users/{{ u.id }}"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><input type="hidden" name="action" value="delete">
           <div class="row"><label class="inline"><input type="checkbox" name="confirm" required> Confirm</label><button class="btn small danger">Delete</button></div></form>
-      {% elif u.username == bootstrap %}<span class="muted small">Managed by the deployment</span>{% endif %}</td>
+      {% elif u.username == bootstrap or (u.source == "local" and u.username == BUILTIN_ADMIN) %}<span class="muted small">Managed by the deployment</span>{% endif %}</td>
     </tr>
     {% endfor %}
     </tbody></table></div>
@@ -52,7 +53,7 @@
   <div class="scroll"><table>
     <thead><tr><th>Permission</th><th>Viewer</th><th>Operator</th><th>Admin</th></tr></thead>
     <tbody>
-    {% for label, perm in (("View the report and scan history, export PDF", "view"), ("Run scans now", "scan.run"), ("Change schedules", "schedule.edit"), ("Change scan targets", "target.edit"), ("Manage users", "user.manage"), ("Authentication settings and role mappings", "auth.manage"), ("Audit log", "audit.view")) %}
+    {% for label, perm in (("View the report and scan history, export PDF", "view"), ("Run scans now", "scan.run"), ("Change schedules", "schedule.edit"), ("Change scan targets", "target.edit"), ("Manage users", "user.manage"), ("Authentication settings and role mappings", "auth.manage"), ("Compliance exceptions (accept failed rules)", "compliance.exception"), ("Replace the web site's TLS certificate", "tls.manage"), ("Audit log", "audit.view")) %}
     <tr><td>{{ label }}</td>{% for r in ROLES %}<td>{{ "Yes" if can(r, perm) else "" }}</td>{% endfor %}</tr>
     {% endfor %}
     </tbody></table></div>

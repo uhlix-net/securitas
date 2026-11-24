@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/release-0.5.0.png" alt="Securitas: Vulnerabilities and Compliance for Kubernetes, Linux and Windows" width="100%">
+  <img src="docs/release-0.6.0.png" alt="Securitas: Vulnerabilities and Compliance for Kubernetes, Linux and Windows" width="100%">
 </p>
 
 # Securitas
@@ -26,11 +26,11 @@ serves the results as web pages with an **Export to PDF** button.
   last scanned, and its counts: systems, priority CVEs, known exploited, critical and high. Each platform
   name links to its section of the full report at `/report`. The same table opens the report and the PDF.
   Below it, a graph of distinct CVEs per platform over time (daily for 7 days, weekly for 3 months or
-  monthly for a year; weekly by default) and a pie chart per platform of its CVEs by severity.
+  monthly for a year; daily by default) and a pie chart per platform of its CVEs by severity.
 - **Failed scans are flagged, not hidden.** If a platform's latest scan failed or was only partly
   successful, the summary, the report and the PDF say so and show the error. Older results stay
   visible but are marked as older; a platform that has never been scanned successfully still gets a section saying so.
-- **Scheduled and on-demand scans, with history.** Each platform has its own cron schedule.
+- **Scheduled and on-demand scans, with history.** Each platform has its own schedule (every hour, day, chosen weekdays or day of the month; cron underneath, with an advanced cron field).
   Operators can start a scan at any time. Every past scan can be opened and exported as it was at the time,
   and the history can be filtered by platform.
 - **Settings in the browser.** Admins configure LDAP, single sign-on, the scan accounts (SSH key,
@@ -51,9 +51,13 @@ serves the results as web pages with an **Export to PDF** button.
   Several versions can be loaded side by side; one per operating system is active. Pick a profile (Level 1
   Server by default), switch single rules on or off, download the original zip, or remove a benchmark.
   Nothing in an uploaded zip is run.
+- **Benchmark packages from the official CIS document.** `tools/cis_package.py` reads the CIS benchmark PDF and
+  packages every recommendation (ID, title, Automated/Manual, profiles) with the checks that test it, so results
+  follow the official benchmark.
 - **Linux compliance checks.** Compliance scans check each Linux host against its active benchmark with Goss and
-  the benchmark's Ansible-Lockdown audit content, through one root-owned wrapper the scan account may run with
-  sudo (nothing else). Per host: rules passed, failed, not applicable and without an automated check, a score,
+  the benchmark's Ansible-Lockdown audit content, through the **Securitas agent** (an RPM: one root-owned wrapper
+  the scan account may run with sudo, nothing else). Securitas copies the audit content at scan time, so every
+  host runs the same checks. Per host: rules passed, failed, not applicable and without an automated check, a score,
   and every rule's tests.
 - **Windows compliance checks.** The same for Windows Server, with syver (the Goss fork for Windows) and the
   benchmark's audit content, run as SYSTEM by a scheduled task the scan account may only start. Domain
@@ -183,6 +187,39 @@ same page, admins can look a user up to see their DN, groups and the resulting r
 [docs/target-setup.md](docs/target-setup.md) walks through preparing Linux and Windows hosts: the scan accounts for
 vulnerability scans, and Goss/syver, the audit content and the limited sudo rule or scheduled task for compliance
 checks. Ready-made files and example Ansible playbooks are in [`contrib/`](contrib).
+
+### Installing the agent on Linux targets (compliance checks)
+
+Linux compliance checks need the **Securitas agent** on each host: a small RPM (`securitas-agent`, Rocky Linux /
+RHEL / AlmaLinux 8 and 9, x86_64) with the compliance wrapper, a checksum-pinned Goss and a setup command. It
+creates the scan account (password locked), authorizes Securitas's SSH key and adds **one** sudo rule: the
+account may run only `/usr/local/sbin/securitas-cis-audit` as root. Nothing runs on the host between scans.
+
+**One line, on each host as root** (Securitas serves the script and the RPM; set the scan account and key in
+*Settings → Scan credentials* first, and the allowed source addresses in *Settings → Agent*):
+
+```bash
+curl -fsS https://securitas.example.com/agent/install.sh | sudo bash
+# private CA the host does not trust yet:
+curl -fsS --cacert /path/ca.pem https://securitas.example.com/agent/install.sh | sudo SECURITAS_CA=/path/ca.pem bash
+```
+
+**Or by hand / with Ansible**, using the RPM from Securitas or from the [GitHub release](https://github.com/uhlix-net/securitas/releases):
+
+```bash
+dnf install https://github.com/uhlix-net/securitas/releases/download/v0.6.0/securitas-agent-0.6.0-1.x86_64.rpm
+securitas-agent-setup --user svc-securitas --key 'ssh-ed25519 AAAA... securitas' --from 10.0.0.11,10.0.0.12
+```
+
+Then add the host under **Targets**, run a vulnerability scan once (so its OS is known) and a compliance scan.
+`securitas-agent-setup --remove` removes the sudo rule and the key; `dnf remove securitas-agent` removes the agent
+(the account is kept).
+
+At scan time Securitas copies the benchmark's audit content (uploaded once per benchmark on its page) to a random
+hidden file in `/tmp`; the wrapper, as root, unpacks it into a new root-only directory, runs Goss read-only and
+deletes both. Every host runs exactly the same content, so there is no drift between hosts. Trust: whoever
+controls Securitas decides what the checks run as root on these hosts, as with Semaphore or a credentialed
+Tenable scan; protect Securitas's admin accounts and SSH key accordingly.
 
 ### Linux scans
 

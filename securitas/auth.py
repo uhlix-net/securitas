@@ -34,6 +34,9 @@ PERMISSIONS = {
     "credentials.edit": "admin",
     "sources.edit": "admin",
     "compliance.edit": "admin",    # upload, activate, configure and remove benchmarks (viewers can browse them)
+    "compliance.exception": "admin",
+    "tls.manage": "admin",
+    "agent.manage": "admin",       # Settings > Agent: install instructions and which addresses may connect         # Settings > Certificates: replace the web site's TLS certificate   # accept a failed rule (baseline or server exception); viewers can read them
 }
 _ph = PasswordHasher()
 _DUMMY = _ph.hash(secrets.token_urlsafe(16))   # verified on unknown users so timing does not reveal them

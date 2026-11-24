@@ -1,30 +1,10 @@
 {% extends "base.html" %}
+{% from "_content.html" import content %}
 {% block content %}
 <section>
   <p class="small"><a href="/compliance/scans/{{ r.scan_id }}">← Compliance scan #{{ r.scan_id }}</a></p>
   <h2><span class="mono">{{ r.host }}</span>{% if r.counts.score is not none %} <span class="badge b-done">{{ r.counts.score }}%</span>{% endif %}</h2>
-  <p class="sub">{{ r.os }} · checked {{ fmt(r.scanned_at) }} against {% if r.benchmark_id %}<a class="mono" href="/compliance/benchmarks/{{ r.benchmark_id }}">{{ r.benchmark_key }}</a>{% else %}<span class="mono">{{ r.benchmark_key }}</span> (since removed){% endif %} ({{ r.benchmark_name }}, profile {{ r.profile }}). {{ r.counts.checked }} rules checked: {{ r.counts.pass }} passed, {{ r.counts.fail }} failed, {{ r.counts.skip }} not applicable, {{ r.counts.notest }} without an automated check (manual review).</p>
-  <form method="get" class="filters">
-    <div class="row">
-      <div><label for="cs">Result</label><select id="cs" name="status"><option value="">All (failed first)</option>{% for x in statuses %}<option value="{{ x }}"{% if st == x %} selected{% endif %}>{{ CSTATUS_LABEL[x] }}</option>{% endfor %}</select></div>
-      <div><label for="cq">Search</label><input id="cq" type="text" name="q" value="{{ q }}" placeholder="5.1 or ssh"></div>
-      <div><button class="btn">Filter</button>{% if st or q %} <a href="?">Clear</a>{% endif %}</div>
-    </div>
-  </form>
-  <p class="small muted">{{ rules|length }} of {{ r.counts.checked }} rules shown.</p>
-  {% if rules %}
-  <div class="scroll"><table>
-    <thead><tr><th>Rule</th><th>Title</th><th>Result</th><th>Tests</th></tr></thead>
-    <tbody>
-    {% for x in rules %}
-    <tr>
-      <td class="mono nowrap">{{ x.id }}</td>
-      <td>{{ x.title }}{% if x.kind == "AUDIT" %} <span class="small muted">(manual in the benchmark)</span>{% endif %}</td>
-      <td class="nowrap">{% if x.status == "fail" %}<span class="badge b-failed">Failed</span>{% elif x.status == "pass" %}<span class="badge b-done">Passed</span>{% elif x.status == "skip" %}<span class="badge b-off">Not applicable</span>{% else %}<span class="badge b-off">No automated check</span>{% endif %}</td>
-      <td class="small">{% for t in x.tests %}<div{% if t.result == "fail" %} class="hot"{% endif %}>{{ "✗" if t.result == "fail" else "✓" if t.result == "pass" else "?" if t.result == "manual" else "–" }} {{ t.title.split(" | ")[-1] if " | " in t.title else t.title }}{% if t.result == "fail" and t.message %}<br><span class="mono muted">{{ t.message }}</span>{% endif %}</div>{% endfor %}</td>
-    </tr>
-    {% endfor %}
-    </tbody></table></div>
-  {% endif %}
+  <p class="sub">{{ r.os }} · checked {{ fmt(r.scanned_at) }} against {% if r.benchmark_id %}<a class="mono" href="/compliance/benchmarks/{{ r.benchmark_id }}">{{ r.benchmark_key }}</a>{% else %}<span class="mono">{{ r.benchmark_key }}</span> (since removed){% endif %} ({{ r.benchmark_name }}, profile {{ r.profile }}). {{ r.counts.checked }} rules checked: {{ r.counts.pass }} passed, {{ r.counts.get("accepted", 0) }} accepted (failed, with an exception), {{ r.counts.fail }} failed, {{ r.counts.skip }} not applicable, {{ r.counts.notest }} without an automated check (manual review).{% if r.content %} Audit content: {{ content(r.content) }}.{% endif %}</p>
+{% include "_comprules.html" %}
 </section>
 {% endblock %}

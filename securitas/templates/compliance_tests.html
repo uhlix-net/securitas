@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "_report_tabs.html" %}
+<section>
+  <h2>Compliance Report by Test</h2>
+  <p class="sub">Every rule of each active benchmark and how it came out on the targets' newest checks. Select a rule number to see that test on every target. Rules switched off by the benchmark's profile (or on its page) are listed but not checked.</p>
+  <form method="get" class="filters"><div class="row">
+    <div><label for="tq">Search</label><input id="tq" type="text" name="q" value="{{ q }}" placeholder="5.1 or ssh"></div>
+    <div><label for="to">Show</label><select id="to" name="only"><option value="">All rules</option><option value="checked"{% if only == "checked" %} selected{% endif %}>Checked rules only</option><option value="fail"{% if only == "fail" %} selected{% endif %}>Rules that failed somewhere</option></select></div>
+    <div><button class="btn">Filter</button>{% if q or only %} <a href="?">Clear</a>{% endif %}</div>
+  </div></form>
+</section>
+{% if not benches %}<section><p class="muted">No benchmark is active. Load one under <a href="/compliance/benchmarks">Benchmarks</a>.</p></section>{% endif %}
+{% for x in benches %}{% set b = x.b %}
+<section id="b-{{ b.id }}">
+  <h2>{{ PLATFORM_LABEL[b.platform] }}: <a class="mono" href="/compliance/benchmarks/{{ b.id }}">{{ b.key }}</a></h2>
+  <p class="sub">{{ b.os_label }} · {{ x.checked }} of {{ x.targets }} matched targets checked · {{ x.rows|length }} of {{ x.total }} rules shown.</p>
+  {% if x.rows %}
+  <div class="scroll"><table>
+    <thead><tr><th>Rule</th><th>Title</th><th class="n">Passed</th><th class="n">Accepted</th><th class="n">Failed</th><th class="n">Not applicable</th><th class="n">No automated check</th></tr></thead>
+    <tbody>
+    {% for r in x.rows %}
+    <tr>
+      <td class="mono nowrap"><a href="/compliance/report/tests/{{ b.id }}/{{ r.id }}">{{ r.id }}</a></td>
+      <td>{{ r.title }} <span class="small muted">{{ CIS_KIND(r.assessment) }}</span>{% if not r.on %} <span class="badge b-off">Not checked</span>{% endif %}</td>
+      <td class="n">{{ r.c.get("pass", 0) or "" }}</td>
+      <td class="n{% if r.c.get('accepted') %} acc{% endif %}">{{ r.c.get("accepted", 0) or "" }}</td>
+      <td class="n{% if r.c.get('fail') %} hot{% endif %}">{{ r.c.get("fail", 0) or "" }}</td>
+      <td class="n">{{ r.c.get("skip", 0) or "" }}</td>
+      <td class="n">{{ r.c.get("notest", 0) or "" }}</td>
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+  {% else %}<p class="muted">No rules match.</p>{% endif %}
+</section>
+{% endfor %}
+{% endblock %}

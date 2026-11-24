@@ -3,12 +3,14 @@
 All pages need a signed-in user. Pages are rendered on the server and contain no scripts, so the Content
 Security Policy allows none. Every form carries a per-session CSRF token.
 """
+import collections
 import copy
 import datetime
 import ipaddress
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 import urllib.parse
@@ -18,10 +20,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlalchemy import String, cast, delete, func, select
 
-from . import __version__, auth, charts, compliance, render, report, scan_linux, scan_windows, sources
+from . import __version__, auth, charts, compliance, render, report, scan_linux, scan_windows, schedule_ui, sources
 from .config import PLATFORMS
 from .settings import FIELDS, SettingsError
-from .db import (AuditEvent, Benchmark, BenchmarkFile, ComplianceResult, ComplianceScan, ComplianceSchedule, LoginState, PlatformResult, ResultStats, RoleMapping,
+from .db import (AuditEvent, Benchmark, BenchmarkFile, BenchmarkRule, ComplianceException, ComplianceResult, ComplianceScan, ComplianceSchedule, LoginState, PlatformResult, ResultStats, RoleMapping,
                  Scan, Schedule, Session, Target, User, audit, get_setting, set_setting, utcnow)
 from .jobs import STATUS_LABEL, fmt_time, next_run, valid_cron
 
@@ -37,6 +39,10 @@ MESSAGES = {
     "hostkey": "Host key cleared; the next scan records the key the host presents.",
     "loggedout": "You are signed out.",
     "imported": "Benchmark imported.", "activated": "Active benchmark changed.",
+    "audit": "Audit content saved. The next Linux compliance scan copies it to the hosts.",
+    "cert": "Certificate replaced. The ingress serves it within a minute; reload the page to see it.",
+    "exception": "Exception saved. The rule shows as Accepted from the next compliance scan.",
+    "unexcepted": "Exception removed. The rule shows as Failed again from the next compliance scan.",
 }
 ERRORS = {
     "csrf": "The form expired. Please try again.", "noplat": "Pick at least one platform or host.",
@@ -44,6 +50,9 @@ ERRORS = {
     "exists": "That name is already in use.", "pw": "", "self": "You cannot change or remove your own account here.",
     "lastadmin": "At least one admin must remain.", "host": "Enter a host name.", "group": "Enter a group name.",
     "managed": "This account's password is managed by the deployment (SECURITAS_ADMIN_PASSWORD).",
+    "audit": "", "agentfrom": "Enter IP addresses or networks separated by commas (e.g. 192.168.11.42,10.42.0.0/16).",
+    "builtin": "The built-in admin account always keeps the Admin role and cannot be disabled.",
+    "reason": "Give a reason for the exception.", "scope": "Pick BASELINE EXCEPTION or SERVER EXCEPTION.",
 }
 
 
@@ -104,7 +113,8 @@ class App:
         q = request.query_params
         base = {"request": request, "title": ctx.get("title", ""), "css": self.css, "refresh": refresh,
                 "theme": (u.theme if u else "system"), "ok": MESSAGES.get(q.get("ok", ""), ""),
-                "err": ERRORS.get(q.get("err", ""), "") or ctx.pop("error", ""), "path": request.url.path}
+                "err": ERRORS.get(q.get("err", ""), "") or (q.get("msg", "")[:300] if q.get("err") == "audit" else "")
+                or ctx.pop("error", ""), "path": request.url.path}
         body = self.env.get_template(name).render({**base, **ctx})
         return HTMLResponse(body, status_code=status, headers=HEADERS)
 
@@ -273,6 +283,53 @@ def create_app(cfg, db, jobs):
         return resp
 
     # ------------------------------------------------------------ health
+
+    # ------------------------------------------------------------ Linux agent (public: no secrets in either)
+
+    def agent_params(request):
+        from . import agent
+        eff = a.eff()
+        with db.Session() as s:
+            allowed = get_setting(s, "agent_ssh_from", "") or ""
+        base = (cfg.base_url or str(request.base_url)).rstrip("/")
+        return base, eff.ssh_user or "svc-securitas", agent.public_key(eff), allowed
+
+    @api.get("/agent/install.sh")
+    def agent_install_script(request: Request):
+        from . import agent
+        base, u, k, allowed = agent_params(request)
+        return PlainTextResponse(agent.install_script(base, u, k, allowed), headers=HEADERS)
+
+    @api.get("/agent/securitas-agent.rpm")
+    def agent_rpm():
+        from . import agent
+        p = agent.rpm_path()
+        if not p:
+            raise HTTPException(404, "This Securitas image has no agent RPM.")
+        with open(p, "rb") as f:
+            data = f.read()
+        return Response(data, media_type="application/x-rpm", headers={
+            **HEADERS, "Content-Disposition": 'attachment; filename="%s"' % os.path.basename(p)})
+
+    @api.get("/settings/agent")
+    def agent_page(request: Request, user=Depends(a.need("agent.manage"))):
+        from . import agent
+        base, u, k, allowed = agent_params(request)
+        p = agent.rpm_path()
+        return a.page(request, "agent.html", {"user": user, "sess": request.state.sess, "title": "Agent", "base": base,
+                                              "scan_user": u, "pubkey": k, "allowed": allowed,
+                                              "rpm": os.path.basename(p) if p else ""})
+
+    @api.post("/settings/agent")
+    async def agent_save(request: Request, user=Depends(a.need("agent.manage"))):
+        form = await a.csrf(request)
+        allowed = ",".join(x.strip() for x in str(form.get("allowed", "")).replace("\n", ",").split(",") if x.strip())
+        if allowed and not re.fullmatch(r"[0-9a-fA-F.:/*,-]+", allowed):
+            return go("/settings/agent", err="agentfrom")
+        with db.Session() as s, s.begin():
+            set_setting(s, "agent_ssh_from", allowed)
+            a.audit(s, request, "agent.allowed_from", allowed or "(any address)")
+        return go("/settings/agent", ok="saved")
 
     @api.get("/healthz")
     def healthz():
@@ -571,20 +628,62 @@ def create_app(cfg, db, jobs):
 
     # ------------------------------------------------------------ schedules
 
+    def schedule_page(request, user, kind, error="", status=200, keep=None):
+        """Vulnerability or compliance schedules with the picker. keep: {platform: form fields} to show again after
+        a mistake."""
+        model = ComplianceSchedule if kind == "compliance" else Schedule
+        with db.Session() as s:
+            rows = {x.platform: x for x in s.scalars(select(model)).all()}
+            s.expunge_all()
+        default = "0 6 * * 0" if kind == "compliance" else "0 5 * * *"
+        pick = {p: schedule_ui.from_cron(rows[p].cron if p in rows else default) for p in PLATFORMS}
+        hide_cron = kind == "compliance"         # compliance schedules: picker only, cron stays behind the scenes
+        if hide_cron:
+            pick = {p: f if f["freq"] != "advanced" else {**schedule_ui.from_cron(default), "custom": True}
+                    for p, f in pick.items()}
+        for p, f in (keep or {}).items():
+            pick[p] = f
+        info = {p: {"text": schedule_ui.describe(r.cron, cfg.timezone),
+                    "next": schedule_ui.next_runs(r.cron, cfg.timezone) if r.enabled else []} for p, r in rows.items()}
+        extra = {"checker": COMPLIANCE_CHECKER, "has_checker": {p: p in jobs.compliance_scanners for p in PLATFORMS}} \
+            if kind == "compliance" else {}
+        return a.page(request, "schedules.html", {
+            "user": user, "sess": request.state.sess, "kind": kind, "rows": rows, "pick": pick, "info": info,
+            "title": "Compliance schedules" if kind == "compliance" else "Vulnerability schedules",
+            "base": "/compliance/schedules" if kind == "compliance" else "/vulnerabilities/schedules",
+            "freqs": schedule_ui.FREQS, "weekdays": schedule_ui.WEEKDAYS, "max_monthday": schedule_ui.MAX_MONTHDAY,
+            "hide_cron": hide_cron,
+            "error": error, **extra}, status)
+
+    def schedule_form(form):
+        """(cron, picker fields as entered) from a schedule form; raises ScheduleError with the picker fields."""
+        # no repeat chosen but a cron given (older forms, scripts): treat it as Advanced
+        f = {"freq": form.get("freq") or ("advanced" if form.get("cron") else ""), "hour": form.get("hour", ""), "minute": form.get("minute", ""),
+             "weekday": form.getlist("weekday"), "monthday": form.get("monthday", ""), "cron": form.get("cron", "")}
+        shown = {"freq": f["freq"], "hour": int(f["hour"]) if str(f["hour"]).isdigit() else 5,
+                 "minute": int(f["minute"]) if str(f["minute"]).isdigit() else 0,
+                 "weekdays": [int(d) for d in f["weekday"] if str(d).isdigit()],
+                 "monthday": int(f["monthday"]) if str(f["monthday"]).isdigit() else 1, "cron": str(f["cron"])}
+        try:
+            return schedule_ui.to_cron(f), shown
+        except schedule_ui.ScheduleError as e:
+            e.shown = shown
+            raise
+
     @api.get("/vulnerabilities/schedules")
     def schedules(request: Request, user=Depends(a.need("schedule.edit"))):
-        with db.Session() as s:
-            rows = {x.platform: x for x in s.scalars(select(Schedule)).all()}
-        return a.page(request, "schedules.html", {"user": user, "sess": request.state.sess, "title": "Vulnerability schedules",
-                                                  "rows": rows, "base": "/vulnerabilities/schedules", "kind": "vulnerability"})
+        return schedule_page(request, user, "vulnerability")
 
     @api.post("/vulnerabilities/schedules/{platform}")
     async def schedule_save(request: Request, platform: str, user=Depends(a.need("schedule.edit"))):
         form = await a.csrf(request)
         if platform not in PLATFORMS:
             raise HTTPException(404, "Unknown platform.")
-        cron = " ".join(str(form.get("cron", "")).split())
         enabled = form.get("enabled") == "on"
+        try:
+            cron, _ = schedule_form(form)
+        except schedule_ui.ScheduleError as e:
+            return schedule_page(request, user, "vulnerability", "%s: %s" % (PLATFORM_LABEL[platform], e), 400, {platform: e.shown})
         if not valid_cron(cron):
             return go("/vulnerabilities/schedules", err="cron")
         with db.Session() as s, s.begin():
@@ -703,6 +802,8 @@ def create_app(cfg, db, jobs):
             u = s.get(User, uid)
             if u is None:
                 raise HTTPException(404, "No such user.")
+            if u.source == "local" and u.username == cfg.admin_username and action in ("role", "disable"):
+                return go("/settings/users", err="builtin")      # the break-glass account always stays an admin
             if action == "role":
                 role = str(form.get("role", ""))
                 if u.source == "local":
@@ -868,8 +969,27 @@ def create_app(cfg, db, jobs):
         ("users", "Users", "user.manage", "Local accounts (add, reset passwords, disable), and LDAP and SSO users with their roles."),
         ("authentication", "Authentication", "auth.manage", "Local sign-in, LDAP and single sign-on settings, group to role mappings."),
         ("credentials", "Scan credentials", "credentials.edit", "The SSH account and key for Linux scans and the WinRM account for Windows scans, with a connection test."),
+        ("agent", "Agent", "agent.manage", "Install the Securitas agent on Linux hosts for compliance checks: the one-line installer, the RPM and the addresses allowed to connect."),
+        ("certificates", "Certificates", "tls.manage", "The web site's TLS certificate: see the one in use and replace it with a new certificate and key (PEM or PFX)."),
     ]
     a.env.globals["SETTINGS_PAGES"] = SETTINGS_PAGES
+    a.env.globals["BUILTIN_ADMIN"] = cfg.admin_username
+    # CIS marks each recommendation Automated or Manual; Ansible-Lockdown roles tag them PATCH or AUDIT
+    # the official CIS label of a recommendation (from a Securitas benchmark package); "" when not known
+    a.env.globals["CIS_KIND"] = lambda a_: "(automated)" if a_ == "Automated" else "(manual)" if a_ == "Manual" else ""
+
+    def assessments(s, bench_name):
+        """{rule_id: Automated|Manual} for a benchmark name, from the loaded benchmarks that carry CIS labels
+        (newest first), so older results and exceptions show the label too."""
+        out = {}
+        rows = s.execute(select(BenchmarkRule.rule_id, BenchmarkRule.assessment, Benchmark.key)
+                         .join(Benchmark, BenchmarkRule.benchmark_id == Benchmark.id)
+                         .where(BenchmarkRule.assessment != "").order_by(Benchmark.uploaded_at.desc())).all()
+        for rid, asm, key in rows:
+            if scan_compliance.bench_name(key) == bench_name:
+                out.setdefault(rid, asm)
+        return out
+    a.env.globals["describe"] = lambda cron: schedule_ui.describe(cron, cfg.timezone)
     a.env.globals["settings_for"] = lambda role: [p for p in SETTINGS_PAGES if auth.can(role, p[2])]
     # Top-level sections and their pages: (path, label, permission). Vulnerability scans and reports keep their
     # old addresses (/, /report, /scans) so bookmarks and PDF links still work.
@@ -878,8 +998,8 @@ def create_app(cfg, db, jobs):
                             ("/vulnerabilities/schedules", "Schedules", "schedule.edit"),
                             ("/vulnerabilities/sources", "Sources", "view")],
         "compliance": [("/compliance", "Summary", "view"), ("/compliance/report", "Report", "view"),
-                       ("/compliance/scans", "Scans", "view"), ("/compliance/schedules", "Schedules", "schedule.edit"),
-                       ("/compliance/benchmarks", "Benchmarks", "view")],
+                       ("/compliance/scans", "Scans", "view"), ("/compliance/exceptions", "Exceptions", "view"),
+                       ("/compliance/schedules", "Schedules", "schedule.edit"), ("/compliance/benchmarks", "Benchmarks", "view")],
     }
     # Top menu after Vulnerabilities and Compliance: (path, label, permission); Settings comes last.
     a.env.globals["TOP_PAGES"] = [("/targets", "Targets", "target.edit"), ("/audit", "Audit log", "audit.view")]
@@ -952,6 +1072,91 @@ def create_app(cfg, db, jobs):
                 "key_file": cfg.ssh_key_file, "can_store": a.settings.can_store_secrets,
                 "targets": s.scalars(select(Target).where(Target.enabled.is_(True)).order_by(Target.platform, Target.host)).all(),
                 "known_hosts": bool(eff.ssh_known_hosts), **extra}
+
+    # ------------------------------------------------------------ admin: TLS certificates
+
+    TM = a.need("tls.manage")
+
+    def cert_page(request, user, status=200, **extra):
+        from . import k8s, tlscert
+        current = []
+        for name in cfg.tls_secrets:
+            row = {"name": name, "info": None, "chain": [], "error": ""}
+            try:
+                pem, _ = k8s.get_tls_secret(cfg, name)
+                certs = x509_certs(pem)
+                if certs:
+                    row["info"] = tlscert.info(certs[0])
+                    row["chain"] = [tlscert.info(c) for c in certs[1:]]
+                    row["missing"] = [h for h in cfg.tls_hosts if not tlscert.covers(certs[0], h)]
+                else:
+                    row["error"] = "The Secret holds no certificate."
+            except Exception as e:
+                row["error"] = str(e) or type(e).__name__
+            current.append(row)
+        return a.page(request, "certificates.html", {"user": user, "sess": request.state.sess, "title": "Certificates",
+                                                     "current": current, "hosts": cfg.tls_hosts, **extra}, status)
+
+    def x509_certs(pem):
+        from cryptography import x509
+        try:
+            return x509.load_pem_x509_certificates(pem) if pem else []
+        except ValueError:
+            return []
+
+    @api.get("/settings/certificates")
+    def certificates(request: Request, user=Depends(TM)):
+        return cert_page(request, user)
+
+    @api.post("/settings/certificates")
+    async def certificates_replace(request: Request, user=Depends(TM)):
+        """Check a new certificate and key; with action=replace (and Confirm ticked) write them to the Secret."""
+        from . import k8s, tlscert
+        await request.form(max_files=4, max_fields=12, max_part_size=tlscert.MAX_BYTES)
+        form = await a.csrf(request)
+
+        async def part(field, text_field=None):
+            up = form.get(field)
+            data = b""
+            if up is not None and hasattr(up, "read"):
+                try:
+                    data = await up.read(tlscert.MAX_BYTES + 1)
+                finally:
+                    await up.close()
+            if not data and text_field:
+                data = str(form.get(text_field, "")).strip().encode()
+            if len(data) > tlscert.MAX_BYTES:
+                raise tlscert.CertError("A file is too large for a certificate or key.")
+            return data
+
+        action = str(form.get("action", "check"))
+        secret = str(form.get("secret", "")) or (cfg.tls_secrets[0] if cfg.tls_secrets else "")
+        if secret not in cfg.tls_secrets:
+            return cert_page(request, user, 400, error="Securitas is not set up to manage this Secret.")
+        try:
+            leaf, chain, key = tlscert.load(cert=await part("cert", "cert_text"), key=await part("key", "key_text"),
+                                            chain=await part("chain", "chain_text"), pfx=await part("pfx"),
+                                            password=str(form.get("password", "")))
+        except tlscert.CertError as e:
+            return cert_page(request, user, 400, error=str(e))
+        errors, warnings = tlscert.check(leaf, chain, cfg.tls_hosts)
+        new = {"info": tlscert.info(leaf), "chain": [tlscert.info(c) for c in chain], "errors": errors, "warnings": warnings}
+        if action != "replace" or errors:
+            return cert_page(request, user, 400 if errors else 200, new=new, secret=secret,
+                             error="This certificate cannot be used: see the problems below." if errors else "")
+        if form.get("confirm") != "on":
+            return cert_page(request, user, 400, new=new, secret=secret, error="Tick Confirm to replace the certificate.")
+        crt, k = tlscert.secret_data(leaf, chain, key)
+        try:
+            k8s.put_tls_secret(cfg, secret, crt, k)
+        except Exception as e:
+            log.exception("replacing TLS Secret %s", secret)
+            return cert_page(request, user, 502, new=new, secret=secret, error="The Secret was not changed: %s" % e)
+        i = new["info"]
+        with db.Session() as s, s.begin():
+            a.audit(s, request, "tls.replaced", "%s: %s, issued by %s, serial %s, valid until %s, SHA-256 %s" % (
+                secret, i["subject"], i["issuer"], i["serial"], i["not_after"].strftime("%Y-%m-%d"), i["sha256"]))
+        return go("/settings/certificates", ok="cert")
 
     @api.get("/settings/credentials")
     def credentials(request: Request, user=Depends(CR)):
@@ -1110,14 +1315,18 @@ def create_app(cfg, db, jobs):
                     continue
                 if f["level"] in compliance.LEVEL_TAGS and f["level"] not in (r.levels or []):
                     continue
-                if f["kind"] in ("PATCH", "AUDIT") and r.kind != f["kind"]:
+                if f["kind"] in ("Automated", "Manual") and r.assessment != f["kind"]:
                     continue
                 if f["state"] == "on" and not on or f["state"] == "off" and on or f["state"] == "override" and r.override is None:
                     continue
                 shown.append((r, on))
             others = s.scalars(select(Benchmark).where(Benchmark.os_key == b.os_key, Benchmark.id != b.id)
                                .order_by(Benchmark.uploaded_at.desc())).all()
+            af, asettings = compliance.audit_settings_ctx(s, b)
+            aq = q.get("aq", "").strip()[:80]
             ctx = {"user": user, "sess": request.state.sess, "title": b.key, "b": b, "c": compliance.counts(b),
+                   "audit": af, "asettings": [x for x in asettings if not aq or aq.lower() in x[0].lower()],
+                   "asettings_total": len(asettings), "aq": aq, "audit_meta": (b.meta or {}).get("audit") or {},
                    "shown": shown, "f": f, "sections": sections, "profiles": compliance.profiles_for(b.platform),
                    "level_tags": [t for t in compliance.LEVEL_TAGS if any(t in (r.levels or []) for r in b.rules)], "states": RULE_STATES, "others": others,
                    "name": lambda b: compliance.display_name(b, cfg.timezone),
@@ -1166,6 +1375,34 @@ def create_app(cfg, db, jobs):
                 if n:
                     a.audit(s, request, "benchmark.rules_reset", "%s: %d override(s) removed" % (b.key, n))
                 msg = "saved" if n else "nochange"
+            elif action == "audit_settings":
+                shown = [k for k in form.getlist("shown") if re.fullmatch(r"[A-Za-z0-9_]{1,120}", k)]
+                meta = dict(b.meta or {})
+                cur = dict(meta.get("audit_settings") or {})
+                changed = []
+                for k in shown:
+                    v = str(form.get("set_" + k, ""))
+                    new = True if v == "on" else False if v == "off" else None
+                    if cur.get(k) != new:
+                        changed.append("%s=%s" % (k, {True: "on", False: "off", None: "default"}[new]))
+                        if new is None:
+                            cur.pop(k, None)
+                        else:
+                            cur[k] = new
+                meta["audit_settings"] = cur
+                b.meta = meta
+                if changed:
+                    a.audit(s, request, "benchmark.audit_settings", "%s: %s" % (b.key, ", ".join(changed)[:3000]))
+                msg = "saved" if changed else "nochange"
+                return go(back + "#audit", ok=msg)
+            elif action == "audit_remove":
+                f_ = s.scalar(select(BenchmarkFile).where(BenchmarkFile.benchmark_id == b.id, BenchmarkFile.kind == "audit"))
+                if f_ is None:
+                    return go(back, ok="nochange")
+                a.audit(s, request, "benchmark.audit_removed", "%s: %s (sha256 %s)" % (b.key, f_.filename, f_.sha256[:16]))
+                s.delete(f_)
+                meta = dict(b.meta or {}); meta.pop("audit", None); b.meta = meta
+                return go(back + "#audit", ok="deleted")
             elif action == "delete":
                 if form.get("confirm") != "on":
                     return go(back, err="csrf")
@@ -1180,11 +1417,60 @@ def create_app(cfg, db, jobs):
         safe = urllib.parse.urlencode({k: v[0] for k, v in q.items() if k in ("q", "section", "level", "kind", "state")})
         return go(back + ("?" + safe if safe else ""), ok=msg)
 
+    @api.post("/compliance/benchmarks/{bid}/audit")
+    async def benchmark_audit_upload(request: Request, bid: int, user=Depends(CE)):
+        """Upload (or replace) the benchmark's audit content zip (Ansible-Lockdown *-CIS-Audit)."""
+        from . import audit_bundle
+        await request.form(max_files=1, max_fields=6, max_part_size=compliance.MAX_ZIP + 1)
+        form = await a.csrf(request)
+        up = form.get("file")
+        back = "/compliance/benchmarks/%d" % bid
+        data, fname = b"", ""
+        if up is not None and hasattr(up, "read"):
+            fname = os.path.basename(str(up.filename or ""))[:255]
+            try:
+                data = await up.read(compliance.MAX_ZIP + 1)
+            finally:
+                await up.close()
+        with db.Session() as s, s.begin():
+            b = bench_or_404(s, bid)
+            try:
+                if not data:
+                    raise compliance.BenchmarkError("Choose the audit zip to upload.")
+                info = audit_bundle.parse_audit_zip(data, b)
+                audit_bundle.build(data, audit_bundle.audit_defaults(data))     # it must make a valid bundle
+            except compliance.BenchmarkError as e:
+                return go(back + "#audit", err="audit", msg=str(e)[:300])
+            import hashlib
+            sha = hashlib.sha256(data).hexdigest()
+            old = s.scalar(select(BenchmarkFile).where(BenchmarkFile.benchmark_id == b.id, BenchmarkFile.kind == "audit"))
+            if old is not None:
+                s.delete(old)
+                s.flush()
+            s.add(BenchmarkFile(benchmark_id=b.id, kind="audit", filename=fname or (info["top"] + ".zip"), sha256=sha,
+                                size=len(data), data=data, uploaded_by=user.username))
+            meta = dict(b.meta or {})
+            meta["audit"] = info
+            b.meta = meta
+            a.audit(s, request, "benchmark.audit_uploaded", "%s: %s (%s, %d files, sha256 %s)%s" % (
+                b.key, fname, info["top"], info["files"], sha[:16], "; replaced the previous one" if old else ""))
+        return go(back + "#audit", ok="audit")
+
+    @api.get("/compliance/benchmarks/{bid}/audit/download")
+    def benchmark_audit_download(request: Request, bid: int, user=Depends(CE)):
+        with db.Session() as s:
+            f_ = s.scalar(select(BenchmarkFile).where(BenchmarkFile.benchmark_id == bid, BenchmarkFile.kind == "audit"))
+            if f_ is None:
+                raise HTTPException(404, "No audit content is stored for this benchmark.")
+            data, fname = f_.data, f_.filename
+        return Response(data, media_type="application/zip", headers={
+            **HEADERS, "Content-Disposition": 'attachment; filename="%s"' % fname.replace('"', "")})
+
     @api.get("/compliance/benchmarks/{bid}/download")
     def benchmark_download(request: Request, bid: int, user=Depends(CE)):
         with db.Session() as s:
             b = bench_or_404(s, bid)
-            f = s.scalar(select(BenchmarkFile).where(BenchmarkFile.benchmark_id == b.id, BenchmarkFile.kind == "role"))
+            f = s.scalar(select(BenchmarkFile).where(BenchmarkFile.benchmark_id == b.id, BenchmarkFile.kind.in_(("role", "package"))))
             if f is None:
                 raise HTTPException(404, "The original file of this benchmark is not stored.")
             data, fname = f.data, f.filename or (b.key + ".zip")
@@ -1226,6 +1512,7 @@ def create_app(cfg, db, jobs):
                 "matched": sum(1 for x in lst if x["bench"]), "checked": len(res),
                 "benchmarks": sorted({x["bench"].key for x in lst if x["bench"]}),
                 "passed": sum(r.counts.get("pass", 0) for r in res), "failed": sum(r.counts.get("fail", 0) for r in res),
+                "accepted": sum(r.counts.get("accepted", 0) for r in res),
                 "score": round(sum(scores) / len(scores), 1) if scores else None,
                 "last": max((r.scanned_at for r in res), default=None), "checker": p in jobs.compliance_scanners,
                 "note": COMPLIANCE_CHECKER[p]}
@@ -1236,7 +1523,13 @@ def create_app(cfg, db, jobs):
             systems, active = compliance_systems(s)
             rows = [platform_row(p, systems.get(p, [])) for p in ("linux", "windows", "kubernetes")]
             sched = {x.platform: x for x in s.scalars(select(ComplianceSchedule)).all()}
-            ctx = {"user": user, "sess": request.state.sess, "title": "Compliance summary", "rows": rows,
+            crng = request.query_params.get("crange", report.DEFAULT_RANGE)
+            crng = crng if crng in report.RANGES else report.DEFAULT_RANGE
+            _, _, cbars = compliance_charts(s)
+            ctx = {"user": user, "sess": request.state.sess, "title": "Compliance summary", "rows": rows, "crange": crng,
+                   "cbars": cbars,
+                   "crange_switch": charts.range_switch(crng, "/compliance", "crange", "chistory"),
+                   "chistory": compliance_history_svg(crng),
                    "active": sorted(active.values(), key=lambda b: (b.platform, b.os_key)),
                    "counts": {b.id: compliance.counts(b) for b in active.values()}, "sched": sched,
                    "nbench": s.scalar(select(func.count(Benchmark.id))), "profiles": compliance.PROFILES,
@@ -1247,11 +1540,83 @@ def create_app(cfg, db, jobs):
     def compliance_report(request: Request, user=Depends(V)):
         with db.Session() as s:
             systems, active = compliance_systems(s)
-            ctx = {"user": user, "sess": request.state.sess, "title": "Compliance report", "systems": systems,
+            ctx = {"user": user, "sess": request.state.sess, "title": "Compliance report", "systems": systems, "report_tab": "target",
                    "active": sorted(active.values(), key=lambda b: (b.platform, b.os_key)),
                    "counts": {b.id: compliance.counts(b) for b in active.values()}, "checker": COMPLIANCE_CHECKER,
                    "profiles": compliance.PROFILES, "name": lambda b: compliance.display_name(b, cfg.timezone)}
             return a.page(request, "compliance_report.html", ctx)
+
+    def bench_results(systems, b):
+        """[(system, newest result or None)] for the targets matched to benchmark b. A result counts when it was
+        checked against a benchmark of the same name (e.g. RHEL9-CIS), so results from before a version switch
+        still show until the next scan."""
+        name = scan_compliance.bench_name(b.key)
+        out = []
+        for x in systems.get(b.platform, []):
+            if not x["bench"] or scan_compliance.bench_name(x["bench"].key) != name:
+                continue
+            r = x.get("result")
+            out.append((x, r if r and scan_compliance.bench_name(r.benchmark_key) == name else None))
+        return out
+
+    @api.get("/compliance/report/tests")
+    def compliance_report_tests(request: Request, user=Depends(V)):
+        """Every rule of each active benchmark with its results across the targets' newest checks."""
+        q = request.query_params.get("q", "").strip()[:100]
+        only = request.query_params.get("only", "")
+        with db.Session() as s:
+            systems, active = compliance_systems(s)
+            benches = []
+            for b in sorted(active.values(), key=lambda b: (b.platform, b.os_key)):
+                res = bench_results(systems, b)
+                status = {}       # rule id -> Counter of statuses over the targets
+                for _, r in res:
+                    for x in (r.rules if r else []) or []:
+                        status.setdefault(x.get("id"), collections.Counter())[x.get("status")] += 1
+                rows = []
+                for rule in b.rules:
+                    c = status.get(rule.rule_id, collections.Counter())
+                    if q and q.lower() not in (rule.rule_id + " " + rule.title).lower():
+                        continue
+                    if only == "fail" and not c.get("fail"):
+                        continue
+                    if only == "checked" and not compliance.rule_on(rule, b.profile):
+                        continue
+                    rows.append({"id": rule.rule_id, "title": rule.title, "assessment": rule.assessment,
+                                 "on": compliance.rule_on(rule, b.profile), "c": c,
+                                 "nores": sum(1 for _, r in res if r) - sum(c.values())})
+                benches.append({"b": b, "rows": rows, "targets": len(res), "checked": sum(1 for _, r in res if r),
+                                "total": len(b.rules)})
+            s.expunge_all()
+        return a.page(request, "compliance_tests.html", {
+            "user": user, "sess": request.state.sess, "title": "Compliance report by test", "report_tab": "test",
+            "benches": benches, "q": q, "only": only})
+
+    @api.get("/compliance/report/tests/{bid}/{rule_id}")
+    def compliance_report_test(request: Request, bid: int, rule_id: str, user=Depends(V)):
+        """One rule on every target matched to the benchmark: result, exception and the failed tests' output."""
+        with db.Session() as s:
+            b = bench_or_404(s, bid)
+            rule = next((r for r in b.rules if r.rule_id == rule_id), None)
+            if rule is None:
+                raise HTTPException(404, "%s has no rule %s." % (b.key, rule_id))
+            systems, _ = compliance_systems(s)
+            exc = {}
+            rows = []
+            for x, r in bench_results(systems, b):
+                if r is not None and r.benchmark_key not in exc:
+                    exc[r.benchmark_key] = jobs.exceptions_for(s, r.benchmark_key)
+                item = next((y for y in (r.rules or []) if y.get("id") == rule_id), None) if r else None
+                now = (exc.get(r.benchmark_key, {}).get((rule_id, x["host"])) or exc.get(r.benchmark_key, {}).get((rule_id, ""))) if r else None
+                rows.append({"x": x, "r": r, "item": item, "exc_now": now})
+            order = {"fail": 0, "accepted": 1, "pass": 2, "skip": 3, "notest": 4, None: 5}
+            rows.sort(key=lambda d: (order.get((d["item"] or {}).get("status")), d["x"]["host"]))
+            ctx = {"user": user, "sess": request.state.sess, "title": "%s · %s" % (rule_id, b.key), "report_tab": "test",
+                   "b": b, "rule": rule, "on": compliance.rule_on(rule, b.profile), "rows": rows,
+                   "c": collections.Counter((d["item"] or {}).get("status") for d in rows if d["item"]),
+                   "scopes": scan_compliance.SCOPE_LABEL}
+            s.expunge_all()
+        return a.page(request, "compliance_test.html", ctx)
 
     @api.get("/compliance/scans")
     def compliance_scans(request: Request, page: int = 1, user=Depends(V)):
@@ -1266,12 +1631,13 @@ def create_app(cfg, db, jobs):
             rows = s.scalars(select(ComplianceScan).order_by(ComplianceScan.id.desc()).offset((page - 1) * 50).limit(50)).all()
             stats = {}
             for r in s.scalars(select(ComplianceResult).where(ComplianceResult.scan_id.in_([x.id for x in rows]))).all() if rows else []:
-                d = stats.setdefault(r.scan_id, {"hosts": 0, "done": 0, "pass": 0, "fail": 0, "scores": []})
+                d = stats.setdefault(r.scan_id, {"hosts": 0, "done": 0, "pass": 0, "fail": 0, "accepted": 0, "scores": []})
                 d["hosts"] += 1
                 if r.status == "done":
                     d["done"] += 1
                     d["pass"] += r.counts.get("pass", 0)
                     d["fail"] += r.counts.get("fail", 0)
+                    d["accepted"] += r.counts.get("accepted", 0)
                     if r.counts.get("score") is not None:
                         d["scores"].append(r.counts["score"])
             s.expunge_all()
@@ -1330,14 +1696,128 @@ def create_app(cfg, db, jobs):
             if r is None or r.scan_id != sid:
                 raise HTTPException(404, "No such result.")
             s.expunge(r)
+        return a.page(request, "compliance_host.html", {"user": user, "sess": request.state.sess,
+                                                        "title": "%s · compliance scan #%d" % (r.host, sid),
+                                                        **rules_ctx(r, st, q, user)})
+
+    def rules_ctx(r, st, q, user, back=""):
+        """Context for _comprules.html: the check's rules (filtered, failed first) and the exceptions that apply now."""
         rules = [x for x in r.rules or [] if (not st or x.get("status") == st)
                  and (not q or q.lower() in (x.get("id", "") + " " + x.get("title", "")).lower())]
         order = {k: i for i, k in enumerate(scan_compliance.STATUSES)}
         if not st:
             rules.sort(key=lambda x: (order.get(x.get("status"), 9), compliance.sort_key(x["id"]) if x.get("id") else ""))
-        return a.page(request, "compliance_host.html", {"user": user, "sess": request.state.sess,
-                                                        "title": "%s · compliance scan #%d" % (r.host, sid), "r": r,
-                                                        "rules": rules, "st": st, "q": q, "statuses": scan_compliance.STATUSES})
+        with db.Session() as s:
+            exc = jobs.exceptions_for(s, r.benchmark_key)
+            labels = assessments(s, scan_compliance.bench_name(r.benchmark_key))
+        # the exception that applies to this host now (may differ from the one the scan recorded)
+        now = {x.get("id"): exc.get((x.get("id"), r.host)) or exc.get((x.get("id"), ""))
+               for x in rules if x.get("status") in ("fail", "accepted")}
+        return {"r": r, "rules": rules, "st": st, "q": q, "statuses": scan_compliance.STATUSES, "exc_now": now, "labels": labels,
+                "scopes": scan_compliance.SCOPE_LABEL, "may_except": auth.can(user.role, "compliance.exception"), "back": back}
+
+    @api.get("/compliance/targets/{tid}")
+    def compliance_target_view(request: Request, tid: int, user=Depends(V)):
+        """One target's compliance: its benchmark, every check (score history) and the newest check's rules."""
+        st = request.query_params.get("status", "")
+        q = request.query_params.get("q", "").strip()[:100]
+        with db.Session() as s:
+            t_ = s.get(Target, tid)
+            if t_ is None:
+                raise HTTPException(404, "There is no target #%d." % tid)
+            plan, _ = jobs.compliance_plan(s)
+            x = next((y for y in plan.get(t_.platform, []) if y["id"] == tid), None)
+            checks = s.scalars(select(ComplianceResult).where(ComplianceResult.platform == t_.platform,
+                                                              ComplianceResult.host == t_.host)
+                               .order_by(ComplianceResult.id.desc()).limit(100)).all()
+            s.expunge_all()
+        latest = next((c for c in checks if c.status == "done"), None)
+        ctx = {"user": user, "sess": request.state.sess, "title": "%s · compliance" % t_.host, "t": t_, "x": x,
+               "checks": checks, "latest": latest}
+        if latest:
+            ctx.update(rules_ctx(latest, st, q, user, back="/compliance/targets/%d" % tid))
+        return a.page(request, "compliance_target.html", ctx)
+
+    @api.post("/compliance/scans/{sid}/hosts/{rid}/exception")
+    async def compliance_exception_set(request: Request, sid: int, rid: int, user=Depends(a.need("compliance.exception"))):
+        """Set, change or remove the exception for one failed rule of this host. BASELINE applies to every host
+        checked against this benchmark; SERVER to this host only. Empty scope removes the exception that applies."""
+        form = await a.csrf(request)
+        rule = str(form.get("rule", "")).strip()[:32]
+        scope = str(form.get("scope", "")).strip()
+        reason = str(form.get("reason", "")).strip()[:2000]
+        back = "/compliance/scans/%d/hosts/%d" % (sid, rid)
+        ret = str(form.get("back", ""))
+        if re.fullmatch(r"/compliance/targets/\d+", ret):      # came from a target's page: go back there
+            back = ret
+        with db.Session() as s, s.begin():
+            r = s.get(ComplianceResult, rid)
+            if r is None or r.scan_id != sid:
+                raise HTTPException(404, "No such result.")
+            x = next((y for y in r.rules or [] if y.get("id") == rule and y.get("status") in ("fail", "accepted")), None)
+            if x is None:
+                raise HTTPException(400, "That rule did not fail on this host.")
+            bname = scan_compliance.bench_name(r.benchmark_key)
+            q = select(ComplianceException).where(ComplianceException.benchmark == bname, ComplianceException.rule_id == rule)
+            server = s.scalar(q.where(ComplianceException.scope == "server", ComplianceException.host == r.host))
+            base = s.scalar(q.where(ComplianceException.scope == "baseline"))
+            if scope == "":
+                gone = server or base
+                if gone is None:
+                    return go(back, ok="nochange")
+                a.audit(s, request, "compliance_exception.remove", "%s %s %s%s" % (
+                    bname, rule, gone.scope, " " + gone.host if gone.scope == "server" else ""))
+                s.delete(gone)
+                return go(back, ok="unexcepted")
+            if scope not in scan_compliance.SCOPE_LABEL:
+                return go(back, err="scope")
+            if not reason:
+                return go(back, err="reason")
+            row = server if scope == "server" else base
+            if row is None:
+                row = ComplianceException(platform=r.platform, benchmark=bname, rule_id=rule, scope=scope,
+                                          host=r.host if scope == "server" else "")
+                s.add(row)
+            row.rule_title, row.reason, row.created_by, row.created_at = x.get("title", "")[:2000], reason, user.username, utcnow()
+            if scope == "baseline" and server is not None:
+                s.delete(server)                  # the baseline exception now covers this host too
+            a.audit(s, request, "compliance_exception.set", "%s %s %s%s: %s" % (
+                bname, rule, scope, " " + r.host if scope == "server" else "", reason))
+        return go(back, ok="exception")
+
+    @api.get("/compliance/exceptions")
+    def compliance_exceptions(request: Request, user=Depends(V)):
+        scope = request.query_params.get("scope", "")
+        scope = scope if scope in scan_compliance.SCOPE_LABEL else ""
+        with db.Session() as s:
+            total = s.scalar(select(func.count(ComplianceException.id)))
+            rows = s.scalars(select(ComplianceException).where(
+                ComplianceException.scope == scope if scope else ComplianceException.id.is_not(None)).order_by(
+                ComplianceException.platform, ComplianceException.benchmark, ComplianceException.scope,
+                ComplianceException.host)).all()
+            s.expunge_all()
+        rows = sorted(rows, key=lambda x: (x.platform, x.benchmark, compliance.sort_key(x.rule_id), x.scope, x.host))
+        with db.Session() as s:     # the CIS label per (benchmark name, rule)
+            kinds = {}
+            for name in {x.benchmark for x in rows}:
+                for rid, asm in assessments(s, name).items():
+                    kinds[(name, rid)] = asm
+        return a.page(request, "compliance_exceptions.html", {
+            "user": user, "sess": request.state.sess, "title": "Compliance exceptions", "rows": rows,
+            "scopes": scan_compliance.SCOPE_LABEL, "may_except": auth.can(user.role, "compliance.exception"), "kinds": kinds,
+            "scope": scope, "total": total})
+
+    @api.post("/compliance/exceptions/{xid}/delete")
+    async def compliance_exception_delete(request: Request, xid: int, user=Depends(a.need("compliance.exception"))):
+        await a.csrf(request)
+        with db.Session() as s, s.begin():
+            x = s.get(ComplianceException, xid)
+            if x is None:
+                raise HTTPException(404, "There is no such exception.")
+            a.audit(s, request, "compliance_exception.remove", "%s %s %s%s" % (
+                x.benchmark, x.rule_id, x.scope, " " + x.host if x.scope == "server" else ""))
+            s.delete(x)
+        return go("/compliance/exceptions", ok="unexcepted")
 
     # ------------------------------------------------------------ home and about
 
@@ -1352,8 +1832,13 @@ def create_app(cfg, db, jobs):
             lv = {k: sum(r.counts.get(k, 0) for r in res) for k, _ in charts.RESULTS}
             pies.append({"id": p, "title": PLATFORM_LABEL[p], "total": sum(lv.values()), "levels": lv})
             bars += [{"host": r.host, "pass": r.counts.get("pass", 0), "fail": r.counts.get("fail", 0),
+                      "accepted": r.counts.get("accepted", 0),
                       "score": r.counts.get("score"), "href": "/compliance/scans/%d/hosts/%d" % (r.scan_id, r.id)} for r in res]
         return rows, charts.result_pies(pies), charts.score_bars(bars) if bars else ""
+
+    def compliance_history_svg(rng):
+        return charts.history_svg(jobs.compliance_history(rng), what="Average compliance score per platform",
+                                  gid="chist", percent=True)
 
     @api.get("/")
     def home(request: Request, user=Depends(V)):
@@ -1362,15 +1847,21 @@ def create_app(cfg, db, jobs):
         vtot = {k: sum(r[k] for r in vrows) for k in ("systems", "priority", "kev", "critical", "high")}
         rng = request.query_params.get("range", report.DEFAULT_RANGE)
         rng = rng if rng in report.RANGES else report.DEFAULT_RANGE
+        crng = request.query_params.get("crange", report.DEFAULT_RANGE)
+        crng = crng if crng in report.RANGES else report.DEFAULT_RANGE
+        tab = "compliance" if request.query_params.get("tab") == "compliance" else "vulnerabilities"
         with db.Session() as s:
-            crows, cpies, cbars = compliance_charts(s)
+            crows, cpies, _ = compliance_charts(s)
         scores = [r["score"] for r in crows if r["score"] is not None]
         ctot = {"systems": sum(r["systems"] or 0 for r in crows), "checked": sum(r["checked"] for r in crows),
                 "failed": sum(r["failed"] for r in crows), "score": round(sum(scores) / len(scores), 1) if scores else None}
         return a.page(request, "home.html", {
-            "user": user, "sess": request.state.sess, "title": "Home", "model": m, "vrows": vrows, "vtot": vtot,
-            "range": rng, "range_switch": charts.range_switch(rng, "/"), "history": charts.history_svg(jobs.history(rng)),
-            "vpies": charts.pies(report.platform_levels(m)), "crows": crows, "ctot": ctot, "cpies": cpies, "cbars": cbars})
+            "user": user, "sess": request.state.sess, "title": "Home", "tab": tab, "model": m, "vrows": vrows, "vtot": vtot,
+            "range": rng, "range_switch": charts.range_switch(rng, "/", keep={"tab": "vulnerabilities"}),
+            "history": charts.history_svg(jobs.history(rng)), "crange": crng,
+            "crange_switch": charts.range_switch(crng, "/", "crange", "chistory", keep={"tab": "compliance"}),
+            "chistory": compliance_history_svg(crng),
+            "vpies": charts.pies(report.platform_levels(m)), "crows": crows, "ctot": ctot, "cpies": cpies})
 
     @api.get("/about")
     def about(request: Request, user=Depends(any_user)):
@@ -1384,20 +1875,18 @@ def create_app(cfg, db, jobs):
 
     @api.get("/compliance/schedules")
     def compliance_schedules(request: Request, user=Depends(a.need("schedule.edit"))):
-        with db.Session() as s:
-            rows = {x.platform: x for x in s.scalars(select(ComplianceSchedule)).all()}
-        return a.page(request, "schedules.html", {"user": user, "sess": request.state.sess, "title": "Compliance schedules",
-                                                  "rows": rows, "base": "/compliance/schedules", "kind": "compliance",
-                                                  "checker": COMPLIANCE_CHECKER,
-                                                  "has_checker": {p: p in jobs.compliance_scanners for p in PLATFORMS}})
+        return schedule_page(request, user, "compliance")
 
     @api.post("/compliance/schedules/{platform}")
     async def compliance_schedule_save(request: Request, platform: str, user=Depends(a.need("schedule.edit"))):
         form = await a.csrf(request)
         if platform not in PLATFORMS:
             raise HTTPException(404, "Unknown platform.")
-        cron = " ".join(str(form.get("cron", "")).split())
         enabled = form.get("enabled") == "on"
+        try:
+            cron, _ = schedule_form(form)
+        except schedule_ui.ScheduleError as e:
+            return schedule_page(request, user, "compliance", "%s: %s" % (PLATFORM_LABEL[platform], e), 400, {platform: e.shown})
         if not valid_cron(cron):
             return go("/compliance/schedules", err="cron")
         with db.Session() as s, s.begin():

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% from "_content.html" import content %}
+{% block content %}
+<section>
+  <p class="small"><a href="/compliance/report#{{ t.platform }}">← Compliance report</a></p>
+  <h2><span class="mono">{{ t.host }}</span>{% if latest and latest.counts.score is not none %} <span class="badge b-done">{{ latest.counts.score }}%</span>{% endif %}</h2>
+  <p class="sub">{{ PLATFORM_LABEL[t.platform] }}{% if t.label %} · {{ t.label }}{% endif %}{% if x and x.os %} · {{ x.os }}{% endif %}{% if not t.enabled %} · <span class="badge b-off">Target disabled</span>{% endif %}</p>
+  <div class="scroll"><table class="kv">
+    <tr><th>Benchmark</th><td>{% if x and x.bench %}<a class="mono" href="/compliance/benchmarks/{{ x.bench.id }}">{{ x.bench.key }}</a> · {{ x.rules }} rules checked{% elif x and x.os %}<span class="muted">No active benchmark for this OS{% if x.os_key %} ({{ x.os_key }}){% endif %}</span>{% else %}<span class="muted">Not matched yet: run a vulnerability scan of this host so its OS is known</span>{% endif %}</td></tr>
+    <tr><th>Newest check</th><td>{% if latest %}{{ fmt(latest.scanned_at) }} in <a href="/compliance/scans/{{ latest.scan_id }}">scan #{{ latest.scan_id }}</a>: {{ latest.counts.pass }} passed, {{ latest.counts.get("accepted", 0) }} accepted, <span{% if latest.counts.fail %} class="hot"{% endif %}>{{ latest.counts.fail }} failed</span>, {{ latest.counts.skip }} not applicable, {{ latest.counts.notest }} without an automated check{% else %}<span class="badge b-off">Not checked</span>{% if can(user.role, "scan.run") %} · <a href="/compliance/scans">Run a compliance scan</a>{% endif %}{% endif %}</td></tr>
+    <tr><th>Exceptions</th><td><a href="/compliance/exceptions">All exceptions</a></td></tr>
+  </table></div>
+</section>
+{% if checks %}
+<section>
+  <h2>Checks</h2>
+  <p class="sub">Every compliance check of this host, newest first (up to 100).</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Checked</th><th>Scan</th><th>Benchmark</th><th>Audit content</th><th>Status</th><th class="n">Passed</th><th class="n">Accepted</th><th class="n">Failed</th><th class="n">Score</th></tr></thead>
+    <tbody>
+    {% for c in checks %}
+    <tr>
+      <td class="date">{% if c.status == "done" %}<a href="/compliance/scans/{{ c.scan_id }}/hosts/{{ c.id }}">{{ fmt(c.scanned_at) }}</a>{% else %}{{ fmt(c.scanned_at) }}{% endif %}</td>
+      <td><a href="/compliance/scans/{{ c.scan_id }}">#{{ c.scan_id }}</a></td>
+      <td class="small mono">{{ c.benchmark_key }}</td>
+      <td class="small">{{ content(c.content) }}</td>
+      <td>{% if c.status == "done" %}<span class="badge b-done">Checked</span>{% elif c.status == "skipped" %}<span class="badge b-off">Skipped</span>{% else %}<span class="badge b-failed">Failed</span>{% endif %}</td>
+      {% if c.status == "done" %}
+      <td class="n">{{ c.counts.pass }}</td><td class="n{% if c.counts.get('accepted') %} acc{% endif %}">{{ c.counts.get("accepted", 0) }}</td>
+      <td class="n{% if c.counts.fail %} hot{% endif %}">{{ c.counts.fail }}</td>
+      <td class="n">{% if c.counts.score is not none %}<strong>{{ c.counts.score }}%</strong>{% endif %}</td>
+      {% else %}<td colspan="4" class="small{% if c.status == 'failed' %} hot{% else %} muted{% endif %}">{{ c.error }}</td>{% endif %}
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+</section>
+{% endif %}
+{% if latest %}
+<section>
+  <h2>Rules <span class="small muted">newest check, {{ fmt(latest.scanned_at) }}</span></h2>
+  {% include "_comprules.html" %}
+</section>
+{% endif %}
+{% endblock %}

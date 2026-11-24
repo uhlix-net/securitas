@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_content.html" import content %}
 {% block content %}
 <section>
   <p class="small"><a href="/compliance/scans">← All compliance scans</a></p>
@@ -7,20 +8,20 @@
   {% if scan.error %}<div class="fail"><p>{{ scan.error }}</p></div>{% endif %}
   {% if results %}
   <div class="scroll"><table>
-    <thead><tr><th>System</th><th>Role</th><th>Operating system</th><th>Benchmark</th><th>Status</th><th class="n">Passed</th><th class="n">Failed</th><th class="n">Not applicable</th><th class="n">No automated check</th><th class="n">Score</th></tr></thead>
+    <thead><tr><th>System</th><th>Role</th><th>Operating system</th><th>Benchmark</th><th>Status</th><th class="n">Passed</th><th class="n">Accepted</th><th class="n">Failed</th><th class="n">Not applicable</th><th class="n">No automated check</th><th class="n">Score</th></tr></thead>
     <tbody>
     {% for r in results %}
     <tr>
       <td class="mono">{% if r.status == "done" %}<a href="/compliance/scans/{{ scan.id }}/hosts/{{ r.id }}">{{ r.host }}</a>{% else %}{{ r.host }}{% endif %}</td>
       <td>{{ r.label }}</td>
       <td class="small">{{ r.os }}</td>
-      <td class="small">{% if r.benchmark_id %}<a class="mono" href="/compliance/benchmarks/{{ r.benchmark_id }}">{{ r.benchmark_key }}</a>{% else %}<span class="mono">{{ r.benchmark_key }}</span>{% endif %}{% if r.profile %}<br><span class="muted">{{ r.profile }}</span>{% endif %}</td>
+      <td class="small">{% if r.benchmark_id %}<a class="mono" href="/compliance/benchmarks/{{ r.benchmark_id }}">{{ r.benchmark_key }}</a>{% else %}<span class="mono">{{ r.benchmark_key }}</span>{% endif %}{% if r.profile %}<br><span class="muted">{{ r.profile }}</span>{% endif %}{% if r.content %}<br><span class="small">{{ content(r.content) }}</span>{% endif %}</td>
       <td>{% if r.status == "done" %}<span class="badge b-done">Checked</span>{% elif r.status == "skipped" %}<span class="badge b-off">Skipped</span>{% else %}<span class="badge b-failed">Failed</span>{% endif %}</td>
       {% if r.status == "done" %}
-      <td class="n">{{ r.counts.pass }}</td><td class="n{% if r.counts.fail %} hot{% endif %}">{{ r.counts.fail }}</td>
+      <td class="n">{{ r.counts.pass }}</td><td class="n{% if r.counts.get('accepted') %} acc{% endif %}">{{ r.counts.get("accepted", 0) }}</td><td class="n{% if r.counts.fail %} hot{% endif %}">{{ r.counts.fail }}</td>
       <td class="n">{{ r.counts.skip }}</td><td class="n">{{ r.counts.notest }}</td>
       <td class="n">{% if r.counts.score is not none %}<strong>{{ r.counts.score }}%</strong>{% endif %}</td>
-      {% else %}<td colspan="5" class="small{% if r.status == 'failed' %} hot{% else %} muted{% endif %}">{{ r.error }}</td>{% endif %}
+      {% else %}<td colspan="6" class="small{% if r.status == 'failed' %} hot{% else %} muted{% endif %}">{{ r.error }}</td>{% endif %}
     </tr>
     {% endfor %}
     </tbody></table></div>

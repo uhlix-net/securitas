@@ -1,0 +1,58 @@
+#!/bin/bash
+# Securitas agent (RPM securitas-agent): set up or remove this host's scan account for Securitas.
+#   securitas-agent-setup --key 'ssh-ed25519 AAAA... comment' [--user svc-securitas] [--from 10.0.0.5,10.0.0.6]
+#   securitas-agent-setup --remove        # remove the sudo rule and the key (the account is kept)
+# Creates the local account (locked password) unless it exists, authorizes Securitas's public key
+# (restrict, and from= when given), and adds one sudo rule: the account may run only
+# /usr/local/sbin/securitas-cis-audit as root. Idempotent.
+set -euo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+user=svc-securitas from="" key="" remove=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --user) user="$2"; shift 2 ;;
+    --from) from="$2"; shift 2 ;;
+    --key) key="$2"; shift 2 ;;
+    --remove) remove=1; shift ;;
+    *) echo "unknown option $1" >&2; exit 2 ;;
+  esac
+done
+[ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
+[[ "$user" =~ ^[a-z_][a-z0-9._-]{0,31}$ ]] || { echo "bad user name" >&2; exit 2; }
+SUDOERS=/etc/sudoers.d/securitas-agent
+if [ "$remove" = 1 ]; then
+  rm -f "$SUDOERS"
+  home=$(getent passwd "$user" | cut -d: -f6 || true)
+  [ -n "$home" ] && [ -f "$home/.ssh/authorized_keys" ] && sed -i '/ securitas-agent$/d' "$home/.ssh/authorized_keys"
+  rm -f /etc/securitas-agent.conf
+  echo "Removed the sudo rule and Securitas's key for $user (the account itself is kept)."
+  exit 0
+fi
+[[ "$key" =~ ^(ssh-ed25519|ecdsa-sha2-nistp[0-9]+|ssh-rsa)\ [A-Za-z0-9+/=]+(\ [^\"]*)?$ ]] || { echo "--key: an SSH public key is required" >&2; exit 2; }
+[ -z "$from" ] || [[ "$from" =~ ^[0-9a-fA-F.:/*,-]+$ ]] || { echo "bad --from" >&2; exit 2; }
+# Centrify/AD: keep the local account local
+if [ -d /etc/centrifydc ]; then
+  for f in user.ignore group.ignore; do grep -qx "$user" /etc/centrifydc/$f 2>/dev/null || echo "$user" >> /etc/centrifydc/$f; done
+  command -v adflush >/dev/null && adflush -f >/dev/null 2>&1 || true
+fi
+if ! getent passwd "$user" >/dev/null; then
+  useradd --system --create-home --home-dir "/home/$user" --shell /bin/bash --comment "Securitas scans" "$user"
+  usermod -p '!' "$user"
+  echo "Created the account $user."
+fi
+home=$(getent passwd "$user" | cut -d: -f6)
+group=$(id -gn "$user")
+install -d -m 0700 -o "$user" -g "$group" "$home/.ssh"
+ak="$home/.ssh/authorized_keys"
+opts="restrict"; [ -n "$from" ] && opts="restrict,from=\"$from\""
+line="$opts $key securitas-agent"         # the trailing marker lets --remove and re-runs find this line
+touch "$ak"; sed -i '/ securitas-agent$/d' "$ak"; echo "$line" >> "$ak"
+chown "$user:$group" "$ak"; chmod 0600 "$ak"
+command -v restorecon >/dev/null && restorecon -R "$home/.ssh" || true
+tmp=$(mktemp)
+printf '# Securitas agent: the scan account may run only the compliance wrapper as root.\nDefaults:%s !requiretty\n%s ALL=(root) NOPASSWD: /usr/local/sbin/securitas-cis-audit\n' "$user" "$user" > "$tmp"
+visudo -cqf "$tmp" || { rm -f "$tmp"; echo "sudo rule check failed" >&2; exit 1; }
+install -m 0440 -o root -g root "$tmp" "$SUDOERS"; rm -f "$tmp"
+printf 'SCAN_USER=%s\n' "$user" > /etc/securitas-agent.conf; chmod 0644 /etc/securitas-agent.conf
+echo "Ready: Securitas can scan this host as $user$( [ -n "$from" ] && echo " from $from")."
+echo "Add it as a Linux target in Securitas (Targets) if it is not there yet."

@@ -196,6 +196,10 @@ ingress:
   tls: []
   #  - secretName: securitas-tls
   #    hosts: [securitas.example.com]
+  # Settings -> Certificates: let admins replace the certificate and key in the TLS Secrets listed above from the
+  # web UI. Adds a Role that can only get and patch those named Secrets in this namespace (they must already
+  # exist). Turn off when the certificates are managed elsewhere (e.g. cert-manager).
+  manageCertificates: true
 
 resources:
   requests:

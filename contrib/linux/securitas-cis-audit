@@ -1,18 +1,57 @@
 #!/bin/bash
-# Securitas compliance check for Linux. Install as /usr/local/sbin/securitas-cis-audit, owner root, mode 0755.
-# Runs Goss read-only against the audit content installed under /opt/securitas-cis/<benchmark key>/ and prints
-# Goss's JSON. The scan account may run only this, through one sudo rule (see sudoers.securitas-cis).
-# Usage: securitas-cis-audit <benchmark key> [server|workstation]
+# Securitas agent (RPM securitas-agent): compliance check wrapper. Do not edit; reinstall the package instead.
+# Runs Goss read-only against CIS audit content and prints Goss's JSON. The scan account (SCAN_USER in
+# /etc/securitas-agent.conf, set by securitas-agent-setup) may run only this, via sudo.
+# Usage: securitas-cis-audit <benchmark key> [server|workstation] [bundle]
+#   bundle: /tmp/.securitas-<random>.tar.gz copied by Securitas (owned by the scan account). It is unpacked as
+#   root into a new root-only random hidden directory in /tmp, run, and both are deleted afterwards.
+#   Without a bundle: a pre-installed copy under /opt/securitas-cis/<key>/, if any.
 set -u
+umask 077
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
-CIS_ROOT=/opt/securitas-cis
+GOSS=/usr/libexec/securitas-agent/goss
+[ -x "$GOSS" ] || GOSS=/usr/local/bin/goss
+scan_user=svc-securitas
+if [ -f /etc/securitas-agent.conf ] && [ "$(stat -c %u /etc/securitas-agent.conf)" = 0 ]; then
+  v=$(sed -n 's/^SCAN_USER=\([A-Za-z0-9._-]\{1,64\}\)$/\1/p' /etc/securitas-agent.conf | tail -1)
+  [ -n "$v" ] && scan_user=$v
+fi
 key="${1:-}"
 kind="${2:-server}"
-if ! [[ "$key" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]; then echo '{"error":"bad benchmark key"}'; exit 2; fi
-case "$kind" in server) st=Server ;; workstation) st=Workstation ;; *) echo '{"error":"bad system type"}'; exit 2 ;; esac
-dir="$CIS_ROOT/$key"
+bundle="${3:-}"
+fail() { printf '{"error":"%s"}\n' "$1"; exit "${2:-2}"; }
+if ! [[ "$key" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]; then fail "bad benchmark key"; fi
+case "$kind" in server) st=Server ;; workstation) st=Workstation ;; *) fail "bad system type" ;; esac
+work=""
+cleanup() { [ -n "$work" ] && rm -rf --one-file-system -- "$work"; [ -n "$bundle" ] && rm -f -- "$bundle"; }
+trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
+if [ -n "$bundle" ]; then
+  [[ "$bundle" =~ ^/tmp/\.securitas-[A-Za-z0-9]{16,64}\.tar\.gz$ ]] || { bundle=""; fail "bad bundle path"; }
+  scan_uid=$(id -u "$scan_user") || fail "no scan account"
+  if [ -L "$bundle" ] || [ ! -f "$bundle" ] || [ "$(stat -c %u -- "$bundle")" != "$scan_uid" ]; then
+    fail "bundle is not a regular file owned by $scan_user"
+  fi
+  [ "$(stat -c %s -- "$bundle")" -le 20971520 ] || fail "bundle larger than 20 MB"
+  work=$(mktemp -d /tmp/.securitas-cis.XXXXXXXXXXXXXXXX) || fail "cannot create a work directory" 3
+  chmod 0700 "$work"
+  dd if="$bundle" of="$work/bundle.tar.gz" iflag=nofollow status=none 2>/dev/null || fail "cannot read the bundle" 3
+  rm -f -- "$bundle"; bundle=""
+  listing=$(tar -tvzf "$work/bundle.tar.gz" 2>/dev/null) || fail "bundle is not a tar.gz" 3
+  if printf '%s\n' "$listing" | awk '{t=substr($1,1,1); if (t!="-" && t!="d") bad=1; s+=$3}
+      END {exit (bad || s > 104857600)}'; then :; else fail "bundle holds links, special files or is too large" 3; fi
+  if tar -tzf "$work/bundle.tar.gz" | grep -qE '(^/|(^|/)\.\.(/|$))'; then fail "bundle has unsafe paths" 3; fi
+  mkdir "$work/c"
+  tar -xzf "$work/bundle.tar.gz" -C "$work/c" --no-same-owner --no-same-permissions --no-overwrite-dir \
+    || fail "cannot unpack the bundle" 3
+  rm -f "$work/bundle.tar.gz"
+  chown -R root:root "$work/c"; chmod -R go-rwx "$work/c"
+  dir="$work/c"
+else
+  dir="/opt/securitas-cis/$key"
+fi
 if [ ! -f "$dir/goss.yml" ] || [ ! -f "$dir/vars/CIS.yml" ]; then
-  echo "{\"error\":\"benchmark $key is not installed on this host\"}"; exit 3
+  fail "benchmark $key: no audit content (goss.yml, vars/CIS.yml)" 3
 fi
 clean() { printf '%s' "$1" | tr -cd 'A-Za-z0-9._ -'; }
 os_name=$(. /etc/os-release 2>/dev/null; echo "${NAME:-unknown}" | cut -d' ' -f1)
@@ -22,5 +61,6 @@ inline=$(printf '{"benchmark_type":"CIS","benchmark_os":"%s","machine_uuid":"%s"
   "$(clean "${key%%-*}")" "$(clean "$uuid")" "$(date +%s)" "$(clean "$(date +%Z)")" "$(clean "$os_ver")" \
   "$(clean "$os_name")" "$(clean "$(hostname)")" "$st")
 cd "$dir" || exit 3
-exec nice -n 10 /usr/local/bin/goss -g "$dir/goss.yml" --vars "$dir/vars/CIS.yml" --vars-inline "$inline" \
+nice -n 10 "$GOSS" -g "$dir/goss.yml" --vars "$dir/vars/CIS.yml" --vars-inline "$inline" \
   validate --max-concurrent 10 -f json
+exit $?

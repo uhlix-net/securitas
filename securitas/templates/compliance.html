@@ -3,14 +3,14 @@
 {% set editable = can(user.role, "compliance.edit") %}
 <section>
   <h2>Compliance benchmarks</h2>
-  <p class="sub">The benchmarks hosts will be checked against. Each one is an <a href="https://github.com/ansible-lockdown" rel="noopener noreferrer">Ansible-Lockdown</a> role, stored under its name and version (for example <span class="mono">RHEL9-CIS-2.4.2</span>) with the date it was uploaded. Several versions can be loaded side by side; one per operating system is <strong>active</strong> and is the one used for checks. The first benchmark loaded for an operating system becomes its active one. Removing a benchmark removes its rules and the stored zip.{% if not editable %} Only admins can upload, change or remove benchmarks.{% endif %}</p>
+  <p class="sub">The benchmarks hosts will be checked against. Each one is a <strong>Securitas benchmark package</strong>: the rules exactly as the official CIS benchmark document states them (ID, title, Automated or Manual, profiles) together with the checks that test them, stored under its name and CIS version (for example <span class="mono">RHEL9-CIS-2.0.0</span>) with the date it was uploaded. Packages are built from the official CIS PDF with <span class="mono">tools/cis_package.py</span>. Ansible-Lockdown role zips can still be loaded, but they carry no CIS Automated/Manual labels. Several versions can be loaded side by side; one per operating system is <strong>active</strong> and is the one used for checks. The first benchmark loaded for an operating system becomes its active one. Removing a benchmark removes its rules and the stored zip.{% if not editable %} Only admins can upload, change or remove benchmarks.{% endif %}</p>
   {% if editable %}
   <form method="post" action="/compliance/benchmarks" enctype="multipart/form-data"><input type="hidden" name="csrf" value="{{ sess.csrf }}">
     <div class="row">
       <div><label for="bf">Benchmark zip</label><input id="bf" type="file" name="file" accept=".zip,application/zip" required></div>
       <div><button class="btn primary">Upload and import</button></div>
     </div>
-    <p class="hint">The zip GitHub offers for a release of an Ansible-Lockdown CIS role, for example <span class="mono">RHEL9-CIS-2.4.2.zip</span> (one folder named <span class="mono">&lt;role&gt;-&lt;version&gt;</span>). Up to {{ max_mb }} MB. Nothing in it is run; Securitas reads the rule names, profile levels and on/off defaults.</p>
+    <p class="hint">A Securitas benchmark package, for example <span class="mono">RHEL9-CIS-2.0.0.zip</span>, or the zip GitHub offers for a release of an Ansible-Lockdown CIS role (one folder named <span class="mono">&lt;name&gt;-&lt;version&gt;</span>). Up to {{ max_mb }} MB. Nothing in it is run when it is uploaded.</p>
   </form>
   {% endif %}
 </section>
@@ -19,7 +19,19 @@
   <h2>{{ PLATFORM_LABEL[plat] }}</h2>
   {% set list = rows|selectattr("platform", "equalto", plat)|list %}
   {% if plat == "kubernetes" %}
-  <p class="muted">Kubernetes compliance will come from Trivy Operator's CIS report (<span class="mono">k8s-cis</span>) in the cluster, so there is nothing to upload.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Benchmark</th><th>Operating system</th><th>CIS version</th><th>Rules checked</th><th>Profile</th><th>Uploaded</th><th>Status</th>{% if editable %}<th>Remove</th>{% endif %}</tr></thead>
+    <tbody><tr>
+      <td><strong class="mono">Trivy k8s-cis</strong><br><span class="small muted">CIS Kubernetes Benchmark, from Trivy Operator</span></td>
+      <td>Kubernetes cluster</td>
+      <td class="mono">—</td>
+      <td><span class="muted">— (not checked yet)</span></td>
+      <td class="small">—</td>
+      <td class="small"><span class="muted">Built in: nothing to upload</span></td>
+      <td><span class="badge b-off">Not set up</span></td>
+      {% if editable %}<td></td>{% endif %}
+    </tr></tbody></table></div>
+  <p class="hint">Kubernetes compliance will come from Trivy Operator's CIS report (<span class="mono">k8s-cis</span>) in the cluster; the rule count appears once the cluster is checked.</p>
   {% elif not list %}<p class="muted">No {{ PLATFORM_LABEL[plat] }} benchmarks loaded.</p>
   {% else %}
   <div class="scroll"><table>

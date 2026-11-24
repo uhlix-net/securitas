@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+  <h2>Compliance exceptions</h2>
+  <p class="sub">Failed rules that have been accepted. A <strong>baseline exception</strong> applies to every host checked against that benchmark (by name, so it carries over to a newer version of the same role); a <strong>server exception</strong> applies to one host and wins over a baseline exception for that host. Compliance scans after an exception is saved report the rule as <span class="badge b-accepted">Accepted</span> with its reason; accepted rules count towards the score. Exceptions are added and changed on a host's result page (open a failed rule from <a href="/compliance/report">Report</a>); every change is in the audit log.</p>
+  <form method="get" class="filters"><div class="row"><div><label for="sc">Exception</label><select id="sc" name="scope"><option value="">All ({{ total }})</option>{% for k, label in scopes.items() %}<option value="{{ k }}"{% if scope == k %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></div><div><button class="btn">Filter</button>{% if scope %} <a href="?">Clear</a>{% endif %}</div></div></form>
+  {% if not rows %}<p class="muted">{{ "No exceptions of this kind." if scope else "No exceptions yet." }}</p>{% else %}
+  <div class="scroll"><table>
+    <thead><tr><th>Benchmark</th><th>Rule</th><th>Title</th><th>Exception</th><th>Applies to</th><th>Reason</th><th>Saved</th>{% if may_except %}<th></th>{% endif %}</tr></thead>
+    <tbody>
+    {% for x in rows %}
+    <tr>
+      <td class="mono nowrap">{{ x.benchmark }}<br><span class="small muted">{{ PLATFORM_LABEL.get(x.platform, x.platform) }}</span></td>
+      <td class="mono nowrap">{{ x.rule_id }}</td>
+      <td class="small">{{ x.rule_title }}{% set k = kinds.get((x.benchmark, x.rule_id)) %}{% if k %} <span class="muted">{{ CIS_KIND(k) }}</span>{% endif %}</td>
+      <td class="nowrap"><span class="badge b-accepted">{{ scopes[x.scope] }}</span></td>
+      <td class="small">{% if x.scope == "server" %}<span class="mono">{{ x.host }}</span>{% else %}All {{ x.benchmark }} hosts{% endif %}</td>
+      <td class="small">{{ x.reason }}</td>
+      <td class="small nowrap">{{ fmt(x.created_at) }}{% if x.created_by %}<br><span class="muted">{{ x.created_by }}</span>{% endif %}</td>
+      {% if may_except %}<td><form method="post" action="/compliance/exceptions/{{ x.id }}/delete"><input type="hidden" name="csrf" value="{{ sess.csrf }}"><button class="btn">Remove</button></form></td>{% endif %}
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+  {% endif %}
+</section>
+{% endblock %}

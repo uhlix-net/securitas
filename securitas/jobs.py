@@ -10,7 +10,7 @@ from sqlalchemy import delete, select, update
 
 from . import feeds, k8s, report, scan_linux, scan_windows
 from .config import PLATFORMS
-from .db import (Benchmark, ComplianceResult, ComplianceScan, ComplianceSchedule, PlatformResult, ResultStats, Scan,
+from .db import (Benchmark, ComplianceException, ComplianceResult, ComplianceScan, ComplianceSchedule, PlatformResult, ResultStats, Scan,
                  Schedule, Target, utcnow)
 from .settings import Settings
 
@@ -129,6 +129,20 @@ class Jobs:
                              .order_by(ResultStats.scanned_at, ResultStats.result_id)).all()
         stats = [(p, at.astimezone(z).date(), total) for p, at, total in rows]
         return report.history(stats, rng, datetime.datetime.now(z).date(), PLATFORMS)
+
+    def compliance_history(self, rng):
+        """Graph: average compliance score per platform over the range ('day', 'week' or 'month')."""
+        try:
+            z = zoneinfo.ZoneInfo(self.cfg.timezone)
+        except Exception:
+            z = datetime.timezone.utc
+        with self.db.Session() as s:
+            rows = s.execute(select(ComplianceResult.platform, ComplianceResult.host, ComplianceResult.scanned_at,
+                                    ComplianceResult.counts)
+                             .where(ComplianceResult.status == "done")
+                             .order_by(ComplianceResult.scanned_at, ComplianceResult.id)).all()
+        data = [(p, h, at.astimezone(z).date(), (c or {}).get("score")) for p, h, at, c in rows]
+        return report.compliance_history(data, rng, datetime.datetime.now(z).date(), PLATFORMS)
 
     def start(self):
         for i in range(self.cfg.workers):
@@ -342,6 +356,16 @@ class Jobs:
                          "profile": x["bench"].profile if x["bench"] else "",
                          "system_type": "workstation" if x["bench"] and x["bench"].profile.endswith("workstation") else "server",
                          "bench": None, "rules": x["rules_list"]} for x in plan.get(p, [])] for p in platforms}
+            # Linux: the audit bundle per benchmark, built once for this scan (None: the host's own copy is used)
+            bundles = {}
+            for x in plan.get("linux", []) if "linux" in platforms else []:
+                if x["bench"] and x["bench"].key not in bundles:
+                    try:
+                        bundles[x["bench"].key] = compliance.audit_bundle(s, x["bench"])
+                    except Exception as e:
+                        bundles[x["bench"].key] = e
+            for x in snap.get("linux", []):
+                x["bundle"] = bundles.get(x["key"])
         say("started: " + ", ".join(platforms) + ("; only " + ", ".join(sorted(only)) if only else ""))
         statuses = []
         for p in platforms:
@@ -387,14 +411,29 @@ class Jobs:
             if final != "done":
                 scan.error = "; ".join("%s %s" % (p, st) for p, st in zip(platforms, statuses) if st != "done")
 
+    def exceptions_for(self, s, key):
+        """{(rule_id, host or ''): {scope, reason, by, at}} for a benchmark key (matched by benchmark name)."""
+        from .scan_compliance import bench_name
+        out = {}
+        for x in s.scalars(select(ComplianceException).where(ComplianceException.benchmark == bench_name(key))).all():
+            out[(x.rule_id, x.host if x.scope == "server" else "")] = {
+                "scope": x.scope, "reason": x.reason, "by": x.created_by,
+                "at": x.created_at.isoformat() if x.created_at else ""}
+        return out
+
     def _save_comp(self, cid, platform, x, status, error="", result=None, seconds=0):
         with self.db.Session() as s, s.begin():
+            if result and x.get("key"):
+                from .scan_compliance import apply_exceptions
+                apply_exceptions(result.get("rules") or [], result.setdefault("counts", {}), x["host"],
+                                 self.exceptions_for(s, x["key"]))
             s.add(ComplianceResult(scan_id=cid, platform=platform, host=x["host"], label=x["label"],
                                    os=(result or {}).get("os") or x["os"], benchmark_id=x["bench_id"],
                                    benchmark_key=x["key"], benchmark_name=x["bench_name"],
                                    profile=x["profile"] + (" (%s)" % (result or {})["host_kind"] if (result or {}).get("host_kind") else ""),
                                    status=status, error=error[:2000], seconds=seconds,
-                                   counts=(result or {}).get("counts") or {}, rules=(result or {}).get("rules") or []))
+                                   counts=(result or {}).get("counts") or {}, rules=(result or {}).get("rules") or [],
+                                   content=(result or {}).get("content") or ""))
 
     def _save_comp_log(self, cid, lines):
         try:

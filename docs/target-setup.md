@@ -5,7 +5,7 @@ depends on what you want from it:
 
 | | Vulnerability scans | Compliance checks (CIS) |
 |---|---|---|
-| **Linux** (RHEL family) | A scan account that can log in with an SSH key. No sudo. | Goss, the benchmark's audit content and a wrapper, all owned by root, plus **one** sudo rule for the wrapper. |
+| **Linux** (RHEL family) | A scan account that can log in with an SSH key. No sudo. | The **Securitas agent** RPM: Goss and a wrapper owned by root, the scan account and **one** sudo rule for the wrapper. Securitas copies the audit content at each scan. |
 | **Windows Server** | A domain account in *Remote Management Users* with WMI access to `root\cimv2`; WinRM over HTTPS. No admin rights. | syver, the benchmark's audit content and a wrapper, writable by administrators only, plus a scheduled task that runs as SYSTEM and that the scan account may **only start**. |
 
 In both cases the scan account cannot change anything that runs with elevated rights: it can only start a fixed,
@@ -36,49 +36,49 @@ In Securitas: paste the private key in **Settings → Scan credentials** (or use
 values), add the host on **Targets**, and use **Test a connection**. The host's SSH key is recorded on the first
 scan; a changed key fails the scan until an admin resets it on the Targets page.
 
-### 2. Compliance checks
+### 2. Compliance checks: the Securitas agent
 
-You need the benchmark loaded in Securitas (**Compliance → Benchmarks**, upload the Ansible-Lockdown role zip) and
-active for the host's OS. Its **key**, for example `RHEL9-CIS-2.4.2`, names the folder the audit content goes in.
+You need the benchmark loaded in Securitas (**Compliance → Benchmarks**: upload the Ansible-Lockdown role zip,
+make it active for the host's OS, and upload the matching audit zip on the benchmark's page, e.g.
+`RHEL9-CIS-Audit` at the branch for the role's CIS version).
 
-1. **Goss**, the official release, checked against its published checksum:
+Linux compliance checks need the **Securitas agent** on each host: a small RPM (`securitas-agent`, Rocky Linux /
+RHEL / AlmaLinux 8 and 9, x86_64) with the compliance wrapper, a checksum-pinned Goss and a setup command. It
+creates the scan account (password locked), authorizes Securitas's SSH key and adds **one** sudo rule: the
+account may run only `/usr/local/sbin/securitas-cis-audit` as root. Nothing runs on the host between scans.
 
-   ```bash
-   v=0.4.10
-   curl -fsSLO https://github.com/goss-org/goss/releases/download/v$v/goss_${v}_linux_x86_64.tar.gz
-   curl -fsSLO https://github.com/goss-org/goss/releases/download/v$v/goss_${v}_SHA256SUMS
-   grep linux_x86_64.tar.gz goss_${v}_SHA256SUMS | sha256sum -c -
-   tar xzf goss_${v}_linux_x86_64.tar.gz goss && install -o root -g root -m 0755 goss /usr/local/bin/goss
-   ```
+**One line, on each host as root** (Securitas serves the script and the RPM; set the scan account and key in
+*Settings → Scan credentials* first, and the allowed source addresses in *Settings → Agent*):
 
-2. **Audit content**: the Ansible-Lockdown `<OS>-CIS-Audit` repository at the branch for the role's CIS version
-   (the role's `benchmark_version`, shown on the benchmark's page). Pin a commit so it cannot change underneath you:
+```bash
+curl -fsS https://securitas.example.com/agent/install.sh | sudo bash
+# private CA the host does not trust yet:
+curl -fsS --cacert /path/ca.pem https://securitas.example.com/agent/install.sh | sudo SECURITAS_CA=/path/ca.pem bash
+```
 
-   ```bash
-   install -d -o root -g root -m 0755 /opt/securitas-cis
-   git clone https://github.com/ansible-lockdown/RHEL9-CIS-Audit.git /opt/securitas-cis/RHEL9-CIS-2.4.2
-   git -C /opt/securitas-cis/RHEL9-CIS-2.4.2 checkout d9c0f2ce3be692d27d21f613030311ad7309fa9f   # benchmark_v2.0.0
-   chown -R root:root /opt/securitas-cis && chmod -R go-w /opt/securitas-cis
-   ```
+**Or by hand / with Ansible**, using the RPM from Securitas or from the [GitHub release](https://github.com/uhlix-net/securitas/releases):
 
-3. **Wrapper and sudo rule**:
+```bash
+dnf install https://github.com/uhlix-net/securitas/releases/download/v0.6.0/securitas-agent-0.6.0-1.x86_64.rpm
+securitas-agent-setup --user svc-securitas --key 'ssh-ed25519 AAAA... securitas' --from 10.0.0.11,10.0.0.12
+```
 
-   ```bash
-   install -o root -g root -m 0755 contrib/linux/securitas-cis-audit /usr/local/sbin/securitas-cis-audit
-   # edit the account name in the file first, then:
-   install -o root -g root -m 0440 contrib/linux/sudoers.securitas-cis /etc/sudoers.d/securitas-cis
-   visudo -cf /etc/sudoers.d/securitas-cis
-   ```
+Then add the host under **Targets**, run a vulnerability scan once (so its OS is known) and a compliance scan.
+`securitas-agent-setup --remove` removes the sudo rule and the key; `dnf remove securitas-agent` removes the agent
+(the account is kept).
 
-4. **Check** that the scan account may run the wrapper and nothing else, and that it works (about a minute):
+At scan time Securitas copies the benchmark's audit content (uploaded once per benchmark on its page) to a random
+hidden file in `/tmp`; the wrapper, as root, unpacks it into a new root-only directory, runs Goss read-only and
+deletes both. Every host runs exactly the same content, so there is no drift between hosts. Trust: whoever
+controls Securitas decides what the checks run as root on these hosts, as with Semaphore or a credentialed
+Tenable scan; protect Securitas's admin accounts and SSH key accordingly.
 
-   ```bash
-   sudo -l -U securitas                         # (root) NOPASSWD: /usr/local/sbin/securitas-cis-audit
-   sudo -u securitas sudo -n /usr/local/sbin/securitas-cis-audit RHEL9-CIS-2.4.2 server | head -c 300
-   ```
-
-**With Ansible:** [`contrib/ansible/linux-cis-audit.yml`](../contrib/ansible/linux-cis-audit.yml) does steps 1-3
-(set `scan_user`; add a `securitas_cis_benchmarks` entry per benchmark).
+**Without the RPM:** install Goss (checksum-checked) at `/usr/local/bin/goss`, copy
+[`contrib/linux/securitas-cis-audit`](../contrib/linux/securitas-cis-audit) to `/usr/local/sbin/` (root, 0755) and
+[`contrib/linux/sudoers.securitas-cis`](../contrib/linux/sudoers.securitas-cis) to `/etc/sudoers.d/` (0440, edit
+the account name, `visudo -cf`). [`contrib/ansible/linux-cis-audit.yml`](../contrib/ansible/linux-cis-audit.yml)
+is an older example that also installs a fixed copy of the audit content on the host (used only when Securitas has
+no audit zip for the benchmark).
 
 ---
 

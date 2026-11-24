@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "_report_tabs.html" %}
+<section>
+  <p class="small"><a href="/compliance/report/tests#b-{{ b.id }}">← All tests</a></p>
+  <h2><span class="mono">{{ rule.rule_id }}</span> {{ rule.title }} <span class="small muted">{{ CIS_KIND(rule.assessment) }}</span></h2>
+  <p class="sub"><a class="mono" href="/compliance/benchmarks/{{ b.id }}">{{ b.key }}</a> · {{ b.os_label }} · profiles {{ rule.levels|join(", ") or "none" }}{% if not on %} · <span class="badge b-off">Not checked under this benchmark's profile</span>{% endif %}</p>
+  <p class="sub">{{ c.get("pass", 0) }} passed, {{ c.get("accepted", 0) }} accepted, <span{% if c.get("fail") %} class="hot"{% endif %}>{{ c.get("fail", 0) }} failed</span>, {{ c.get("skip", 0) }} not applicable, {{ c.get("notest", 0) }} without an automated check, on the targets' newest checks.</p>
+</section>
+<section>
+  <h2>Targets</h2>
+  {% if not rows %}<p class="muted">No targets are matched to this benchmark.</p>{% else %}
+  <div class="scroll"><table>
+    <thead><tr><th>Target</th><th>Result</th><th>Tests</th><th>Checked</th></tr></thead>
+    <tbody>
+    {% for d in rows %}{% set x = d.x %}{% set r = d.r %}{% set it = d.item %}
+    <tr>
+      <td class="mono"><a href="/compliance/targets/{{ x.id }}">{{ x.host }}</a>{% if x.label %}<br><span class="small muted">{{ x.label }}</span>{% endif %}</td>
+      <td>{% if not r %}<span class="badge b-off">Not checked</span>{% elif not it %}<span class="badge b-off">Not in this check</span>{% elif it.status == "fail" %}<span class="badge b-failed">Failed</span>{% elif it.status == "accepted" %}<span class="badge b-accepted">Accepted</span> <span class="small">{{ scopes[it.exception.scope] }}: {{ it.exception.reason }}</span>{% elif it.status == "pass" %}<span class="badge b-done">Passed</span>{% elif it.status == "skip" %}<span class="badge b-off">Not applicable</span>{% else %}<span class="badge b-off">No automated check</span>{% endif %}
+        {% if it and it.status == "fail" and d.exc_now %}<div class="excnote"><span class="badge b-accepted">Exception saved</span> {{ scopes[d.exc_now.scope] }}: {{ d.exc_now.reason }} <span class="muted">(Accepted from the next scan)</span></div>{% endif %}</td>
+      <td class="small">{% for t in (it.tests if it else []) %}<div{% if t.result == "fail" %} class="hot"{% endif %}>{{ "✗" if t.result == "fail" else "✓" if t.result == "pass" else "?" if t.result == "manual" else "–" }} {{ t.title.split(" | ")[-1] if " | " in t.title else t.title }}{% if t.result == "fail" and t.message %}<br><span class="mono muted">{{ t.message }}</span>{% endif %}</div>{% endfor %}</td>
+      <td class="small nowrap">{% if r %}<a href="/compliance/scans/{{ r.scan_id }}/hosts/{{ r.id }}#r-{{ rule.rule_id }}">{{ fmt(r.scanned_at) }}</a>{% if r.benchmark_key != b.key %}<br><span class="muted">against {{ r.benchmark_key }}</span>{% endif %}{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+  {% endif %}
+</section>
+{% endblock %}

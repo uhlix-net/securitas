@@ -1,0 +1,1 @@
+{% macro content(c) %}{% if c and c.startswith("bundle:") %}<span title="SHA-256 {{ c[7:] }}">bundle <span class="mono">{{ c[7:19] }}</span></span>{% elif c == "host" %}<span class="muted">host copy</span>{% endif %}{% endmacro %}

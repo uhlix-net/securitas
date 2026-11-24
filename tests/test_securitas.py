@@ -196,6 +196,21 @@ class History(unittest.TestCase):
         self.assertEqual(h["series"][1]["values"], [100, 100, 70, 70, 70, 70, 70])  # newest result of the day wins
         self.assertEqual(h["series"][0]["values"], [None] * 5 + [5, 5])
 
+    def test_compliance_history(self):
+        import datetime as dt
+        d = lambda x: dt.date(2026, 11, x)
+        rows = [("linux", "a", d(14), 40.0), ("linux", "b", d(15), 60.0), ("linux", "a", d(17), 80.0),
+                ("linux", "c", d(18), None), ("windows", "w", d(19), 90.0)]
+        h = report.compliance_history(rows, "day", d(19), ("kubernetes", "linux", "windows"))
+        self.assertEqual([s["id"] for s in h["series"]], ["linux", "windows"])
+        self.assertEqual(h["series"][0]["values"], [None, 40.0, 50.0, 50.0, 70.0, 70.0, 70.0])   # newest per host, averaged
+        self.assertEqual(h["series"][1]["values"], [None] * 6 + [90.0])
+        from securitas import charts
+        out = charts.history_svg(h, what="Average compliance score per platform", gid="chist", percent=True)
+        self.assertIn("<title>Linux, Nov 19: 70.0%</title>", out)
+        self.assertIn('aria-labelledby="chist-t"', out)
+        self.assertIn(">100%</text>", out)                                                       # fixed 0-100 axis
+
     def test_svg(self):
         from securitas import charts
         h = {"labels": ["a", "b"], "series": [{"id": "linux", "title": "Linux", "values": [3, 7]}], "range": "week"}
@@ -451,7 +466,9 @@ class Web(unittest.TestCase):
         self.assertEqual(o.get("/vulnerabilities/schedules").status_code, 200)
         r = o.post("/vulnerabilities/schedules/linux", data={"csrf": csrf(o), "cron": "15 3 * * 1", "enabled": "on"}, follow_redirects=False)
         self.assertIn("ok=saved", r.headers["location"])
-        self.assertIn("err=cron", o.post("/vulnerabilities/schedules/linux", data={"csrf": csrf(o), "cron": "bad"}, follow_redirects=False).headers["location"])
+        bad = o.post("/vulnerabilities/schedules/linux", data={"csrf": csrf(o), "cron": "bad"}, follow_redirects=False)
+        self.assertEqual(bad.status_code, 400)
+        self.assertIn("not a valid cron expression", bad.text)
         for p in ("/targets", "/settings/users", "/settings/authentication", "/audit"):
             self.assertEqual(o.get(p).status_code, 403, p)
         audit = self.c.get("/audit").text
@@ -471,6 +488,25 @@ class Web(unittest.TestCase):
         login(self.c, "admin", ADMIN_PW)
         r = self.c.post("/settings/users/1", data={"csrf": csrf(self.c), "action": "role", "role": "viewer"}, follow_redirects=False)
         self.assertIn("err=self", r.headers["location"])
+
+    def test_builtin_admin_keeps_role(self):
+        login(self.c, "admin", ADMIN_PW)
+        self.c.post("/settings/users", data={"csrf": csrf(self.c), "username": "ada", "password": "a-long-password-1", "role": "admin"})
+        o = client(self.app)
+        login(o, "ada", "a-long-password-1")
+        page = o.get("/settings/users").text
+        self.assertIn("Built-in admin: always Admin", page)
+        self.assertNotIn('aria-label="Role for admin"', page)                       # no role drop-down for it
+        self.assertIn('aria-label="Role for ada"', self.c.get("/settings/users").text)   # others keep theirs
+        from securitas.db import User
+        with self.db.Session() as s:
+            uid = s.scalar(select(User.id).where(User.username == "admin"))
+        for action in ({"action": "role", "role": "viewer"}, {"action": "disable"}):
+            r = o.post("/settings/users/%d" % uid, data={"csrf": csrf(o), **action}, follow_redirects=False)
+            self.assertIn("err=builtin", r.headers["location"])
+        with self.db.Session() as s:
+            u = s.get(User, uid)
+            self.assertEqual((u.role, u.disabled), ("admin", False))
 
     def test_password_change_and_disable(self):
         login(self.c, "admin", ADMIN_PW)
@@ -528,12 +564,12 @@ class Web(unittest.TestCase):
         self.jobs.run_scan(self.jobs._claim())
         page = self.c.get("/vulnerabilities").text
         self.assertIn('id="history"', page)
-        self.assertIn('class="on" aria-current="true" href="/vulnerabilities?range=week#history"', page)   # default: weekly
+        self.assertIn('class="on" aria-current="true" href="/vulnerabilities?range=day#history"', page)   # default: daily
         self.assertIn("<title>Kubernetes,", page)
         self.assertIn('id="pie-lv-kubernetes"', page)
         self.assertNotIn("<script", page)
         self.assertIn('aria-current="true" href="/vulnerabilities?range=month#history"', self.c.get("/vulnerabilities?range=month").text)
-        self.assertIn('aria-current="true" href="/vulnerabilities?range=week#history"', self.c.get("/vulnerabilities?range=bogus").text)
+        self.assertIn('aria-current="true" href="/vulnerabilities?range=day#history"', self.c.get("/vulnerabilities?range=bogus").text)
         rep_ = self.c.get("/report").text
         self.assertIn("CVE-2099-0003", rep_)                       # low, not a priority: listed now
         self.assertIn('name="sev" value="low" checked', rep_)
@@ -1282,11 +1318,11 @@ class Menus(unittest.TestCase):
                                  raw={"systems": [{"name": "rocky1", "os": "Rocky Linux 9.6"},
                                                   {"name": "ubu1", "os": "Ubuntu 22.04.4 LTS"}]}))
         page = self.c.get("/compliance/report").text
-        self.assertIn("No benchmark is active", page)
+        self.assertNotIn("Active benchmarks", page)                                    # removed from the report
         self.c.post("/compliance/benchmarks", data={"csrf": csrf(self.c, "/compliance/benchmarks")},
                     files={"file": ("r.zip", role_zip(top="RHEL9-CIS-1.0.0"), "application/zip")})
         page = self.c.get("/compliance/report").text
-        row = lambda host: re.search(r'<td class="mono">%s</td>(.*?)</tr>' % host, page, re.S).group(1)
+        row = lambda host: re.search(r'<td class="mono"><a href="/compliance/targets/\d+">%s</a></td>(.*?)</tr>' % host, page, re.S).group(1)
         self.assertIn("RHEL9-CIS-1.0.0", row("rocky1"))
         self.assertIn("no active benchmark for this OS (ubuntu22)", row("ubu1"))
         self.assertIn("run a vulnerability scan", row("new1"))
@@ -1302,15 +1338,51 @@ class Menus(unittest.TestCase):
         r = self.c.post("/compliance/schedules/linux", data={"csrf": csrf(self.c, "/compliance/schedules"), "cron": "0 6 * * 0",
                                                              "enabled": "on"}, follow_redirects=False)
         self.assertEqual(r.headers["location"], "/compliance/schedules?ok=saved")
-        self.assertIn("err=cron", self.c.post("/compliance/schedules/linux", data={"csrf": csrf(self.c, "/compliance/schedules"),
-                                                                                    "cron": "bad"}, follow_redirects=False).headers["location"])
+        self.assertEqual(self.c.post("/compliance/schedules/linux", data={"csrf": csrf(self.c, "/compliance/schedules"),
+                                                                           "cron": "bad"}, follow_redirects=False).status_code, 400)
         with self.db.Session() as s:
             self.assertEqual(s.scalar(select(ComplianceSchedule.cron).where(ComplianceSchedule.platform == "linux")), "0 6 * * 0")
             self.assertEqual(s.scalar(select(Schedule.cron).where(Schedule.platform == "linux")), "0 5 * * *")   # untouched
         page = self.c.get("/compliance/schedules").text
         self.assertIn("start nothing: Kubernetes.", page)
-        self.assertIn("0 6 * * 0", self.c.get("/compliance").text)
+        self.assertIn("Every Sunday at 06:00", self.c.get("/compliance").text)        # in words, not cron
+        self.assertNotIn('name="cron"', page)                                          # no cron field on compliance schedules
+        self.assertNotIn('value="advanced"', page)
+        self.assertIn('name="cron"', self.c.get("/vulnerabilities/schedules").text)
         self.assertIn('action="/vulnerabilities/schedules/linux"', self.c.get("/vulnerabilities/schedules").text)
+
+    def test_schedule_picker(self):
+        from securitas import schedule_ui as su
+        from securitas.db import Schedule
+        self.assertEqual(su.to_cron({"freq": "hourly", "minute": "15"}), "15 * * * *")
+        self.assertEqual(su.to_cron({"freq": "daily", "hour": "5", "minute": "0"}), "0 5 * * *")
+        self.assertEqual(su.to_cron({"freq": "weekly", "hour": "5", "minute": "30", "weekday": ["4", "0", "1"]}), "30 5 * * 1,4,0")
+        self.assertEqual(su.to_cron({"freq": "monthly", "hour": "23", "minute": "5", "monthday": "28"}), "5 23 28 * *")
+        self.assertEqual(su.to_cron({"freq": "advanced", "cron": " 0  5 * * 1-5 "}), "0 5 * * 1-5")
+        for bad in ({"freq": "weekly", "hour": "5", "minute": "0"}, {"freq": "monthly", "hour": "5", "minute": "0", "monthday": "31"},
+                    {"freq": "daily", "hour": "24", "minute": "0"}, {"freq": "advanced", "cron": "bad"}, {}):
+            self.assertRaises(su.ScheduleError, su.to_cron, bad)
+        self.assertEqual(su.from_cron("30 5 * * 1,4")["weekdays"], [1, 4])
+        self.assertEqual(su.from_cron("0 6 * * 0")["freq"], "weekly")
+        self.assertEqual(su.from_cron("0 5 1-7 * 1")["freq"], "advanced")
+        self.assertEqual(su.from_cron("*/15 * * * *")["freq"], "advanced")
+        self.assertTrue(su.describe("0 5 * * 1,4", "America/New_York").startswith("Every Monday and Thursday at 05:00 E"))
+        self.assertEqual(su.describe("0 5 * * 1,2,3,4,5", "UTC"), "Every weekday (Monday to Friday) at 05:00 UTC")
+        self.assertEqual(su.describe("0 3 2 * *", "UTC"), "On the 2nd of every month at 03:00 UTC")
+        self.assertEqual(len(su.next_runs("0 5 * * *", "UTC")), 3)
+        url = "/vulnerabilities/schedules"
+        r = self.c.post(url + "/linux", data={"csrf": csrf(self.c, url), "freq": "weekly", "hour": "4", "minute": "45",
+                                              "weekday": ["1", "4"], "enabled": "on"}, follow_redirects=False)
+        self.assertIn("ok=saved", r.headers["location"])
+        with self.db.Session() as s:
+            self.assertEqual(s.scalar(select(Schedule.cron).where(Schedule.platform == "linux")), "45 4 * * 1,4")
+        page = self.c.get(url).text
+        self.assertIn("Every Monday and Thursday at 04:45", page)
+        self.assertIn("Next runs:", page)
+        self.assertIn('<option value="weekly" selected>', page)
+        bad = self.c.post(url + "/linux", data={"csrf": csrf(self.c, url), "freq": "weekly", "hour": "4", "minute": "0"})
+        self.assertEqual(bad.status_code, 400)
+        self.assertIn("Linux: Tick at least one weekday.", bad.text)
 
     def test_viewer_menus(self):
         self.c.post("/settings/users", data={"csrf": csrf(self.c), "username": "vic", "password": "a-long-password-1", "role": "viewer"})
@@ -1435,6 +1507,28 @@ class ComplianceScans(unittest.TestCase):
         self.assertIn("Checked", summary)
         report = self.c.get("/compliance/report").text
         self.assertIn("/compliance/scans/%d/hosts/%d" % (cid, res["rocky1"].id), report)
+        self.assertNotIn("Active benchmarks", report)
+        self.assertNotIn("Active benchmarks", summary)
+        from securitas.db import Target
+        with self.db.Session() as s:
+            tid = s.scalar(select(Target.id).where(Target.host == "rocky1"))
+        self.assertIn('href="/compliance/targets/%d">rocky1</a>' % tid, report)          # targets link to their page
+        tp = self.c.get("/compliance/targets/%d" % tid).text
+        self.assertIn("Checks", tp)
+        self.assertIn("patterns not found", tp)                                          # the newest check's rules
+        self.assertIn('name="back" value="/compliance/targets/%d"' % tid, tp)
+        r = self.c.post("/compliance/scans/%d/hosts/%d/exception" % (cid, res["rocky1"].id),
+                        data={"csrf": csrf(self.c, "/compliance"), "rule": "1.1.1", "scope": "server", "reason": "x",
+                              "back": "/compliance/targets/%d" % tid}, follow_redirects=False)
+        self.assertTrue(r.headers["location"].startswith("/compliance/targets/%d?" % tid))
+        r = self.c.post("/compliance/scans/%d/hosts/%d/exception" % (cid, res["rocky1"].id),
+                        data={"csrf": csrf(self.c, "/compliance"), "rule": "1.1.1", "scope": "", "back": "https://evil"},
+                        follow_redirects=False)
+        self.assertTrue(r.headers["location"].startswith("/compliance/scans/"))           # other targets ignored
+        self.assertEqual(self.c.get("/compliance/targets/9999").status_code, 404)
+        bench = self.c.get("/compliance/benchmarks").text
+        self.assertIn("Trivy k8s-cis", bench)                                         # Kubernetes listed with the others
+        self.assertEqual(bench.count("<th>Rules checked</th>"), 2)                    # Linux and Kubernetes tables
         hist = self.c.get("/compliance/scans").text
         self.assertIn("1 of 3", hist)
 
@@ -1458,9 +1552,19 @@ class ComplianceScans(unittest.TestCase):
 
     def test_home_and_about(self):
         self.run_scan()
-        home = self.c.get("/").text
+        vhome = self.c.get("/").text                                                  # Vulnerabilities tab by default
+        self.assertIn('class="on" aria-current="page">Vulnerabilities</a>', vhome)
+        self.assertNotIn("Compliance over time", vhome)
+        self.assertIn('href="/?range=day&tab=vulnerabilities#history"', vhome)
+        home = self.c.get("/?tab=compliance").text
+        self.assertIn('class="on" aria-current="page">Compliance</a>', home)
+        self.assertNotIn("CVEs over time", home)
         self.assertIn("<title>Home", home)
-        self.assertIn("Compliance score per host", home)
+        self.assertNotIn("Compliance score per host", home)                        # moved to Compliance -> Summary
+        self.assertIn("Compliance score per host", self.c.get("/compliance").text)
+        self.assertIn("Compliance over time", home)
+        self.assertIn('href="/?crange=day&tab=compliance#chistory"', home)                          # daily by default
+        self.assertIn("Compliance over time", self.c.get("/compliance").text)
         self.assertIn('id="pie-cr-linux"', home)
         self.assertIn("50.0%", home)
         about = self.c.get("/about").text
@@ -1479,6 +1583,70 @@ class ComplianceScans(unittest.TestCase):
         page = self.c.get("/compliance/scans/%d/hosts/%d" % (cid, rid)).text
         self.assertIn("since removed", page)
         self.assertIn("Ensure cramfs is not available", page)          # rule titles kept with the result
+
+    def test_exceptions(self):
+        cid = self.run_scan()
+        from securitas.db import ComplianceException, ComplianceResult
+        with self.db.Session() as s:
+            rid = s.scalar(select(ComplianceResult.id).where(ComplianceResult.host == "rocky1"))
+        url = "/compliance/scans/%d/hosts/%d" % (cid, rid)
+        page = self.c.get(url).text
+        self.assertIn('<option value="baseline">BASELINE EXCEPTION</option>', page)
+        self.assertIn('<option value="server">SERVER EXCEPTION</option>', page)
+        post = lambda **d: self.c.post(url + "/exception", data={"csrf": csrf(self.c, url), **d}, follow_redirects=False)
+        self.assertIn("err=reason", post(rule="1.1.1", scope="server", reason=" ").headers["location"])
+        self.assertEqual(post(rule="2.10.1", scope="server", reason="x").status_code, 400)     # it passed
+        self.assertIn("ok=exception", post(rule="1.1.1", scope="server", reason="Needed by the backup agent").headers["location"])
+        self.assertIn("Exception saved", self.c.get(url).text)
+        # the next scan reports it as Accepted, with the reason, and counts it towards the score
+        cid2 = self.run_scan_again()
+        with self.db.Session() as s:
+            r = s.scalar(select(ComplianceResult).where(ComplianceResult.scan_id == cid2, ComplianceResult.host == "rocky1"))
+        self.assertEqual((r.counts["fail"], r.counts["accepted"], r.counts["score"]), (0, 1, 100.0))
+        rule = next(x for x in r.rules if x["id"] == "1.1.1")
+        self.assertEqual((rule["status"], rule["exception"]["scope"], rule["exception"]["reason"]),
+                         ("accepted", "server", "Needed by the backup agent"))
+        host = self.c.get("/compliance/scans/%d/hosts/%d" % (cid2, r.id)).text
+        self.assertIn('class="badge b-accepted">Accepted</span>', host)
+        self.assertIn("SERVER EXCEPTION: Needed by the backup agent", host)
+        self.assertIn('Ensure cramfs is not available <span class="small muted"></span>', host)          # a role: no CIS label
+        self.assertIn("var(--cr-accepted)", self.c.get("/?tab=compliance").text)                          # charts have the colour
+        self.assertIn("Needed by the backup agent", self.c.get("/compliance/exceptions").text)
+        ex = self.c.get("/compliance/exceptions?scope=server").text
+        self.assertIn("Needed by the backup agent", ex)
+        self.assertNotIn("Needed by the backup agent", self.c.get("/compliance/exceptions?scope=baseline").text)
+        self.assertIn('<option value="baseline">BASELINE EXCEPTION</option>', ex)
+        # a baseline exception replaces this host's server exception and covers every host of the benchmark
+        self.assertIn("ok=exception", post(rule="1.1.1", scope="baseline", reason="Not used here").headers["location"])
+        with self.db.Session() as s:
+            rows = [(x.benchmark, x.rule_id, x.scope, x.host) for x in s.scalars(select(ComplianceException)).all()]
+        self.assertEqual(rows, [("RHEL9-CIS", "1.1.1", "baseline", "")])
+        with self.db.Session() as s:
+            exc = self.jobs.exceptions_for(s, "RHEL9-CIS-9.9.9")                                 # another version: same name
+        from securitas import scan_compliance as scm
+        rules, n = [{"id": "1.1.1", "status": "fail"}, {"id": "2.10.1", "status": "pass"}], {"pass": 1, "fail": 1}
+        scm.apply_exceptions(rules, n, "any-host", exc)
+        self.assertEqual((rules[0]["status"], n["score"]), ("accepted", 100.0))
+        # viewers can read exceptions but not change them; removing one is audited
+        self.c.post("/settings/users", data={"csrf": csrf(self.c), "username": "vic", "password": "a-long-password-1", "role": "viewer"})
+        v = client(self.app)
+        login(v, "vic", "a-long-password-1")
+        self.assertNotIn('name="scope"', v.get(url).text)
+        self.assertEqual(v.post(url + "/exception", data={"csrf": csrf(v, url), "rule": "1.1.1", "scope": "server",
+                                                          "reason": "x"}, follow_redirects=False).status_code, 403)
+        self.assertIn("Not used here", v.get("/compliance/exceptions").text)
+        with self.db.Session() as s:
+            xid = s.scalar(select(ComplianceException.id))
+        self.c.post("/compliance/exceptions/%d/delete" % xid, data={"csrf": csrf(self.c, "/compliance/exceptions")})
+        with self.db.Session() as s:
+            self.assertIsNone(s.scalar(select(ComplianceException.id)))
+        self.assertIn("compliance_exception.remove", self.c.get("/audit").text)
+
+    def run_scan_again(self):
+        self.c.post("/compliance/scans", data={"csrf": csrf(self.c, "/compliance/scans"), "platform": "linux"})
+        cid = self.jobs._claim_compliance()
+        self.jobs.run_compliance(cid)
+        return cid
 
     def test_viewer_cannot_run_and_schedule_runs(self):
         from securitas.db import ComplianceSchedule, ComplianceScan
@@ -1604,3 +1772,374 @@ class WindowsCompliance(unittest.TestCase):
         detail = c.get("/compliance/benchmarks/1").text
         self.assertIn("2 of 4 on member servers, 2 of 4 on domain controllers", detail)
         self.assertIn("by each host&#39;s role", detail)
+
+
+def make_cert(names=("securitas.example.com",), days=365, ca=None, eku=True):
+    """(cert, key) for tests; signed by ca=(cert, key) when given, else self-signed."""
+    import datetime as dt
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+    key = ec.generate_private_key(ec.SECP256R1())
+    now = dt.datetime.now(dt.timezone.utc)
+    subj = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, names[0] if names else "CA")])
+    b = (x509.CertificateBuilder().subject_name(subj).issuer_name(ca[0].subject if ca else subj)
+         .public_key(key.public_key()).serial_number(x509.random_serial_number())
+         .not_valid_before(now - dt.timedelta(days=max(1, 5 - days))).not_valid_after(now + dt.timedelta(days=days)))
+    if names:
+        b = b.add_extension(x509.SubjectAlternativeName([x509.DNSName(n) for n in names]), False)
+    if eku:
+        b = b.add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), False)
+    return b.sign(ca[1] if ca else key, hashes.SHA256()), key
+
+
+class Certificates(unittest.TestCase):
+    def setUp(self):
+        self.app, self.db, self.jobs, self.cfg = make_app(tls_secrets=["securitas-tls"], tls_hosts=["securitas.example.com"],
+                                                          namespace="securitas")
+        self.c = client(self.app)
+        login(self.c, "admin", ADMIN_PW)
+        from cryptography.hazmat.primitives import serialization as ser
+        self.ser = ser
+        self.ca = make_cert((), 3650, eku=False)
+        old, _ = make_cert(days=10, ca=self.ca)
+        self.store = {"crt": old.public_bytes(ser.Encoding.PEM), "key": None}
+        from securitas import k8s
+        self._get, self._put = k8s.get_tls_secret, k8s.put_tls_secret
+        k8s.get_tls_secret = lambda cfg, name: (self.store["crt"], True)
+        k8s.put_tls_secret = lambda cfg, name, crt, key: self.store.update(crt=crt, key=key, name=name)
+
+    def tearDown(self):
+        from securitas import k8s
+        k8s.get_tls_secret, k8s.put_tls_secret = self._get, self._put
+
+    def pem(self, c, k=None):
+        ser = self.ser
+        return c.public_bytes(ser.Encoding.PEM), (k.private_bytes(ser.Encoding.PEM, ser.PrivateFormat.PKCS8, ser.NoEncryption()) if k else b"")
+
+    def post(self, files, **data):
+        url = "/settings/certificates"
+        return self.c.post(url, data={"csrf": csrf(self.c, url), **data}, files=files, follow_redirects=False)
+
+    def test_page_and_replace(self):
+        page = self.c.get("/settings/certificates").text
+        self.assertIn("securitas-tls", page)
+        self.assertIn("days left", page)
+        self.assertIn('href="/settings/certificates"', self.c.get("/settings").text)
+        new, key = make_cert(ca=self.ca)
+        crt, kp = self.pem(new, key)
+        chain, _ = self.pem(self.ca[0])
+        files = {"cert": ("c.pem", crt), "key": ("k.pem", kp), "chain": ("ca.pem", chain)}
+        r = self.post(files, action="check")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("This certificate can be used", r.text)
+        self.assertIsNone(self.store["key"])                                         # check only: nothing written
+        self.assertEqual(self.post(files, action="replace").status_code, 400)        # Confirm not ticked
+        r = self.post(files, action="replace", confirm="on")
+        self.assertIn("ok=cert", r.headers["location"])
+        self.assertEqual(self.store["crt"], crt)                                     # the root CA is not put in tls.crt
+        self.assertIn(b"PRIVATE KEY", self.store["key"])
+        self.assertIn("tls.replaced", self.c.get("/audit").text)
+
+    def test_pfx_and_problems(self):
+        from cryptography.hazmat.primitives.serialization import pkcs12, BestAvailableEncryption
+        new, key = make_cert(ca=self.ca)
+        pfx = pkcs12.serialize_key_and_certificates(b"x", key, new, [self.ca[0]], BestAvailableEncryption(b"pw"))
+        self.assertIn("wrong password", self.post({"pfx": ("s.pfx", pfx)}, action="check", password="nope").text)
+        r = self.post({"pfx": ("s.pfx", pfx)}, action="replace", confirm="on", password="pw")
+        self.assertIn("ok=cert", r.headers["location"])
+        other, okey = make_cert(("other.example.com",), ca=self.ca)
+        crt, kp = self.pem(other, okey)
+        r = self.post({"cert": ("c.pem", crt), "key": ("k.pem", kp)}, action="replace", confirm="on")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("does not cover securitas.example.com", r.text)
+        _, wrong = make_cert()
+        r = self.post({"cert": ("c.pem", self.pem(new)[0]), "key": ("k.pem", self.pem(new, wrong)[1])}, action="check")
+        self.assertIn("does not belong to the certificate", r.text)
+        old, oldkey = make_cert(days=-2, ca=self.ca)
+        r = self.post({"cert": ("c.pem", self.pem(old)[0]), "key": ("k.pem", self.pem(old, oldkey)[1])}, action="check")
+        self.assertIn("The certificate expired", r.text)
+
+    def test_admins_only(self):
+        self.c.post("/settings/users", data={"csrf": csrf(self.c), "username": "otto", "password": "a-long-password-1", "role": "operator"})
+        o = client(self.app)
+        login(o, "otto", "a-long-password-1")
+        self.assertEqual(o.get("/settings/certificates").status_code, 403)
+        self.assertNotIn("/settings/certificates", o.get("/settings").text)
+        self.assertEqual(o.post("/settings/certificates", data={"csrf": csrf(o)}).status_code, 403)
+
+
+def audit_zip(top="RHEL9-CIS-Audit-d9c0f2ce3be6", cis="rhel9cis_nfs_server: true\nrhel9cis_rpc_server: true\n"
+              "rhel9cis_rule_2_1_9: true\nrhel9cis_level_1: true\nbenchmark_version: v1.0.0\nrhel9cis_motd: 'hello'\n",
+              extra=None):
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr(top + "/goss.yml", "gossfile:\n  section_1/*.yml: {}\n")
+        z.writestr(top + "/vars/CIS.yml", cis)
+        z.writestr(top + "/section_1/cis_1.1.1.yml", "file: {}\n")
+        z.writestr(top + "/.github/workflows/x.yml", "x: 1\n")
+        for k, v in (extra or {}).items():
+            z.writestr(top + "/" + k, v)
+    return buf.getvalue()
+
+
+class AuditBundle(unittest.TestCase):
+    def test_settings_and_bundle(self):
+        import io
+        import tarfile
+        import yaml
+        from securitas import audit_bundle as ab
+        data = audit_zip()
+        audit = ab.audit_defaults(data)
+        role = {"rhel9cis_rpc_server": False, "rhel9cis_rule_2_1_9": False, "rhel9cis_level_1": False, "rhel9cis_motd": "role"}
+        s = {k: (v, src) for k, v, src, _ in ab.settings(audit, role, {"rhel9cis_nfs_server": False})}
+        self.assertEqual(s, {"rhel9cis_nfs_server": (False, "here"), "rhel9cis_rpc_server": (False, "role")})  # no rule/level
+        v = ab.effective_vars(audit, role, {"rhel9cis_nfs_server": False, "nope": True})
+        self.assertEqual((v["rhel9cis_nfs_server"], v["rhel9cis_rpc_server"], v["rhel9cis_rule_2_1_9"], v["rhel9cis_level_1"],
+                          v["rhel9cis_motd"]), (False, False, True, True, "hello"))     # rule/level switches and text never from the role
+        self.assertNotIn("nope", v)
+        b1, h1 = ab.build(data, v)
+        b2, h2 = ab.build(data, v)
+        self.assertEqual((b1, h1), (b2, h2))                                             # deterministic
+        self.assertNotEqual(h1, ab.build(data, audit)[1])
+        with tarfile.open(fileobj=io.BytesIO(b1)) as t:
+            members = t.getmembers()
+            names = sorted(m.name for m in members)
+            self.assertTrue(all(m.isfile() or m.isdir() for m in members))
+            self.assertTrue(all(n.startswith("./") and ".." not in n for n in names))
+            self.assertIn("./goss.yml", names)
+            self.assertFalse(any(".github" in n for n in names))
+            self.assertFalse(yaml.safe_load(t.extractfile("./vars/CIS.yml").read())["rhel9cis_nfs_server"])
+        g = '{{ if eq .Vars.rhel9cis_firewall "firewalld" }}\n  a/*.yml: {}\n{{ end }}\n{{ if eq .Vars.rhel9cis_firewall "nftables" }}\n  b/*.yml: {}\n{{ end }}\n{{ if .Vars.rhel9cis_section1 }}\n'
+        out, n = ab.all_alternatives(g)
+        self.assertEqual(n, 2)                                                          # both alternatives run
+        self.assertEqual(out.count("{{ if true }}"), 2)
+        self.assertIn("{{ if .Vars.rhel9cis_section1 }}", out)                         # other conditions untouched
+
+    def test_bad_audit_zips(self):
+        from securitas import audit_bundle as ab
+        from securitas.compliance import BenchmarkError
+
+        class B:
+            name = "RHEL9-CIS"
+        self.assertEqual(ab.parse_audit_zip(audit_zip(), B)["commit"], "d9c0f2ce3be6")
+        import io
+        import zipfile
+        for bad in (b"not a zip", audit_zip(cis="other_setting: 1\n")):
+            self.assertRaises(BenchmarkError, ab.parse_audit_zip, bad, B)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("A/goss.yml", "x")
+            z.writestr("A/vars/CIS.yml", "rhel9cis_x: true")
+            i = zipfile.ZipInfo("A/evil")
+            i.external_attr = (0o120777 << 16)
+            z.writestr(i, "/etc/shadow")
+        self.assertRaises(BenchmarkError, ab.parse_audit_zip, buf.getvalue(), B)       # symlink refused
+
+    def test_run_host_copies_and_runs(self):
+        from securitas import scan_compliance as scm
+
+        class Chan:
+            def __init__(self, log):
+                self.log, self.data = log, b""
+            def settimeout(self, t): pass
+            def exec_command(self, c): self.log.append(("exec", c))
+            def sendall(self, d): self.data += d
+            def shutdown_write(self): self.log.append(("sent", self.data))
+            def recv_exit_status(self): return 0
+            def recv_stderr_ready(self): return False
+            def close(self): pass
+
+        class Out:
+            def __init__(self, text): self.text, self.channel = text, self
+            def read(self): return self.text.encode()
+            def recv_exit_status(self): return 0
+
+        class Client:
+            def __init__(self, reply):
+                self.log, self.reply = [], reply
+            def get_transport(self):
+                c = self
+                class T:
+                    def open_session(self, timeout=None): return Chan(c.log)
+                return T()
+            def exec_command(self, cmd, timeout=None):
+                self.log.append(("run", cmd))
+                return None, Out(self.reply if "securitas-cis-audit" in cmd else ""), None
+            def close(self): pass
+
+        orig = scm.scan_linux.connect
+        try:
+            cl = Client("##OS Rocky Linux 9.6\n" + GOSS_OUT)
+            scm.scan_linux.connect = lambda cfg, t, rk: cl
+            cfg = type("C", (), {"host_timeout": 60})()
+            t = {"host": "h", "key": "RHEL9-CIS-1.0.0", "system_type": "server", "bundle": (b"BUNDLE", "ab" * 32),
+                 "rules": [{"id": "1.1.1", "title": "x", "kind": "PATCH"}]}
+            r = scm.run_host(cfg, t, None)
+            self.assertEqual(r["content"], "bundle:" + "ab" * 32)
+            up = [c for k, c in cl.log if k == "exec"][0]
+            path = re.search(r"cat > (\S+)", up).group(1)
+            self.assertRegex(path, r"^/tmp/\.securitas-[A-Za-z0-9]{24}\.tar\.gz$")
+            self.assertIn("noclobber", up)
+            self.assertIn(("sent", b"BUNDLE"), cl.log)
+            run = [c for k, c in cl.log if k == "run" and "securitas-cis-audit" in c][0]
+            self.assertIn("RHEL9-CIS-1.0.0 server " + path, run)
+            self.assertTrue(any(k == "run" and c == "rm -f " + path for k, c in cl.log))   # cleanup
+            cl = Client('##OS Rocky\n{"error":"benchmark RHEL9-CIS-1.0.0: no audit content (goss.yml, vars/CIS.yml)"}\n')
+            with self.assertRaisesRegex(RuntimeError, "update the agent"):
+                scm.run_host(cfg, t, None)
+            with self.assertRaisesRegex(RuntimeError, "could not be built"):
+                scm.run_host(cfg, {**t, "bundle": ValueError("bad zip")}, None)
+            self.assertRaises(ValueError, scm.remote_command, "K", "server", "/etc/passwd")
+        finally:
+            scm.scan_linux.connect = orig
+
+
+class AuditUploadAndAgent(unittest.TestCase):
+    def setUp(self):
+        T = ComplianceScans("run_scan")
+        T.setUp()
+        self.t = T
+        from securitas.db import Benchmark
+        with T.db.Session() as s:
+            self.bid = s.scalar(select(Benchmark.id))
+        self.url = "/compliance/benchmarks/%d" % self.bid
+
+    def test_upload_settings_and_scan_uses_bundle(self):
+        c = self.t.c
+        page = c.get(self.url).text
+        self.assertIn("Not uploaded", page)
+        r = c.post(self.url + "/audit", data={"csrf": csrf(c, self.url)}, files={"file": ("x.zip", b"junk")},
+                   follow_redirects=False)
+        self.assertIn("err=audit", r.headers["location"])
+        r = c.post(self.url + "/audit", data={"csrf": csrf(c, self.url)}, files={"file": ("a.zip", audit_zip())},
+                   follow_redirects=False)
+        self.assertIn("ok=audit", r.headers["location"])
+        page = c.get(self.url).text
+        self.assertIn("RHEL9-CIS-Audit-d9c0f2ce3be6", page)
+        self.assertIn("rhel9cis_nfs_server", page)
+        self.assertNotIn("rhel9cis_rule_2_1_9<", page)
+        c.post(self.url, data={"csrf": csrf(c, self.url), "action": "audit_settings", "shown": ["rhel9cis_nfs_server"],
+                               "set_rhel9cis_nfs_server": "off"})
+        from securitas.db import Benchmark, ComplianceResult
+        with self.t.db.Session() as s:
+            self.assertEqual(s.get(Benchmark, self.bid).meta["audit_settings"], {"rhel9cis_nfs_server": False})
+        cid = self.t.run_scan()
+        self.assertTrue(all(isinstance(x["bundle"], tuple) for x in self.t.seen))       # the scanner got the bundle
+        with self.t.db.Session() as s:
+            from securitas import compliance
+            b = s.get(Benchmark, self.bid)
+            want = compliance.audit_bundle(s, b)[1]
+        self.assertEqual(self.t.seen[0]["bundle"][1], want)
+        self.assertIn("benchmark.audit_uploaded", c.get("/audit").text)
+        self.assertIn("benchmark.audit_settings", c.get("/audit").text)
+
+    def test_agent_page_and_script(self):
+        c = self.t.c
+        anon = client(self.t.app)
+        s = anon.get("/agent/install.sh")                                              # public: no secrets in it
+        self.assertEqual(s.status_code, 200)
+        self.assertIn("securitas-agent-setup --user", s.text)
+        self.assertIn("SCAN_USER=svc-securitas", s.text)
+        self.assertIn("BASE=http://testserver", s.text)
+        self.assertNotIn("PRIVATE", s.text)
+        self.assertIn(anon.get("/agent/securitas-agent.rpm").status_code, (200, 404))
+        self.assertIn(anon.get("/settings/agent", follow_redirects=False).status_code, (303, 401, 403))
+        page = c.get("/settings/agent").text
+        self.assertIn("curl -fsS http://testserver/agent/install.sh | sudo bash", page)
+        r = c.post("/settings/agent", data={"csrf": csrf(c, "/settings/agent"), "allowed": "192.168.11.42, 192.168.11.43"},
+                   follow_redirects=False)
+        self.assertIn("ok=saved", r.headers["location"])
+        self.assertIn("SCAN_FROM=192.168.11.42,192.168.11.43", anon.get("/agent/install.sh").text)
+        self.assertIn("err=agentfrom", c.post("/settings/agent", data={"csrf": csrf(c, "/settings/agent"),
+                                                                      "allowed": "x; rm -rf /"}, follow_redirects=False).headers["location"])
+
+
+def package_zip(top="RHEL9-CIS-2.0.0", rules=None):
+    import io
+    import zipfile
+    rules = rules or [{"id": "1.1.1", "title": "Ensure cramfs is not available", "assessment": "Automated",
+                       "profiles": ["level1-server", "level1-workstation"]},
+                      {"id": "1.1.2", "title": "Ensure /tmp is a separate partition", "assessment": "Manual",
+                       "profiles": ["level1-server"]},
+                      {"id": "2.10.1", "title": "Ensure ssh is configured", "assessment": "Automated",
+                       "profiles": ["level2-server"]}]
+    name, version = top.rsplit("-", 1)
+    pkg = {"format": "securitas-benchmark/1", "key": top, "name": name, "version": version, "revision": 1,
+           "platform": "linux", "kind": "CIS", "rules": rules,
+           "cis": {"document": "CIS Red Hat Enterprise Linux 9 Benchmark", "version": "v" + version, "date": "06-24-2024",
+                   "pdf_sha256": "ab" * 32}, "audit": {"source": "RHEL9-CIS-Audit-x"},
+           "coverage": {"automated_without_check": [], "manual_with_check": []}}
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr(top + "/securitas-benchmark.json", json.dumps(pkg))
+        z.writestr(top + "/audit/goss.yml", "gossfile: {}\n")
+        z.writestr(top + "/audit/vars/CIS.yml", "rhel9cis_nfs_server: true\nrhel9cis_rule_1_1_1: true\n")
+        z.writestr(top + "/audit/section_1/cis_1.1.1.yml", "file: {}\n")
+    return buf.getvalue()
+
+
+class BenchmarkPackages(unittest.TestCase):
+    def setUp(self):
+        self.app, self.db, self.jobs, self.cfg = make_app()
+        self.c = client(self.app)
+        login(self.c, "admin", ADMIN_PW)
+
+    def test_package_import(self):
+        r = self.c.post("/compliance/benchmarks", data={"csrf": csrf(self.c, "/compliance/benchmarks")},
+                        files={"file": ("p.zip", package_zip(), "application/zip")}, follow_redirects=False)
+        self.assertIn("ok=imported", r.headers["location"])
+        from securitas.db import Benchmark, BenchmarkFile
+        from securitas import compliance
+        with self.db.Session() as s:
+            b = s.scalar(select(Benchmark))
+            self.assertEqual((b.key, b.name, b.version, b.benchmark_version, b.os_key, b.platform),
+                             ("RHEL9-CIS-2.0.0", "RHEL9-CIS", "2.0.0", "v2.0.0", "rhel9", "linux"))
+            self.assertEqual({r.rule_id: r.assessment for r in b.rules}, {"1.1.1": "Automated", "1.1.2": "Manual", "2.10.1": "Automated"})
+            self.assertEqual([x["id"] for x in compliance.checked_rules(b)], ["1.1.1", "1.1.2"])   # level1-server
+            self.assertEqual(compliance.checked_rules(b)[1]["assessment"], "Manual")
+            kinds = sorted(f.kind for f in s.scalars(select(BenchmarkFile)).all())
+            self.assertEqual(kinds, ["audit", "package"])                                          # checks stored
+            self.assertIsNotNone(compliance.audit_bundle(s, b))
+            bid = b.id
+        page = self.c.get("/compliance/benchmarks/%d" % bid).text
+        self.assertIn("as the CIS document labels them", page)
+        self.assertIn("Ensure /tmp is a separate partition <span class=\"small muted\">(manual)</span>", page)
+        self.assertNotIn("Ensure /tmp is a separate partition</td>", self.c.get("/compliance/benchmarks/%d?kind=Automated" % bid).text)
+        self.assertEqual(self.c.get("/compliance/benchmarks/%d/download" % bid).status_code, 200)
+
+    def test_bad_packages(self):
+        import zipfile, io
+        for bad, msg in ((package_zip(rules=[{"id": "1.1", "title": "x", "assessment": "Maybe", "profiles": []}]), "Automated or Manual"),
+                         (package_zip(rules=[{"id": "1.1", "title": "x", "assessment": "Manual", "profiles": []}] * 2), "repeated")):
+            r = self.c.post("/compliance/benchmarks", data={"csrf": csrf(self.c, "/compliance/benchmarks")},
+                            files={"file": ("p.zip", bad, "application/zip")})
+            self.assertIn(msg, r.text)
+
+
+class ReportByTest(unittest.TestCase):
+    def test_by_test_pages(self):
+        T = ComplianceScans("run_scan")
+        T.setUp()
+        T.run_scan()
+        c = T.c
+        from securitas.db import Benchmark
+        with T.db.Session() as s:
+            bid = s.scalar(select(Benchmark.id))
+        rep = c.get("/compliance/report").text
+        self.assertIn("Compliance Report by Target</h2>", rep)
+        self.assertIn('href="/compliance/report/tests">Compliance Report by Test</a>', rep)
+        page = c.get("/compliance/report/tests").text
+        self.assertIn('class="on" aria-current="page">Compliance Report by Test</a>', page)
+        self.assertIn('href="/compliance/report/tests/%d/1.1.1">1.1.1</a>' % bid, page)
+        self.assertIn('<a href="/compliance/report" class="on">Report</a>', page)               # the Report tab stays lit
+        self.assertNotIn("/compliance/report/tests/%d/2.10.1\"" % bid, c.get("/compliance/report/tests?only=fail").text)
+        one = c.get("/compliance/report/tests/%d/1.1.1" % bid).text
+        self.assertIn("rocky1", one)
+        self.assertIn('<span class="badge b-failed">Failed</span>', one)
+        self.assertIn("patterns not found", one)                                                # the failed test's output
+        self.assertIn("rocky2", one)                                                            # matched, never checked
+        self.assertEqual(c.get("/compliance/report/tests/%d/9.9.9" % bid).status_code, 404)

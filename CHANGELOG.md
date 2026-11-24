@@ -1,5 +1,86 @@
 # Changelog
 
+## 0.6.0 (2026-11-24)
+
+Compliance you can tailor and trust: exceptions for failed rules, a Linux agent that runs the same checks on every
+host, benchmark packages built from the official CIS documents, and a compliance report by test.
+
+### New
+
+- **Exceptions on failed rules.** On a host's compliance result, each failed rule has a drop-down
+  (*BASELINE EXCEPTION* or *SERVER EXCEPTION*) and a reason (required). A **baseline exception** applies to every
+  host checked against that benchmark (matched by benchmark name, e.g. `RHEL9-CIS`, so it carries over to a newer
+  version of the same role); a **server exception** applies only to that host and wins over a baseline one.
+  Choosing *No exception* removes the exception that applies. Admins only; viewers and operators can read them.
+- **Accepted results.** Compliance scans after an exception is saved report the rule as **Accepted** (yellow),
+  with the exception type and reason next to it. Until the next scan, the rule stays Failed and shows
+  *Exception saved*. Removing an exception makes the rule Failed again from the next scan.
+- **Score.** Accepted rules count as met: score = (passed + accepted) / (passed + accepted + failed).
+- **Compliance → Exceptions**: every exception with its benchmark, rule, scope, host, reason, who saved it and
+  when; admins can remove them there. Every change is in the audit log.
+- **Settings → Certificates** (admins only): see the web site's TLS certificate (names, issuer, validity, days
+  left, fingerprint) and replace it with PEM files (certificate, key, optional chain; or pasted text) or a
+  PFX / PKCS#12 file with its password. *Check* shows the new certificate and any problems; *Replace* (with
+  Confirm) writes it to the ingress TLS Secret, which the ingress picks up by itself. Refused when the key does not
+  match, the certificate is expired or not yet valid, lacks server authentication, or does not cover the ingress
+  host names; warns when it expires within 30 days, is self-signed or comes without its issuing CA. Securitas
+  keeps no copy of the key; every replacement is in the audit log. Chart: `ingress.manageCertificates` (default
+  `true`) adds a Role that can only get and patch the Secrets named in `ingress.tls`.
+- **Friendlier schedules** on *Vulnerabilities → Schedules* and *Compliance → Schedules*: pick every hour (at
+  minute), every day, chosen weekdays or a day of the month, and a time, in the configured time zone; each
+  platform shows its schedule in words ("Every Monday and Thursday at 05:00 EST") and the next three runs.
+  *Advanced (cron)* keeps a raw cron field. Schedules are still stored and run as cron; existing ones open in the
+  matching picker.
+- **The built-in admin account** (`SECURITAS_ADMIN_USERNAME`) has no role drop-down and cannot be disabled: it
+  always stays an Admin, so no other admin can take its rights away.
+- *Compliance* menu: **Exceptions** now comes before Schedules.
+- The **compliance score per host** bars moved from Home to *Compliance → Summary*.
+- **Securitas agent for Linux** (RPM `securitas-agent`, Rocky/RHEL/AlmaLinux 8 and 9, x86_64): the compliance
+  wrapper, a checksum-pinned Goss and `securitas-agent-setup` (scan account, Securitas's SSH key with
+  `restrict`/`from=`, one sudo rule for the wrapper). Install with one line from Securitas
+  (`curl -fsS https://<securitas>/agent/install.sh | sudo bash`) or from the RPM on each GitHub release.
+  **Settings → Agent** (admins) shows the install command and the allowed source addresses.
+- **Audit content copied at scan time:** upload the benchmark's Ansible-Lockdown audit zip on its page; each
+  Linux compliance scan builds one bundle from it (with the settings below), copies it to a random hidden file in
+  `/tmp`, and the agent runs it as root in a new root-only directory and deletes it. Every host runs the same
+  content; each result shows the bundle's fingerprint ("host copy" when a host's own copy was used).
+- **Securitas benchmark packages** built from the official CIS benchmark PDF (`tools/cis_package.py`, needs
+  pypdf): every recommendation's ID, title, **Automated/Manual label** and profiles exactly as the document states
+  them (only these facts, no prose; the PDF's SHA-256 is recorded), plus the audit checks in `audit/`. The build
+  stops when the checks name rules the document does not have, and reports Automated recommendations without a
+  check. Upload a package like a role zip; its checks are stored as the benchmark's audit content.
+- Every rule title (host and target results, benchmark rules, exceptions) ends in **(automated)** or
+  **(manual)**, the official CIS label from the package. Ansible-Lockdown role zips carry no such label (their
+  PATCH/AUDIT means "the role fixes it" / "audit only", which differs from CIS for 28 RHEL 9 rules), so the
+  benchmark page shows it separately as "role: fixes it / audit only".
+- **Compliance → Exceptions**: filter by BASELINE or SERVER exceptions.
+- **Compliance → Report** has two tabs: **Compliance Report by Target** (the report as before) and **Compliance
+  Report by Test**: every rule of each active benchmark with how many targets passed, were accepted, failed, did
+  not apply or had no automated check (search, checked rules only, rules that failed somewhere). Each rule number
+  opens that test on every target: its result, exception and the failed tests' output.
+- **Every automated check runs:** where the audit content includes check folders for only one choice
+  (firewalld or nftables, journald or rsyslog), the bundle runs both; the alternative a host does not use fails
+  and can be accepted with an exception.
+- **Audit settings** per benchmark (e.g. `rhel9cis_nfs_server`): from the audit content, then the role zip (on/off
+  and number settings only; the role's text values can be Ansible expressions), then what an admin sets on the
+  benchmark page. Rules that the audit skipped for such a setting (2.1.9 and 2.1.12
+  on RHEL 9 by default) get real checks once it is off.
+- **Home** has two tabs, **Vulnerabilities** (the default) and **Compliance**, each with its own headline
+  numbers, table and charts.
+- **Compliance → Schedules** shows only the picker (no cron field or Advanced option; cron is still used behind
+  the scenes). Compliance → Summary shows each schedule in words.
+- **Compliance → Report**: the Linux and Windows tables have the same column widths, so they line up; each
+  system links to its new **compliance page** (`/compliance/targets/<id>`): benchmark, newest check, every check
+  with its score, and the newest check's rules with the exception drop-downs.
+- *Active benchmarks* removed from *Compliance → Summary* and *Report* (the same information, with the rules
+  checked, is on *Compliance → Benchmarks*). *Benchmarks* now lists Kubernetes too (Trivy `k8s-cis`, not set up
+  yet) with the same columns as Linux and Windows.
+- **Compliance over time** graph on Home and Compliance → Summary: the average compliance score per platform
+  (each host's newest check at the end of each day, week or month), daily, weekly or monthly like the CVE graph.
+- The *over time* graphs (CVEs and compliance) now open on the **daily** view (was weekly).
+- **Charts and tables** have an Accepted colour and column: the per-host score bars, the rule-result pies, Home,
+  Compliance summary, report, scan list and scan pages.
+
 ## 0.5.0 (2026-11-21)
 
 Compliance: a library of CIS benchmarks, and Linux and Windows hosts checked against them.

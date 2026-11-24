@@ -2,9 +2,9 @@
 {% block content %}
 <section>
   <h2>Summary</h2>
-  <p class="sub">Compliance per platform from each system's newest compliance check: how many systems are matched to an active benchmark, how many were checked, and their rules passed and failed. The score is the share of passed rules among those passed or failed (rules that do not apply or have no automated check are not counted), averaged over the systems. Select a platform to open its section of the <a href="/compliance/report">report</a>.</p>
+  <p class="sub">Compliance per platform from each system's newest compliance check: how many systems are matched to an active benchmark, how many were checked, and their rules passed and failed. The score is the share of passed and accepted rules among those passed, accepted or failed (an accepted rule failed but has an exception; rules that do not apply or have no automated check are not counted), averaged over the systems. Select a platform to open its section of the <a href="/compliance/report">report</a>.</p>
   <div class="scroll"><table class="summary">
-    <thead><tr><th>Platform</th><th>Status</th><th>Last checked</th><th class="n">Systems</th><th class="n">Matched</th><th class="n">Checked</th><th>Benchmark</th><th class="n">Rules passed</th><th class="n">Rules failed</th><th class="n">Score</th><th>Schedule</th></tr></thead>
+    <thead><tr><th>Platform</th><th>Status</th><th>Last checked</th><th class="n">Systems</th><th class="n">Matched</th><th class="n">Checked</th><th>Benchmark</th><th class="n">Rules passed</th><th class="n">Rules accepted</th><th class="n">Rules failed</th><th class="n">Score</th><th>Schedule</th></tr></thead>
     <tbody>
     {% for r in rows %}{% set sc = sched.get(r.id) %}
     <tr>
@@ -16,9 +16,10 @@
       <td class="n">{% if r.systems is not none %}{{ r.checked }}{% endif %}</td>
       <td class="small mono">{% if r.systems is none %}<span class="muted">Trivy k8s-cis</span>{% elif r.benchmarks %}{{ r.benchmarks|join(", ") }}{% else %}<span class="muted">none</span>{% endif %}</td>
       <td class="n">{% if r.checked %}{{ "{:,}".format(r.passed) }}{% endif %}</td>
+      <td class="n{% if r.accepted %} acc{% endif %}">{% if r.checked %}{{ "{:,}".format(r.accepted) }}{% endif %}</td>
       <td class="n{% if r.failed %} hot{% endif %}">{% if r.checked %}{{ "{:,}".format(r.failed) }}{% endif %}</td>
       <td class="n">{% if r.score is not none %}<strong>{{ r.score }}%</strong>{% endif %}</td>
-      <td class="small">{% if sc and sc.enabled %}<span class="mono">{{ sc.cron }}</span>{% else %}<span class="muted">off</span>{% endif %}</td>
+      <td class="small">{% if sc and sc.enabled %}{{ describe(sc.cron) }}{% else %}<span class="muted">off</span>{% endif %}</td>
     </tr>
     <tr><td colspan="11" class="small muted">{{ r.note }}</td></tr>
     {% endfor %}
@@ -26,18 +27,16 @@
   </table></div>
   {% if can(user.role, "scan.run") %}<p><a class="btn" href="/compliance/scans">Run a compliance scan</a></p>{% endif %}
 </section>
-<section>
-  <h2>Active benchmarks</h2>
-  <p class="sub">{{ active|length }} active of {{ nbench }} loaded. Manage them under <a href="/compliance/benchmarks">Benchmarks</a>.</p>
-  {% if not active %}<p class="muted">No benchmark is active.</p>{% else %}
-  <div class="scroll"><table>
-    <thead><tr><th>Benchmark</th><th>Operating system</th><th>Profile</th><th>Rules checked</th></tr></thead>
-    <tbody>
-    {% for b in active %}{% set c = counts[b.id] %}
-    <tr><td><a href="/compliance/benchmarks/{{ b.id }}" class="mono"><strong>{{ b.key }}</strong></a><br><span class="small muted">{{ name(b) }}</span></td>
-      <td>{{ b.os_label }}</td><td class="small">{{ profiles[b.profile] }}</td><td>{{ c.on }} of {{ c.total }}</td></tr>
-    {% endfor %}
-    </tbody></table></div>
-  {% endif %}
+{% if cbars %}
+<section class="chartcard">
+  <h2>Compliance score per host</h2>
+  <p class="sub">Passed, accepted and failed rules of each host's newest check, lowest score first. Select a host for its rules.</p>
+  {{ cbars|safe }}
+</section>
+{% endif %}
+<section class="chartcard" id="chistory">
+  <h2>Compliance over time {{ crange_switch|safe }}</h2>
+  <p class="sub">Average compliance score per platform: each host's newest check at the end of each {{ {"day": "day", "week": "week", "month": "month"}[crange] }}, averaged over the platform's hosts.</p>
+  {{ chistory|safe }}
 </section>
 {% endblock %}
