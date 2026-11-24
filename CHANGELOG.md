@@ -43,8 +43,16 @@ Compliance exceptions: accept a failed rule, for every host or for one.
   Linux compliance scan builds one bundle from it (with the settings below), copies it to a random hidden file in
   `/tmp`, and the agent runs it as root in a new root-only directory and deletes it. Every host runs the same
   content; each result shows the bundle's fingerprint ("host copy" when a host's own copy was used).
+- **Securitas benchmark packages** built from the official CIS benchmark PDF (`tools/cis_package.py`, needs
+  pypdf): every recommendation's ID, title, **Automated/Manual label** and profiles exactly as the document states
+  them (only these facts, no prose; the PDF's SHA-256 is recorded), plus the audit checks in `audit/`. The build
+  stops when the checks name rules the document does not have, and reports Automated recommendations without a
+  check. Upload a package like a role zip; its checks are stored as the benchmark's audit content.
 - Every rule title (host and target results, benchmark rules, exceptions) ends in **(automated)** or
-  **(manual)**, as CIS marks the recommendation (Ansible-Lockdown's PATCH / AUDIT).
+  **(manual)**, the official CIS label from the package. Ansible-Lockdown role zips carry no such label (their
+  PATCH/AUDIT means "the role fixes it" / "audit only", which differs from CIS for 28 RHEL 9 rules), so the
+  benchmark page shows it separately as "role: fixes it / audit only".
+- **Compliance → Exceptions**: filter by BASELINE or SERVER exceptions.
 - **Every automated check runs:** where the audit content includes check folders for only one choice
   (firewalld or nftables, journald or rsyslog), the bundle runs both; the alternative a host does not use fails
   and can be accepted with an exception.

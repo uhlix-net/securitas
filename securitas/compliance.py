@@ -148,6 +148,8 @@ def parse_zip(data, filename=""):
         raise BenchmarkError("The folder in the zip is %r. Expected <role>-<version>, like RHEL9-CIS-2.4.2. "
                              "Download a release (tag), not a branch." % top)
     name, kind, version = m.group("name"), m.group("kind"), m.group("version")
+    if top + "/securitas-benchmark.json" in {i.filename for i in infos}:
+        return parse_package(z, top, infos, data, filename)
     if kind != "CIS":
         raise BenchmarkError("%s is a STIG role. This version of Securitas reads CIS roles only." % name)
     files = {i.filename[len(top) + 1:]: i for i in infos if not i.is_dir()}
@@ -237,6 +239,69 @@ def parse_zip(data, filename=""):
     }
 
 
+PACKAGE_FORMAT = "securitas-benchmark/1"
+ASSESSMENTS = ("Automated", "Manual")
+
+
+def parse_package(z, top, infos, data, filename=""):
+    """A Securitas benchmark package (tools/cis_package.py): the rules as the official CIS document states them
+    (ID, title, Automated/Manual, profiles) and the audit checks in audit/. Returns parse_zip's shape plus
+    "audit_zip": the checks repacked as an audit zip (one top folder) for audit_bundle."""
+    import json
+    try:
+        pkg = json.loads(z.read(top + "/securitas-benchmark.json"))
+    except ValueError:
+        raise BenchmarkError("securitas-benchmark.json is not valid JSON.") from None
+    if pkg.get("format") != PACKAGE_FORMAT:
+        raise BenchmarkError("Unknown package format %r (this Securitas reads %s)." % (pkg.get("format"), PACKAGE_FORMAT))
+    name, version = str(pkg.get("name", "")), str(pkg.get("version", ""))
+    if "%s-%s" % (name, version) != top or pkg.get("key") != top:
+        raise BenchmarkError("The package folder %s does not match its name and version (%s-%s)." % (top, name, version))
+    platform = pkg.get("platform")
+    if platform not in ("linux", "windows"):
+        raise BenchmarkError("Unknown platform %r in the package." % platform)
+    rules = []
+    seen = set()
+    for r in pkg.get("rules") or []:
+        rid = str(r.get("id", ""))
+        if not re.fullmatch(r"\d+(?:\.\d+)+", rid) or rid in seen:
+            raise BenchmarkError("Bad or repeated rule ID %r in the package." % rid)
+        seen.add(rid)
+        if r.get("assessment") not in ASSESSMENTS:
+            raise BenchmarkError("Rule %s: assessment must be Automated or Manual." % rid)
+        levels = [p for p in r.get("profiles") or [] if p in LEVEL_TAGS]
+        rules.append({"rule_id": rid, "title": str(r.get("title", ""))[:2000], "assessment": r["assessment"],
+                      "kind": "PATCH" if r["assessment"] == "Automated" else "AUDIT", "levels": levels, "refs": [],
+                      "toggle": "", "default_on": True, "source": "CIS document", "section": rid.split(".")[0],
+                      "sort_key": sort_key(rid)})
+    if not rules:
+        raise BenchmarkError("The package has no rules.")
+    # the checks: audit/ repacked as <name>-audit/ so audit_bundle reads them like an uploaded audit zip
+    buf = io.BytesIO()
+    prefix = top + "/audit/"
+    n = 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as out:
+        for i in infos:
+            if i.filename.startswith(prefix) and not i.is_dir():
+                out.writestr(top + "-audit/" + i.filename[len(prefix):], z.read(i))
+                n += 1
+    if not n:
+        raise BenchmarkError("The package has no audit/ checks.")
+    cis = pkg.get("cis") or {}
+    os_key, os_label = os_for(name[:-len("-CIS")] if name.endswith("-CIS") else name)
+    return {
+        "key": top, "name": name, "version": version, "kind": "CIS", "benchmark_version": str(cis.get("version", "")),
+        "platform": platform, "os_key": os_key, "os_label": os_label, "filename": filename or top + ".zip",
+        "sha256": hashlib.sha256(data).hexdigest(), "size": len(data),
+        "meta": {"package": True, "description": str(cis.get("document", "")), "cis_document": str(cis.get("document", "")),
+                 "cis_date": str(cis.get("date", "")), "cis_pdf_sha256": str(cis.get("pdf_sha256", "")),
+                 "revision": pkg.get("revision"), "audit_source": str((pkg.get("audit") or {}).get("source", "")),
+                 "coverage": pkg.get("coverage") or {}, "created": str(pkg.get("created", "")),
+                 "sections": pkg.get("sections") or {}, "files": len(infos)},
+        "rules": sorted(rules, key=lambda r: r["sort_key"]), "audit_zip": buf.getvalue(),
+    }
+
+
 def upload_date(b, tz="UTC"):
     """The upload date in Securitas' time zone (SECURITAS_TIMEZONE), so an evening upload keeps its local date."""
     import datetime
@@ -264,14 +329,17 @@ def rule_on(rule, profile, host_kind="memberserver"):
 
 def checked_rules(b, host_kind="memberserver"):
     """The rules the benchmark checks on a host of this kind, as the checkers take them."""
-    return [{"id": r.rule_id, "title": r.title, "kind": r.kind} for r in b.rules if rule_on(r, b.profile, host_kind)]
+    return [{"id": r.rule_id, "title": r.title, "kind": r.kind, "assessment": r.assessment or ""}
+            for r in b.rules if rule_on(r, b.profile, host_kind)]
 
 
 def counts(b):
     on = sum(1 for r in b.rules if rule_on(r, b.profile))
     on_dc = sum(1 for r in b.rules if rule_on(r, b.profile, "domaincontroller")) if b.platform == "windows" else on
     return {"total": len(b.rules), "on": on, "on_dc": on_dc, "overrides": sum(1 for r in b.rules if r.override is not None),
-            "patch": sum(1 for r in b.rules if r.kind == "PATCH"), "audit": sum(1 for r in b.rules if r.kind == "AUDIT")}
+            "patch": sum(1 for r in b.rules if r.kind == "PATCH"), "audit": sum(1 for r in b.rules if r.kind == "AUDIT"),
+            "automated": sum(1 for r in b.rules if r.assessment == "Automated"),
+            "manual": sum(1 for r in b.rules if r.assessment == "Manual")}
 
 
 def store(s, parsed, data, username, tz="UTC"):
@@ -294,9 +362,16 @@ def store(s, parsed, data, username, tz="UTC"):
     for r in parsed["rules"]:
         b.rules.append(BenchmarkRule(rule_id=r["rule_id"], sort_key=r["sort_key"], section=r["section"], title=r["title"],
                                      kind=r["kind"], levels=r["levels"], refs=r["refs"], toggle=r["toggle"],
-                                     default_on=r["default_on"], source=r["source"][:255]))
-    b.files.append(BenchmarkFile(kind="role", filename=b.filename, sha256=b.sha256, size=b.size, data=data,
-                                 uploaded_by=username))
+                                     default_on=r["default_on"], source=r["source"][:255],
+                                     assessment=r.get("assessment", "")))
+    b.files.append(BenchmarkFile(kind="package" if parsed.get("audit_zip") else "role", filename=b.filename,
+                                 sha256=b.sha256, size=b.size, data=data, uploaded_by=username))
+    if parsed.get("audit_zip"):
+        from . import audit_bundle
+        az = parsed["audit_zip"]
+        b.files.append(BenchmarkFile(kind="audit", filename=b.key + "-audit.zip", sha256=hashlib.sha256(az).hexdigest(),
+                                     size=len(az), data=az, uploaded_by=username))
+        b.meta = {**(b.meta or {}), "audit": audit_bundle.parse_audit_zip(az, b)}
     s.add(b)
     s.flush()
     return b

@@ -51,6 +51,9 @@ serves the results as web pages with an **Export to PDF** button.
   Several versions can be loaded side by side; one per operating system is active. Pick a profile (Level 1
   Server by default), switch single rules on or off, download the original zip, or remove a benchmark.
   Nothing in an uploaded zip is run.
+- **Benchmark packages from the official CIS document.** `tools/cis_package.py` reads the CIS benchmark PDF and
+  packages every recommendation (ID, title, Automated/Manual, profiles) with the checks that test it, so results
+  follow the official benchmark.
 - **Linux compliance checks.** Compliance scans check each Linux host against its active benchmark with Goss and
   the benchmark's Ansible-Lockdown audit content, through the **Securitas agent** (an RPM: one root-owned wrapper
   the scan account may run with sudo, nothing else). Securitas copies the audit content at scan time, so every

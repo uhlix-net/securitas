@@ -224,6 +224,8 @@ class BenchmarkRule(Base):
     default_on: Mapped[bool] = mapped_column(Boolean, default=True)  # the role's own default
     override: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # set here: on/off regardless of profile
     source: Mapped[str] = mapped_column(String(255), default="")    # task file in the role
+    # the official CIS label: Automated | Manual ("" when only an Ansible-Lockdown role was loaded)
+    assessment: Mapped[str] = mapped_column(String(16), default="")
     benchmark: Mapped[Benchmark] = relationship(back_populates="rules")
 
 
@@ -343,7 +345,8 @@ class Database:
     # Columns added to existing tables after their first release: (table, column, SQLite type, PostgreSQL type).
     # create_all() makes new tables but does not change existing ones.
     ADDED_COLUMNS = [("compliance_scans", "hosts", "JSON", "JSONB"),
-                     ("compliance_results", "content", "VARCHAR(80) DEFAULT ''", "VARCHAR(80) DEFAULT ''")]
+                     ("compliance_results", "content", "VARCHAR(80) DEFAULT ''", "VARCHAR(80) DEFAULT ''"),
+                     ("benchmark_rules", "assessment", "VARCHAR(16) DEFAULT ''", "VARCHAR(16) DEFAULT ''")]
 
     def _add_columns(self):
         from sqlalchemy import inspect

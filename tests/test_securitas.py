@@ -1609,10 +1609,13 @@ class ComplianceScans(unittest.TestCase):
         host = self.c.get("/compliance/scans/%d/hosts/%d" % (cid2, r.id)).text
         self.assertIn('class="badge b-accepted">Accepted</span>', host)
         self.assertIn("SERVER EXCEPTION: Needed by the backup agent", host)
-        self.assertIn('Ensure cramfs is not available <span class="small muted">(automated)</span>', host)
+        self.assertIn('Ensure cramfs is not available <span class="small muted"></span>', host)          # a role: no CIS label
         self.assertIn("var(--cr-accepted)", self.c.get("/?tab=compliance").text)                          # charts have the colour
         self.assertIn("Needed by the backup agent", self.c.get("/compliance/exceptions").text)
-        self.assertIn('<span class="muted">(automated)</span>', self.c.get("/compliance/exceptions").text)
+        ex = self.c.get("/compliance/exceptions?scope=server").text
+        self.assertIn("Needed by the backup agent", ex)
+        self.assertNotIn("Needed by the backup agent", self.c.get("/compliance/exceptions?scope=baseline").text)
+        self.assertIn('<option value="baseline">BASELINE EXCEPTION</option>', ex)
         # a baseline exception replaces this host's server exception and covers every host of the benchmark
         self.assertIn("ok=exception", post(rule="1.1.1", scope="baseline", reason="Not used here").headers["location"])
         with self.db.Session() as s:
@@ -2053,3 +2056,65 @@ class AuditUploadAndAgent(unittest.TestCase):
         self.assertIn("SCAN_FROM=192.168.11.42,192.168.11.43", anon.get("/agent/install.sh").text)
         self.assertIn("err=agentfrom", c.post("/settings/agent", data={"csrf": csrf(c, "/settings/agent"),
                                                                       "allowed": "x; rm -rf /"}, follow_redirects=False).headers["location"])
+
+
+def package_zip(top="RHEL9-CIS-2.0.0", rules=None):
+    import io
+    import zipfile
+    rules = rules or [{"id": "1.1.1", "title": "Ensure cramfs is not available", "assessment": "Automated",
+                       "profiles": ["level1-server", "level1-workstation"]},
+                      {"id": "1.1.2", "title": "Ensure /tmp is a separate partition", "assessment": "Manual",
+                       "profiles": ["level1-server"]},
+                      {"id": "2.10.1", "title": "Ensure ssh is configured", "assessment": "Automated",
+                       "profiles": ["level2-server"]}]
+    name, version = top.rsplit("-", 1)
+    pkg = {"format": "securitas-benchmark/1", "key": top, "name": name, "version": version, "revision": 1,
+           "platform": "linux", "kind": "CIS", "rules": rules,
+           "cis": {"document": "CIS Red Hat Enterprise Linux 9 Benchmark", "version": "v" + version, "date": "06-24-2024",
+                   "pdf_sha256": "ab" * 32}, "audit": {"source": "RHEL9-CIS-Audit-x"},
+           "coverage": {"automated_without_check": [], "manual_with_check": []}}
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr(top + "/securitas-benchmark.json", json.dumps(pkg))
+        z.writestr(top + "/audit/goss.yml", "gossfile: {}\n")
+        z.writestr(top + "/audit/vars/CIS.yml", "rhel9cis_nfs_server: true\nrhel9cis_rule_1_1_1: true\n")
+        z.writestr(top + "/audit/section_1/cis_1.1.1.yml", "file: {}\n")
+    return buf.getvalue()
+
+
+class BenchmarkPackages(unittest.TestCase):
+    def setUp(self):
+        self.app, self.db, self.jobs, self.cfg = make_app()
+        self.c = client(self.app)
+        login(self.c, "admin", ADMIN_PW)
+
+    def test_package_import(self):
+        r = self.c.post("/compliance/benchmarks", data={"csrf": csrf(self.c, "/compliance/benchmarks")},
+                        files={"file": ("p.zip", package_zip(), "application/zip")}, follow_redirects=False)
+        self.assertIn("ok=imported", r.headers["location"])
+        from securitas.db import Benchmark, BenchmarkFile
+        from securitas import compliance
+        with self.db.Session() as s:
+            b = s.scalar(select(Benchmark))
+            self.assertEqual((b.key, b.name, b.version, b.benchmark_version, b.os_key, b.platform),
+                             ("RHEL9-CIS-2.0.0", "RHEL9-CIS", "2.0.0", "v2.0.0", "rhel9", "linux"))
+            self.assertEqual({r.rule_id: r.assessment for r in b.rules}, {"1.1.1": "Automated", "1.1.2": "Manual", "2.10.1": "Automated"})
+            self.assertEqual([x["id"] for x in compliance.checked_rules(b)], ["1.1.1", "1.1.2"])   # level1-server
+            self.assertEqual(compliance.checked_rules(b)[1]["assessment"], "Manual")
+            kinds = sorted(f.kind for f in s.scalars(select(BenchmarkFile)).all())
+            self.assertEqual(kinds, ["audit", "package"])                                          # checks stored
+            self.assertIsNotNone(compliance.audit_bundle(s, b))
+            bid = b.id
+        page = self.c.get("/compliance/benchmarks/%d" % bid).text
+        self.assertIn("as the CIS document labels them", page)
+        self.assertIn("Ensure /tmp is a separate partition <span class=\"small muted\">(manual)</span>", page)
+        self.assertNotIn("Ensure /tmp is a separate partition</td>", self.c.get("/compliance/benchmarks/%d?kind=Automated" % bid).text)
+        self.assertEqual(self.c.get("/compliance/benchmarks/%d/download" % bid).status_code, 200)
+
+    def test_bad_packages(self):
+        import zipfile, io
+        for bad, msg in ((package_zip(rules=[{"id": "1.1", "title": "x", "assessment": "Maybe", "profiles": []}]), "Automated or Manual"),
+                         (package_zip(rules=[{"id": "1.1", "title": "x", "assessment": "Manual", "profiles": []}] * 2), "repeated")):
+            r = self.c.post("/compliance/benchmarks", data={"csrf": csrf(self.c, "/compliance/benchmarks")},
+                            files={"file": ("p.zip", bad, "application/zip")})
+            self.assertIn(msg, r.text)

@@ -974,7 +974,20 @@ def create_app(cfg, db, jobs):
     a.env.globals["SETTINGS_PAGES"] = SETTINGS_PAGES
     a.env.globals["BUILTIN_ADMIN"] = cfg.admin_username
     # CIS marks each recommendation Automated or Manual; Ansible-Lockdown roles tag them PATCH or AUDIT
-    a.env.globals["CIS_KIND"] = lambda kind: "(automated)" if kind == "PATCH" else "(manual)" if kind == "AUDIT" else ""
+    # the official CIS label of a recommendation (from a Securitas benchmark package); "" when not known
+    a.env.globals["CIS_KIND"] = lambda a_: "(automated)" if a_ == "Automated" else "(manual)" if a_ == "Manual" else ""
+
+    def assessments(s, bench_name):
+        """{rule_id: Automated|Manual} for a benchmark name, from the loaded benchmarks that carry CIS labels
+        (newest first), so older results and exceptions show the label too."""
+        out = {}
+        rows = s.execute(select(BenchmarkRule.rule_id, BenchmarkRule.assessment, Benchmark.key)
+                         .join(Benchmark, BenchmarkRule.benchmark_id == Benchmark.id)
+                         .where(BenchmarkRule.assessment != "").order_by(Benchmark.uploaded_at.desc())).all()
+        for rid, asm, key in rows:
+            if scan_compliance.bench_name(key) == bench_name:
+                out.setdefault(rid, asm)
+        return out
     a.env.globals["describe"] = lambda cron: schedule_ui.describe(cron, cfg.timezone)
     a.env.globals["settings_for"] = lambda role: [p for p in SETTINGS_PAGES if auth.can(role, p[2])]
     # Top-level sections and their pages: (path, label, permission). Vulnerability scans and reports keep their
@@ -1301,7 +1314,7 @@ def create_app(cfg, db, jobs):
                     continue
                 if f["level"] in compliance.LEVEL_TAGS and f["level"] not in (r.levels or []):
                     continue
-                if f["kind"] in ("PATCH", "AUDIT") and r.kind != f["kind"]:
+                if f["kind"] in ("Automated", "Manual") and r.assessment != f["kind"]:
                     continue
                 if f["state"] == "on" and not on or f["state"] == "off" and on or f["state"] == "override" and r.override is None:
                     continue
@@ -1456,7 +1469,7 @@ def create_app(cfg, db, jobs):
     def benchmark_download(request: Request, bid: int, user=Depends(CE)):
         with db.Session() as s:
             b = bench_or_404(s, bid)
-            f = s.scalar(select(BenchmarkFile).where(BenchmarkFile.benchmark_id == b.id, BenchmarkFile.kind == "role"))
+            f = s.scalar(select(BenchmarkFile).where(BenchmarkFile.benchmark_id == b.id, BenchmarkFile.kind.in_(("role", "package"))))
             if f is None:
                 raise HTTPException(404, "The original file of this benchmark is not stored.")
             data, fname = f.data, f.filename or (b.key + ".zip")
@@ -1623,10 +1636,11 @@ def create_app(cfg, db, jobs):
             rules.sort(key=lambda x: (order.get(x.get("status"), 9), compliance.sort_key(x["id"]) if x.get("id") else ""))
         with db.Session() as s:
             exc = jobs.exceptions_for(s, r.benchmark_key)
+            labels = assessments(s, scan_compliance.bench_name(r.benchmark_key))
         # the exception that applies to this host now (may differ from the one the scan recorded)
         now = {x.get("id"): exc.get((x.get("id"), r.host)) or exc.get((x.get("id"), ""))
                for x in rules if x.get("status") in ("fail", "accepted")}
-        return {"r": r, "rules": rules, "st": st, "q": q, "statuses": scan_compliance.STATUSES, "exc_now": now,
+        return {"r": r, "rules": rules, "st": st, "q": q, "statuses": scan_compliance.STATUSES, "exc_now": now, "labels": labels,
                 "scopes": scan_compliance.SCOPE_LABEL, "may_except": auth.can(user.role, "compliance.exception"), "back": back}
 
     @api.get("/compliance/targets/{tid}")
@@ -1700,19 +1714,25 @@ def create_app(cfg, db, jobs):
 
     @api.get("/compliance/exceptions")
     def compliance_exceptions(request: Request, user=Depends(V)):
+        scope = request.query_params.get("scope", "")
+        scope = scope if scope in scan_compliance.SCOPE_LABEL else ""
         with db.Session() as s:
-            rows = s.scalars(select(ComplianceException).order_by(
+            total = s.scalar(select(func.count(ComplianceException.id)))
+            rows = s.scalars(select(ComplianceException).where(
+                ComplianceException.scope == scope if scope else ComplianceException.id.is_not(None)).order_by(
                 ComplianceException.platform, ComplianceException.benchmark, ComplianceException.scope,
                 ComplianceException.host)).all()
             s.expunge_all()
         rows = sorted(rows, key=lambda x: (x.platform, x.benchmark, compliance.sort_key(x.rule_id), x.scope, x.host))
-        with db.Session() as s:     # CIS automated/manual per (benchmark name, rule)
-            kinds = {(scan_compliance.bench_name(k), rid): kind for k, rid, kind in s.execute(
-                select(Benchmark.key, BenchmarkRule.rule_id, BenchmarkRule.kind).join(BenchmarkRule,
-                       BenchmarkRule.benchmark_id == Benchmark.id).where(BenchmarkRule.rule_id.in_({x.rule_id for x in rows} or {""})))}
+        with db.Session() as s:     # the CIS label per (benchmark name, rule)
+            kinds = {}
+            for name in {x.benchmark for x in rows}:
+                for rid, asm in assessments(s, name).items():
+                    kinds[(name, rid)] = asm
         return a.page(request, "compliance_exceptions.html", {
             "user": user, "sess": request.state.sess, "title": "Compliance exceptions", "rows": rows,
-            "scopes": scan_compliance.SCOPE_LABEL, "may_except": auth.can(user.role, "compliance.exception"), "kinds": kinds})
+            "scopes": scan_compliance.SCOPE_LABEL, "may_except": auth.can(user.role, "compliance.exception"), "kinds": kinds,
+            "scope": scope, "total": total})
 
     @api.post("/compliance/exceptions/{xid}/delete")
     async def compliance_exception_delete(request: Request, xid: int, user=Depends(a.need("compliance.exception"))):
