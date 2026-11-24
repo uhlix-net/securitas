@@ -4,6 +4,39 @@ entries:
   - annotations:
       artifacthub.io/license: Apache-2.0
     apiVersion: v2
+    appVersion: 0.6.0
+    created: "2026-11-24T01:26:08.339669732Z"
+    description: CVE reports for Kubernetes (Trivy Operator), Linux and Windows, ranked
+      by CISA KEV and EPSS, with scheduled scans, history, SSO/LDAP sign-in, roles
+      and PDF export
+    digest: e84a6e0436a42aa20511733e9a2fec5ef46ee5f03cec618d797d55d601ce4d35
+    home: https://github.com/uhlix-net/securitas
+    icon: https://raw.githubusercontent.com/uhlix-net/securitas/main/docs/icon.svg
+    keywords:
+    - security
+    - cve
+    - vulnerability
+    - trivy
+    - kev
+    - epss
+    - report
+    - scanner
+    - sso
+    - ldap
+    kubeVersion: '>=1.25.0-0'
+    maintainers:
+    - name: uhlix-net
+      url: https://github.com/uhlix-net
+    name: securitas
+    sources:
+    - https://github.com/uhlix-net/securitas
+    type: application
+    urls:
+    - https://github.com/uhlix-net/securitas/releases/download/v0.6.0/securitas-0.6.0.tgz
+    version: 0.6.0
+  - annotations:
+      artifacthub.io/license: Apache-2.0
+    apiVersion: v2
     appVersion: 0.5.0
     created: "2026-11-21T02:51:07.384374478Z"
     description: CVE reports for Kubernetes (Trivy Operator), Linux and Windows, ranked
@@ -162,4 +195,4 @@ entries:
     urls:
     - https://github.com/uhlix-net/securitas/releases/download/v0.1.0/securitas-0.1.0.tgz
     version: 0.1.0
-generated: "2026-11-21T02:51:07.383230539Z"
+generated: "2026-11-24T01:26:08.338033793Z"
